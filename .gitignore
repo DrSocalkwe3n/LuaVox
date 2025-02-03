@@ -2,3 +2,11 @@
 /.vscode
 /build
 
+/CMakeFiles
+/CMakeCache.txt
+/AlterLuanti
+/Makefile
+/assets.o
+/cmake_install.cmake
+/libassets.a
+/resources.cpp

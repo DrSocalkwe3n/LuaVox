@@ -1,0 +1,9 @@
+/build/
+/.cache/
+/.vscode/
+
+/CMakeFiles
+/libTOS_Lib.a
+/cmake_install.cmake
+/Makefile
+/libTOS_Lib.a

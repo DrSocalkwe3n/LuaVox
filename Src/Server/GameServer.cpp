@@ -12,7 +12,7 @@
 #include <unordered_set>
 #include "SaveBackends/Filesystem.hpp"
 
-namespace AL::Server {
+namespace LV::Server {
 
 GameServer::~GameServer() {
     shutdown("on ~GameServer");

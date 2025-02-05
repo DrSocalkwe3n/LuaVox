@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <glm/ext.hpp>
 
-namespace AL {
+namespace LV {
 namespace Pos {
 
 struct Local4_u {
@@ -125,7 +125,7 @@ struct LightPrism {
 
 namespace std {
 
-#define hash_for_pos(type) template <> struct hash<AL::Pos::type> { std::size_t operator()(const AL::Pos::type& obj) const { return std::hash<AL::Pos::type::Key>()((AL::Pos::type::Key) obj); } };
+#define hash_for_pos(type) template <> struct hash<LV::Pos::type> { std::size_t operator()(const LV::Pos::type& obj) const { return std::hash<LV::Pos::type::Key>()((LV::Pos::type::Key) obj); } };
 hash_for_pos(Local4_u)
 hash_for_pos(Local16_u)
 hash_for_pos(Local16)

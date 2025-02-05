@@ -10,7 +10,7 @@
 #include <boost/thread.hpp>
 #include <boost/circular_buffer.hpp>
 
-namespace AL::Net {
+namespace LV::Net {
 
 class Server : public AsyncObject {
 protected:

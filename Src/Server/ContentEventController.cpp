@@ -4,7 +4,7 @@
 #include "Server/Abstract.hpp"
 
 
-namespace AL::Server {
+namespace LV::Server {
 
 ContentEventController::ContentEventController(std::unique_ptr<RemoteClient> &&remote)
     : Remote(std::move(remote))

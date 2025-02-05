@@ -3,7 +3,7 @@
 #include <boost/pool/pool_alloc.hpp>
 
 
-namespace AL {
+namespace LV {
 
 template<unsigned PageSize_PowOf2, unsigned CountPageInChunk_PowOf2, unsigned MaxSize = 0, typename Mutex = boost::details::pool::default_mutex, typename UserAllocator = boost::default_user_allocator_new_delete>
 struct BoostPool {

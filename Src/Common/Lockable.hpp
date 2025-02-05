@@ -6,7 +6,7 @@
 #include <mutex>
 #include <boost/thread.hpp>
 
-namespace AL {
+namespace LV {
 
 template<typename T>
 class Lockable {

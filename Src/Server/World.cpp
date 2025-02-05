@@ -1,7 +1,7 @@
 #include "World.hpp"
 
 
-namespace AL::Server {
+namespace LV::Server {
 
 
 World::World(WorldId_t id) {

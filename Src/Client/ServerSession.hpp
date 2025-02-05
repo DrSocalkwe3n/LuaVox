@@ -6,7 +6,7 @@
 #include <boost/asio/io_context.hpp>
 
 
-namespace AL::Client {
+namespace LV::Client {
 
 class ServerSession : public AsyncObject, public IServerSession, public ISurfaceEventListener {
     std::unique_ptr<Net::AsyncSocket> _Socket;

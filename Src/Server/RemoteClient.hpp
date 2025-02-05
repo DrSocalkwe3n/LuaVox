@@ -9,7 +9,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-namespace AL::Server {
+namespace LV::Server {
 
 /* 
     Шаблоны игрового контента, которые необходимо поддерживать в актуальном

@@ -1,7 +1,7 @@
 #include "Abstract.hpp"
 
 
-namespace AL::Client {
+namespace LV::Client {
 
     void IRenderSession::onChunksChange(WorldId_t worldId, const std::vector<Pos::GlobalChunk> &changeOrAddList, const std::vector<Pos::GlobalChunk> &remove) {}
     void IRenderSession::attachCameraToEntity(EntityId_t id) {}

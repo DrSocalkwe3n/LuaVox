@@ -6,7 +6,7 @@
 #include <boost/uuid/detail/sha1.hpp>
 
 
-namespace AL::Server {
+namespace LV::Server {
 
 using VoxelId_c = uint16_t;
 using NodeId_c = uint16_t;

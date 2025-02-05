@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.13)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fdata-sections -ffunction-sections")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--gc-sections -rdynamic")
 
-project (AlterLuanti VERSION 0.0 DESCRIPTION "AlterLuanti Description")
+project (LuaVox VERSION 0.0 DESCRIPTION "LuaVox Description")
 add_executable(${PROJECT_NAME})
 target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_20)
 

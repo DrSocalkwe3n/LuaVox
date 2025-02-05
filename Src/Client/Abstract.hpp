@@ -7,7 +7,7 @@
 #include <Common/Abstract.hpp>
 
 
-namespace AL::Client {
+namespace LV::Client {
 
 using VoxelId_t = uint16_t;
 

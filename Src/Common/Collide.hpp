@@ -1,7 +1,7 @@
 #include "Common/Abstract.hpp"
 #include <iostream>
 
-namespace AL {
+namespace LV {
 
 template<typename VecType>
 bool calcBoxToBoxCollide(const VecType vec1_min, const VecType vec1_max, 

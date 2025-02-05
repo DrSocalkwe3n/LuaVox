@@ -8,7 +8,7 @@
 #include <vector>
 
 
-namespace AL::Server {
+namespace LV::Server {
 
 class RemoteClient;
 class GameServer;
@@ -138,8 +138,8 @@ public:
 namespace std {
 
 template <>
-struct hash<AL::Server::ServerObjectPos> { 
-    std::size_t operator()(const AL::Server::ServerObjectPos& obj) const { 
+struct hash<LV::Server::ServerObjectPos> {
+    std::size_t operator()(const LV::Server::ServerObjectPos& obj) const {
         return std::hash<uint32_t>()(obj.WorldId) ^ std::hash<int32_t>()(obj.ObjectPos.x) ^ std::hash<int32_t>()(obj.ObjectPos.y) ^ std::hash<int32_t>()(obj.ObjectPos.z); 
     } 
 };

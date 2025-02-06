@@ -18,9 +18,10 @@ using ModelId_c = uint16_t;
 
 using ResourceId_t = uint32_t;
 
-using VoxelId_t = ResourceId_t;
-using NodeId_t = ResourceId_t;
-using WorldId_t = ResourceId_t;
+using DefVoxelId_t = ResourceId_t;
+using DefNodeId_t = ResourceId_t;
+using DefWorldId_t = ResourceId_t;
+using DefEntityId_t = ResourceId_t;
 using PortalId_t = uint16_t;
 // В одном регионе может быть максимум 2^16 сущностей. Клиенту адресуются сущности в формате <позиция региона>+<uint16_t>
 // И если сущность перешла из одного региона в другой адресация сохраняется
@@ -59,20 +60,20 @@ struct ServerTime {
 
 struct VoxelCube {
     Pos::Local256_u Left, Right;
-    VoxelId_t Material;
+    DefVoxelId_t VoxelId;
 
     auto operator<=>(const VoxelCube&) const = default;
 };
 
 struct VoxelCube_Region {
     Pos::Local4096_u Left, Right;
-    VoxelId_t Material;
+    DefVoxelId_t VoxelId;
 
     auto operator<=>(const VoxelCube_Region&) const = default;
 };
 
 struct Node {
-    NodeId_t NodeId;
+    DefNodeId_t NodeId;
     uint8_t Rotate : 6;
 };
 
@@ -125,7 +126,7 @@ struct CollisionAABB : public AABB {
         struct {
             Pos::Local16_u Chunk;
             uint32_t Index;
-            VoxelId_t Id;
+            DefVoxelId_t Id;
         } Voxel;
 
         struct {
@@ -150,7 +151,7 @@ public:
     LocalAABB ABBOX;
 
     // PosQuat
-    WorldId_t WorldId;
+    DefWorldId_t WorldId;
     Pos::Object Pos, Speed, Acceleration;
     glm::quat Quat;
     static constexpr uint16_t HP_BS = 4096, HP_BS_Bit = 12;
@@ -183,7 +184,7 @@ struct VoxelCuboidsFuncs {
 
     // Кубы должны быть отсортированы
     static bool canMerge(const Vec& a, const Vec& b) {
-        if (a.Material != b.Material) return false;
+        if (a.VoxelId != b.VoxelId) return false;
 
         // Проверяем, что кубы смежны по одной из осей
         bool xAdjacent = (a.Right.X == b.Left.X) && (a.Left.Y == b.Left.Y) && (a.Right.Y == b.Right.Y) && (a.Left.Z == b.Left.Z) && (a.Right.Z == b.Right.Z);
@@ -195,7 +196,7 @@ struct VoxelCuboidsFuncs {
 
     static Vec mergeCubes(const Vec& a, const Vec& b) {
         Vec merged;
-        merged.Material = a.Material;
+        merged.VoxelId = a.VoxelId;
 
         // Объединяем кубы по минимальным и максимальным координатам
         merged.Left.X = std::min(a.Left.X, b.Left.X);
@@ -322,7 +323,7 @@ inline void convertRegionVoxelsToChunks(const std::vector<VoxelCube_Region>& reg
                     };
 
                     int chunkIndex = z * 16 * 16 + y * 16 + x;
-                    chunks[chunkIndex].emplace_back(left, right, region.Material);
+                    chunks[chunkIndex].emplace_back(left, right, region.VoxelId);
                 }
             }
         }
@@ -341,7 +342,7 @@ inline void convertChunkVoxelsToRegion(const std::vector<VoxelCube> *chunks, std
                     regions.emplace_back(
                         Pos::Local4096_u(left.X+cube.Left.X, left.Y+cube.Left.Y, left.Z+cube.Left.Z),
                         Pos::Local4096_u(left.X+cube.Right.X, left.Y+cube.Right.Y, left.Z+cube.Right.Z), 
-                        cube.Material
+                        cube.VoxelId
                     );
                 }
             }

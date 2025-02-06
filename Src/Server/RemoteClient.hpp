@@ -13,31 +13,23 @@
 
 namespace LV::Server {
 
-/*
-    Введение в распознавание образов
-     Распознавание символов
-
-*/
-
 
 template<typename ServerKey, typename ClientKey, std::enable_if_t<std::is_integral_v<ServerKey> && std::is_integral_v<ClientKey> && sizeof(ServerKey) >= sizeof(ClientKey), int> = 0>
 class CSChunkedMapper {
     std::unordered_map<uint32_t, std::tuple<std::bitset<64>, std::array<ServerKey, 64>>> Chunks;
 
 public:
-    ServerKey remap(ClientKey cKey) {
+    ServerKey toServer(ClientKey cKey) {
         int chunkIndex = cKey >> 6;
         int subIndex = cKey & 0x3f;
 
         auto iChunk = Chunks.find(chunkIndex);
-        if(iChunk == Chunks.end())
-            MAKE_ERROR("Идентификатор не привязан");
+        assert(iChunk != Chunks.end() && "Идентификатор уже занят");
 
         std::bitset<64> &bits = std::get<0>(iChunk.second);
         std::array<ServerKey, 64> &keys = std::get<1>(iChunk.second);
 
-        if(!bits.test(subIndex))
-            MAKE_ERROR("Идентификатор не привязан");
+        assert(bits.test(subIndex) && "Идентификатор уже занят");
 
         return keys[subIndex];
     }
@@ -53,13 +45,12 @@ public:
         std::bitset<64> &bits = std::get<0>(iChunk.second);
         std::array<ServerKey, 64> &keys = std::get<1>(iChunk.second);
 
-        if(!bits.test(subIndex))
-            MAKE_ERROR("Идентификатор не привязан");
+        assert(bits.test(subIndex) && "Идентификатор уже занят");
 
         bits.reset(subIndex);
     }
 
-    void map(ClientKey cKey, ServerKey sKey) {
+    void link(ClientKey cKey, ServerKey sKey) {
         int chunkIndex = cKey >> 6;
         int subIndex = cKey & 0x3f;
 
@@ -67,45 +58,63 @@ public:
         std::bitset<64> &bits = std::get<0>(chunk);
         std::array<ServerKey, 64> &keys = std::get<1>(chunk);
 
-        if(bits.test(subIndex)) {
-            MAKE_ERROR("Идентификатор уже занят");
-        }
+        assert(!bits.test(subIndex) && "Идентификатор уже занят");
 
         bits.set(subIndex);
         keys[subIndex] = sKey;
     }
 };
 
-template<typename Key, typename Value>
-class SortedChunkedMap {
-
-struct Chunk {
-    uint8_t bitset = 0;
-    std::array<std::array<std::byte, sizeof(Key)+sizeof(Value)>, sizeof(bitset)> Data;
-};
-
-public:
-
-};
-
 template<typename ServerKey, typename ClientKey, std::enable_if_t<std::is_integral_v<ServerKey> && std::is_integral_v<ClientKey> && sizeof(ServerKey) >= sizeof(ClientKey), int> = 0>
-class SCMapper {
-
-
-public:
-
-};
-
-template<typename ServerKey, typename ClientKey, std::enable_if_t<std::is_integral_v<ServerKey> && std::is_integral_v<ClientKey>, int> = 0>
-class SCKeyRemapper {
-    std::bitset<(1 << sizeof(ClientKey)*8) - 1> UsedIdC; // 1 - идентификатор свободен, 0 - занят
-    std::map<ServerKey, ClientKey> SCTable;
+class SCSKeyRemapper {
+    std::bitset<sizeof(ClientKey)*8-1> FreeClientKeys;
+    std::map<ServerKey, ClientKey> Map;
+    CSChunkedMapper<ServerKey, ClientKey> CSmapper;
 
 public:
-    // Если аллоцировать идентификатор не получится, будет возвращено ClientKey(0)
-    ClientKey toClient(ServerKey sKey) {
+    SCSKeyRemapper() {
+        FreeClientKeys.set();
+    }
 
-    };
+    // Соотнести идентификатор на стороне сервера с идентификатором на стороне клиента 
+    ClientKey toClient(ServerKey skey) {
+        if(skey == ServerKey(0))
+            return ClientKey(0);
+
+        auto iter = Map.find(skey);
+        if(iter == Map.end()) {
+            // Идентификатор отсутствует, нужно его занять
+            // Ищет позицию ближайшего бита 1
+            size_t pos = FreeClientKeys._Find_first();
+            if(pos == FreeClientKeys.size())
+                return ClientKey(0); // Свободные идентификаторы отсутствуют
+
+            ClientKey ckey = ClientKey(pos+1);
+            Map[skey] = ckey;
+            CSmapper.link(ckey, ckey);
+            return ClientKey(pos);
+        }
+
+        return iter.second;
+    }
+
+    // Соотнести идентификатор на стороне клиента с идентификатором на стороне сервера
+    ServerKey toServer(ClientKey ckey) {
+        return CSmapper.toServer(ckey);
+    } 
+
+    // Удаляет серверный идентификатор, освобождая идентификатор клиента  
+    ClientKey erase(ServerKey skey) {
+        auto iter = Map.find(skey);
+
+        assert(iter != Map.end() && "Идентификатор не существует");
+
+        ClientKey ckey = iter.second;
+        CSmapper.erase(ckey);
+        Map.erase(iter);
+
+        return ckey;
+    }
 };
 
 /* 
@@ -115,9 +124,11 @@ public:
     этих ресурсов и переотправлять их клиенту
 */
 struct ResourceRequest {
-    std::vector<WorldId_t> NewWorlds;
-    std::vector<VoxelId_t> NewVoxels;
-    std::vector<NodeId_t> NewNodes;
+    std::vector<DefWorldId_t> NewWorlds;
+    std::vector<DefVoxelId_t> NewVoxels;
+    std::vector<DefNodeId_t> NewNodes;
+    std::vector<DefEntityId_t> NewEntityes;
+
     std::vector<TextureId_t> NewTextures;
     std::vector<ModelId_t> NewModels;
     std::vector<SoundId_t> NewSounds;
@@ -126,19 +137,22 @@ struct ResourceRequest {
         NewWorlds.insert(NewWorlds.end(), obj.NewWorlds.begin(), obj.NewWorlds.end());
         NewVoxels.insert(NewVoxels.end(), obj.NewVoxels.begin(), obj.NewVoxels.end());
         NewNodes.insert(NewNodes.end(), obj.NewNodes.begin(), obj.NewNodes.end());
+        NewEntityes.insert(NewEntityes.end(), obj.NewEntityes.begin(), obj.NewEntityes.end());
         NewTextures.insert(NewTextures.end(), obj.NewTextures.begin(), obj.NewTextures.end());
         NewModels.insert(NewModels.end(), obj.NewModels.begin(), obj.NewModels.end());
         NewSounds.insert(NewSounds.end(), obj.NewSounds.begin(), obj.NewSounds.end());
     }
 
     void uniq() {
-        for(std::vector<ResourceId_t> *vec : {&NewWorlds, &NewVoxels, &NewNodes, &NewTextures, &NewModels, &NewSounds}) {
+        for(std::vector<ResourceId_t> *vec : {&NewWorlds, &NewVoxels, &NewNodes, &NewEntityes, &NewTextures, &NewModels, &NewSounds}) {
             std::sort(vec->begin(), vec->end());
             auto last = std::unique(vec->begin(), vec->end());
             vec->erase(last, vec->end());
         }
     }
 };
+
+using EntityKey = std::tuple<WorldId_c, Pos::GlobalRegion>;
 
 /*
     Обработчик сокета клиента.
@@ -152,8 +166,13 @@ class RemoteClient {
 
     struct {
         std::bitset<(1 << sizeof(EntityId_c)*8) - 1> UsedEntityIdC; // 1 - идентификатор свободен, 0 - занят
-        std::unordered_map<EntityId_c, std::tuple<WorldId_t, Pos::GlobalRegion, EntityId_t>> CTS_Entityes;
-        std::unordered_map<WorldId_t, std::unordered_map<Pos::GlobalRegion, std::unordered_map<EntityId_t, EntityId_c>>> STC_Entityes;
+        std::map<TextureId_t, uint32_t> TextureUses;
+        std::map<ModelId_t, uint32_t> ModelUses;
+        std::map<SoundId_t, uint32_t> SoundUses;
+
+        std::map<DefVoxelId_t, uint32_t> VoxelDefUses;
+        std::map<DefNodeId_t, uint32_t> NodeDefUses;
+        std::map<DefEntityId_t, uint32_t> EntityDefUses;
     
         std::unordered_map<TextureId_t, TextureId_c> STC_Textures;
         std::unordered_map<ModelId_t, ModelId_c> STC_Models;

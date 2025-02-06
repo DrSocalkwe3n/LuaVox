@@ -1,15 +1,112 @@
 #pragma once
 
+#include <TOSLib.hpp>
 #include <Common/Lockable.hpp>
 #include <Common/Net.hpp>
 #include "Abstract.hpp"
 #include <Common/Abstract.hpp>
 #include <bitset>
 #include <initializer_list>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 
 namespace LV::Server {
+
+/*
+    Введение в распознавание образов
+     Распознавание символов
+
+*/
+
+
+template<typename ServerKey, typename ClientKey, std::enable_if_t<std::is_integral_v<ServerKey> && std::is_integral_v<ClientKey> && sizeof(ServerKey) >= sizeof(ClientKey), int> = 0>
+class CSChunkedMapper {
+    std::unordered_map<uint32_t, std::tuple<std::bitset<64>, std::array<ServerKey, 64>>> Chunks;
+
+public:
+    ServerKey remap(ClientKey cKey) {
+        int chunkIndex = cKey >> 6;
+        int subIndex = cKey & 0x3f;
+
+        auto iChunk = Chunks.find(chunkIndex);
+        if(iChunk == Chunks.end())
+            MAKE_ERROR("Идентификатор не привязан");
+
+        std::bitset<64> &bits = std::get<0>(iChunk.second);
+        std::array<ServerKey, 64> &keys = std::get<1>(iChunk.second);
+
+        if(!bits.test(subIndex))
+            MAKE_ERROR("Идентификатор не привязан");
+
+        return keys[subIndex];
+    }
+
+    void erase(ClientKey cKey) {
+        int chunkIndex = cKey >> 6;
+        int subIndex = cKey & 0x3f;
+
+        auto iChunk = Chunks.find(chunkIndex);
+        if(iChunk == Chunks.end())
+            MAKE_ERROR("Идентификатор не привязан");
+
+        std::bitset<64> &bits = std::get<0>(iChunk.second);
+        std::array<ServerKey, 64> &keys = std::get<1>(iChunk.second);
+
+        if(!bits.test(subIndex))
+            MAKE_ERROR("Идентификатор не привязан");
+
+        bits.reset(subIndex);
+    }
+
+    void map(ClientKey cKey, ServerKey sKey) {
+        int chunkIndex = cKey >> 6;
+        int subIndex = cKey & 0x3f;
+
+        std::tuple<std::bitset<64>, std::array<ServerKey, 64>> &chunk = Chunks[chunkIndex];
+        std::bitset<64> &bits = std::get<0>(chunk);
+        std::array<ServerKey, 64> &keys = std::get<1>(chunk);
+
+        if(bits.test(subIndex)) {
+            MAKE_ERROR("Идентификатор уже занят");
+        }
+
+        bits.set(subIndex);
+        keys[subIndex] = sKey;
+    }
+};
+
+template<typename Key, typename Value>
+class SortedChunkedMap {
+
+struct Chunk {
+    uint8_t bitset = 0;
+    std::array<std::array<std::byte, sizeof(Key)+sizeof(Value)>, sizeof(bitset)> Data;
+};
+
+public:
+
+};
+
+template<typename ServerKey, typename ClientKey, std::enable_if_t<std::is_integral_v<ServerKey> && std::is_integral_v<ClientKey> && sizeof(ServerKey) >= sizeof(ClientKey), int> = 0>
+class SCMapper {
+
+
+public:
+
+};
+
+template<typename ServerKey, typename ClientKey, std::enable_if_t<std::is_integral_v<ServerKey> && std::is_integral_v<ClientKey>, int> = 0>
+class SCKeyRemapper {
+    std::bitset<(1 << sizeof(ClientKey)*8) - 1> UsedIdC; // 1 - идентификатор свободен, 0 - занят
+    std::map<ServerKey, ClientKey> SCTable;
+
+public:
+    // Если аллоцировать идентификатор не получится, будет возвращено ClientKey(0)
+    ClientKey toClient(ServerKey sKey) {
+
+    };
+};
 
 /* 
     Шаблоны игрового контента, которые необходимо поддерживать в актуальном

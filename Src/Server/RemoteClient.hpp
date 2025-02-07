@@ -216,37 +216,33 @@ public:
     }
 
     // Функции подготавливают пакеты к отправке
-
-    // Необходимые определения шаблонов игрового контента
-    void prepareDefWorld(WorldId_t worldId, void* world);
-    void prepareDefVoxel(VoxelId_t voxelId, void* voxel);
-    void prepareDefNode(NodeId_t worldId, void* node);
-    void prepareDefMediaStream(MediaStreamId_t modelId, void* mediaStream);
-
     // Отслеживаемое игроком использование контента
     //  Maybe?
     //  Текущий список вокселей, определения нод, которые больше не используются в чанке, и определения нод, которые теперь используются
     //void prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::vector<VoxelCube> &voxels, const std::vector<DefVoxelId_t> &noLongerInUseDefs, const std::vector<DefVoxelId_t> &nowUsed);
-    
     void prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::vector<VoxelCube> &voxels);
     void prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::unordered_map<Pos::Local16_u, Node> &nodes);
     void prepareChunkUpdate_LightPrism(WorldId_t worldId, Pos::GlobalChunk chunkPos, const LightPrism *lights);
     void prepareChunkRemove(WorldId_t worldId, Pos::GlobalChunk chunkPos);
-
-    void prepareWorldRemove(WorldId_t worldId);
 
     void prepareEntitySwap(WorldId_t prevWorldId, Pos::GlobalRegion prevRegionPos, EntityId_t prevEntityId,
         WorldId_t newWorldId, Pos::GlobalRegion newRegionPos, EntityId_t newEntityId);
     void prepareEntityUpdate(WorldId_t worldId, Pos::GlobalRegion regionPos, EntityId_t entityId, const Entity *entity);
     void prepareEntityRemove(WorldId_t worldId, Pos::GlobalRegion regionPos, EntityId_t entityId);
 
-    void prepareWorldNew(DefWorldId_t Id, void* world);
-    void prepareWorldUpdate(DefWorldId_t defWorldId, void* world);
-    void prepareWorldRemove(DefWorldId_t defWorldId);
+    void prepareWorldNew(WorldId_t worldId, void* world);
+    void prepareWorldUpdate(WorldId_t worldId, void* world);
+    void prepareWorldRemove(WorldId_t worldId);
 
     void preparePortalNew(PortalId_t portalId, void* portal);
     void preparePortalUpdate(PortalId_t portalId, void* portal);
     void preparePortalRemove(PortalId_t portalId);
+
+
+    // Необходимые определения шаблонов игрового контента
+    void prepareDefPortal(DefNodeId_t defWorldId, void* node);
+    void prepareDefMediaStream(MediaStreamId_t modelId, void* mediaStream);
+
 
     // Прочие моменты
     void prepareCameraSetEntity(WorldId_t worldId, Pos::GlobalChunk chunkPos, EntityId_t entityId);
@@ -257,9 +253,18 @@ public:
     // Сообщить о ресурсах
     // Сюда приходят все обновления ресурсов движка
     // Глобально их можно запросить в выдаче pushPreparedPackets()
+
+    // Двоичные файлы
     void informateDefTexture(const std::unordered_map<TextureId_t, std::shared_ptr<ResourceFile>> &textures);
     void informateDefModel(const std::unordered_map<ModelId_t, std::shared_ptr<ResourceFile>> &models);
     void informateDefSound(const std::unordered_map<SoundId_t, std::shared_ptr<ResourceFile>> &sounds);
+
+    // Игровые определения
+    void informateDefWorld(const std::unordered_map<DefWorldId_t, void*> &worlds);
+    void informateDefVoxel(const std::unordered_map<DefVoxelId_t, void*> &voxels);
+    void informateDefNode(const std::unordered_map<DefNodeId_t, void*> &nodes);
+    void informateDefEntityes(const std::unordered_map<DefEntityId_t, void*> &entityes);
+    void informateDefPortals(const std::unordered_map<DefPortalId_t, void*> &portals);
 
 private:
     WorldId_c rentWorldRemapId(WorldId_t wId);

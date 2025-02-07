@@ -8,6 +8,7 @@
 
 namespace LV::Server {
 
+// Идентификаторы на стороне клиента
 using VoxelId_c = uint16_t;
 using NodeId_c = uint16_t;
 using WorldId_c = uint8_t;
@@ -18,21 +19,33 @@ using ModelId_c = uint16_t;
 
 using ResourceId_t = uint32_t;
 
+// Двоичные данные
+using BinTextureId_t = ResourceId_t;
+using BinModelId_t = ResourceId_t;
+using BinSoundId_t = ResourceId_t;
+
+// Игровые определения
 using DefVoxelId_t = ResourceId_t;
 using DefNodeId_t = ResourceId_t;
 using DefWorldId_t = ResourceId_t;
+using DefPortalId_t = ResourceId_t;
 using DefEntityId_t = ResourceId_t;
-using PortalId_t = uint16_t;
-// В одном регионе может быть максимум 2^16 сущностей. Клиенту адресуются сущности в формате <позиция региона>+<uint16_t>
-// И если сущность перешла из одного региона в другой адресация сохраняется
-using EntityId_t = uint16_t;
+
+// Конент, основанный на игровых определениях
 using WorldId_t = ResourceId_t;
-using TextureId_t = ResourceId_t;
-using ModelId_t = ResourceId_t;
-using SoundId_t = ResourceId_t;
+
+// В одном регионе может быть максимум 2^16 сущностей. Клиенту адресуются сущности в формате <мир>+<позиция региона>+<uint16_t>
+// И если сущность перешла из одного региона в другой, идентификатор сущности на стороне клиента сохраняется
+using LocalEntityId_t = uint16_t;
+using GlobalEntityId_t = std::tuple<WorldId_t, Pos::GlobalRegion, LocalEntityId_t>;
+
+
+
+using PortalId_t = uint16_t;
 using MediaStreamId_t = uint16_t;
 using ContentBridgeId_t = uint16_t;
 using PlayerId_t = uint32_t;
+
 
 /*
     Сервер загружает информацию о локальных текстурах

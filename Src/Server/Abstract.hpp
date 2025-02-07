@@ -26,6 +26,7 @@ using PortalId_t = uint16_t;
 // В одном регионе может быть максимум 2^16 сущностей. Клиенту адресуются сущности в формате <позиция региона>+<uint16_t>
 // И если сущность перешла из одного региона в другой адресация сохраняется
 using EntityId_t = uint16_t;
+using WorldId_t = ResourceId_t;
 using TextureId_t = ResourceId_t;
 using ModelId_t = ResourceId_t;
 using SoundId_t = ResourceId_t;

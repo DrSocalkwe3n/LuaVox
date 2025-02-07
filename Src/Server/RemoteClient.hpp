@@ -165,41 +165,26 @@ class RemoteClient {
     bool IsConnected = true, IsGoingShutdown = false;
 
     struct {
-        std::bitset<(1 << sizeof(EntityId_c)*8) - 1> UsedEntityIdC; // 1 - идентификатор свободен, 0 - занят
+        // Счётчики использования базовых ресурсов высшими объектами
         std::map<TextureId_t, uint32_t> TextureUses;
-        std::map<ModelId_t, uint32_t> ModelUses;
         std::map<SoundId_t, uint32_t> SoundUses;
 
+        // Может использовать текстуры
+        std::map<ModelId_t, uint32_t> ModelUses;
+
+        // Будут использовать в своих определениях текстуры, звуки, модели
         std::map<DefVoxelId_t, uint32_t> VoxelDefUses;
         std::map<DefNodeId_t, uint32_t> NodeDefUses;
         std::map<DefEntityId_t, uint32_t> EntityDefUses;
+        std::map<DefWorldId_t, uint32_t> WorldDefUses;
+
+        // Чанки используют воксели, ноды, миры
+        // Сущности используют текстуры, модели, звуки, миры
     
-        std::unordered_map<TextureId_t, TextureId_c> STC_Textures;
-        std::unordered_map<ModelId_t, ModelId_c> STC_Models;
-        //std::unordered_map<SoundId_t, SoundId_c> STC_Sounds;
-        std::bitset<(1 << sizeof(VoxelId_c)*8) - 1> UsedVoxelIdC; // 1 - идентификатор свободен, 0 - занят
-        std::unordered_map<VoxelId_t, VoxelId_c> STC_Voxels;
-        std::bitset<(1 << sizeof(NodeId_c)*8) - 1> UsedNodeIdC; // 1 - идентификатор свободен, 0 - занят
-        std::unordered_map<NodeId_t, NodeId_c> STC_Nodes;
-        std::bitset<(1 << sizeof(VoxelId_c)*8) - 1> UsedWorldIdC; // 1 - идентификатор свободен, 0 - занят
-        std::unordered_map<WorldId_t, WorldId_c> STC_Worlds;
     } Remap;
 
     struct {
-        //std::unordered_map<EntityId_c, > EntityTextures;
     } BinaryResourceUsedIds;
-
-    // Вести учёт использования идентификаторов
-    struct {
-        // Использованные идентификаторы вокселей чанками
-        std::unordered_map<WorldId_t, std::unordered_map<Pos::GlobalChunk, std::unordered_set<VoxelId_t>>> Voxels;
-        // Количество зависимостей к ресурсу
-        std::unordered_map<VoxelId_t, uint32_t> VoxelsUsedCount;
-        // Использованные идентификаторы нод чанками
-        std::unordered_map<WorldId_t, std::unordered_map<Pos::GlobalChunk, std::unordered_set<NodeId_c>>> Nodes;
-        // Количество зависимостей к ресурсу
-        std::unordered_map<NodeId_c, uint32_t> NodesUsedCount;
-    } ChunkUsedIds;
 
     struct {
 
@@ -239,6 +224,10 @@ public:
     void prepareDefMediaStream(MediaStreamId_t modelId, void* mediaStream);
 
     // Отслеживаемое игроком использование контента
+    //  Maybe?
+    //  Текущий список вокселей, определения нод, которые больше не используются в чанке, и определения нод, которые теперь используются
+    //void prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::vector<VoxelCube> &voxels, const std::vector<DefVoxelId_t> &noLongerInUseDefs, const std::vector<DefVoxelId_t> &nowUsed);
+    
     void prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::vector<VoxelCube> &voxels);
     void prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::unordered_map<Pos::Local16_u, Node> &nodes);
     void prepareChunkUpdate_LightPrism(WorldId_t worldId, Pos::GlobalChunk chunkPos, const LightPrism *lights);
@@ -250,6 +239,10 @@ public:
         WorldId_t newWorldId, Pos::GlobalRegion newRegionPos, EntityId_t newEntityId);
     void prepareEntityUpdate(WorldId_t worldId, Pos::GlobalRegion regionPos, EntityId_t entityId, const Entity *entity);
     void prepareEntityRemove(WorldId_t worldId, Pos::GlobalRegion regionPos, EntityId_t entityId);
+
+    void prepareWorldNew(DefWorldId_t Id, void* world);
+    void prepareWorldUpdate(DefWorldId_t defWorldId, void* world);
+    void prepareWorldRemove(DefWorldId_t defWorldId);
 
     void preparePortalNew(PortalId_t portalId, void* portal);
     void preparePortalUpdate(PortalId_t portalId, void* portal);

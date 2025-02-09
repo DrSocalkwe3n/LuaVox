@@ -9,39 +9,45 @@
 namespace LV::Server {
 
 // Идентификаторы на стороне клиента
+using TextureId_c = uint16_t;
+using SoundId_c = uint16_t;
+using ModelId_c = uint16_t;
+
+using DefWorldId_c = uint8_t;
+using WorldId_c = uint8_t;
 using VoxelId_c = uint16_t;
 using NodeId_c = uint16_t;
-using WorldId_c = uint8_t;
+using DefPortalId_c = uint8_t;
 using PortalId_c = uint8_t;
+using DefEntityId_c = uint16_t;
 using EntityId_c = uint16_t;
-using TextureId_c = uint16_t;
-using ModelId_c = uint16_t;
 
 using ResourceId_t = uint32_t;
 
 // Двоичные данные
 using BinTextureId_t = ResourceId_t;
-using BinModelId_t = ResourceId_t;
 using BinSoundId_t = ResourceId_t;
+using BinModelId_t = ResourceId_t;
 
 // Игровые определения
+using DefWorldId_t = ResourceId_t;
 using DefVoxelId_t = ResourceId_t;
 using DefNodeId_t = ResourceId_t;
-using DefWorldId_t = ResourceId_t;
 using DefPortalId_t = ResourceId_t;
 using DefEntityId_t = ResourceId_t;
 
-// Конент, основанный на игровых определениях
+
+// Контент, основанный на игровых определениях
 using WorldId_t = ResourceId_t;
 
 // В одном регионе может быть максимум 2^16 сущностей. Клиенту адресуются сущности в формате <мир>+<позиция региона>+<uint16_t>
 // И если сущность перешла из одного региона в другой, идентификатор сущности на стороне клиента сохраняется
 using LocalEntityId_t = uint16_t;
 using GlobalEntityId_t = std::tuple<WorldId_t, Pos::GlobalRegion, LocalEntityId_t>;
-
-
-
 using PortalId_t = uint16_t;
+
+
+
 using MediaStreamId_t = uint16_t;
 using ContentBridgeId_t = uint16_t;
 using PlayerId_t = uint32_t;
@@ -130,7 +136,7 @@ struct CollisionAABB : public AABB {
 
     union {
         struct {
-            EntityId_t Index;
+            LocalEntityId_t Index;
         } Entity;
 
         struct {
@@ -161,6 +167,8 @@ struct CollisionAABB : public AABB {
 
 
 class Entity  {
+    DefEntityId_t DefId;
+
 public:
     LocalAABB ABBOX;
 
@@ -185,11 +193,13 @@ public:
         IsRemoved = false;
 
 public:
-    Entity();
+    Entity(DefEntityId_t defId);
     
     AABB aabbAtPos() {
         return {Pos-Pos::Object(ABBOX.x/2, ABBOX.y/2, ABBOX.z/2), Pos+Pos::Object(ABBOX.x/2, ABBOX.y/2, ABBOX.z/2)};
     }
+
+    DefEntityId_t getDefId() const { return DefId; }
 };
 
 

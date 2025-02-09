@@ -12,12 +12,7 @@ namespace LV::Server {
 
 class RemoteClient;
 class GameServer;
-
-struct GlobalEntityId {
-    WorldId_t WorldId;
-    Pos::GlobalChunk ChunkPos;
-    EntityId_t EntityId;
-};
+class World;
 
 
 struct ServerObjectPos {
@@ -92,7 +87,7 @@ private:
         // Используется регионами
         std::vector<PortalId_t> Portals;
         std::unordered_map<WorldId_t, std::unordered_map<Pos::GlobalRegion, std::unordered_set<Pos::Local16_u>>> Chunks;
-        std::unordered_map<WorldId_t, std::unordered_map<Pos::GlobalRegion, std::unordered_set<EntityId_t>>> Entities;
+        std::unordered_map<WorldId_t, std::unordered_map<Pos::GlobalRegion, std::unordered_set<LocalEntityId_t>>> Entities;
     } Subscribed;
 
 public:
@@ -115,14 +110,14 @@ public:
     
     // Регионы следят за чанками, которые видят игроки
     void onRegionsLost(WorldId_t worldId, const std::vector<Pos::GlobalRegion> &lost);
-    void onChunksEnterLost(WorldId_t worldId, Pos::GlobalRegion regionId, const std::unordered_set<Pos::Local16_u> &enter, const std::unordered_set<Pos::Local16_u> &lost);
+    void onChunksEnterLost(WorldId_t worldId, World *worldObj, Pos::GlobalRegion regionId, const std::unordered_set<Pos::Local16_u> &enter, const std::unordered_set<Pos::Local16_u> &lost);
     // Нужно фильтровать неотслеживаемые чанки
     void onChunksUpdate_Voxels(WorldId_t worldId, Pos::GlobalRegion regionPos, const std::unordered_map<Pos::Local16_u, const std::vector<VoxelCube>*> &chunks);
     void onChunksUpdate_Nodes(WorldId_t worldId, Pos::GlobalRegion regionPos, const std::unordered_map<Pos::Local16_u, const std::unordered_map<Pos::Local16_u, Node>*> &chunks);
     void onChunksUpdate_LightPrism(WorldId_t worldId, Pos::GlobalRegion regionPos, const std::unordered_map<Pos::Local16_u, const LightPrism*> &chunks);
 
-    void onEntityEnterLost(WorldId_t worldId, Pos::GlobalRegion regionPos, const std::unordered_set<EntityId_t> &enter, const std::unordered_set<EntityId_t> &lost);
-    void onEntitySwap(WorldId_t lastWorldId, Pos::GlobalRegion lastRegionPos, EntityId_t lastId, WorldId_t newWorldId, Pos::GlobalRegion newRegionPos, EntityId_t newId);
+    void onEntityEnterLost(WorldId_t worldId, Pos::GlobalRegion regionPos, const std::unordered_set<LocalEntityId_t> &enter, const std::unordered_set<LocalEntityId_t> &lost);
+    void onEntitySwap(WorldId_t lastWorldId, Pos::GlobalRegion lastRegionPos, LocalEntityId_t lastId, WorldId_t newWorldId, Pos::GlobalRegion newRegionPos, LocalEntityId_t newId);
     void onEntityUpdates(WorldId_t worldId, Pos::GlobalRegion regionPos, const std::vector<Entity> &entities);
 
     void onPortalEnterLost(const std::vector<void*> &enter, const std::vector<void*> &lost);

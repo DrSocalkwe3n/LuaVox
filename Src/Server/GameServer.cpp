@@ -19,6 +19,7 @@ GameServer::~GameServer() {
     RunThread.join();
     WorkDeadline.cancel();
     UseLock.wait_no_use();
+    LOG.info() << "Сервер уничтожен";
 }
 
 static thread_local std::vector<ContentViewCircle> TL_Circles;
@@ -270,7 +271,7 @@ void GameServer::run() {
             }
 
             // Конец
-            return;
+            break;
         }
 
         // 
@@ -313,6 +314,8 @@ void GameServer::run() {
             CurrentTickDuration += PerTickAdjustment;
         }
     }
+
+    LOG.info() << "Сервер завершил работу";
 }
 
 void GameServer::stepContent() {
@@ -547,10 +550,10 @@ void GameServer::stepWorlds() {
                     if(rPos != pRegion.first || pWorld.first != entity.WorldId) {
 
                         Region *toRegion = Expanse.Worlds[entity.WorldId]->forceLoadOrGetRegion(rPos);
-                        EntityId_t newId = toRegion->pushEntity(entity);
+                        LocalEntityId_t newId = toRegion->pushEntity(entity);
                         // toRegion->Entityes[newId].WorldId = Если мир изменился
 
-                        if(newId == EntityId_t(-1)) {
+                        if(newId == LocalEntityId_t(-1)) {
                             // В другом регионе нет места
                         } else {
                             entity.IsRemoved = true;
@@ -675,7 +678,7 @@ void GameServer::stepWorlds() {
                     doesNotObserve:
 
                     if(!newChunksSet.empty() || !lostChunks.empty())
-                        cec->onChunksEnterLost(pWorld.first, pRegion.first, newChunksSet, std::unordered_set<Pos::Local16_u>(lostChunks.begin(), lostChunks.end()));
+                        cec->onChunksEnterLost(pWorld.first, pWorld.second.get(), pRegion.first, newChunksSet, std::unordered_set<Pos::Local16_u>(lostChunks.begin(), lostChunks.end()));
 
                     // Нужно отправить полную информацию о новых наблюдаемых чанках наблюдателю
                     if(!newChunksSet.empty()) {
@@ -706,7 +709,7 @@ void GameServer::stepWorlds() {
 
                 // Проверка отслеживания сущностей
                 {
-                    std::vector<EntityId_t> newEntityes, lostEntityes;
+                    std::vector<LocalEntityId_t> newEntityes, lostEntityes;
                     for(size_t iter = 0; iter < region.Entityes.size(); iter++) {
                         Entity &entity = region.Entityes[iter];
 
@@ -724,7 +727,7 @@ void GameServer::stepWorlds() {
                         }
                     }
 
-                    std::unordered_set<EntityId_t> newEntityesSet(newEntityes.begin(), newEntityes.end());
+                    std::unordered_set<LocalEntityId_t> newEntityesSet(newEntityes.begin(), newEntityes.end());
 
                     {
                         auto iterR_W = subs.Entities.find(pWorld.first);
@@ -738,7 +741,7 @@ void GameServer::stepWorlds() {
                             goto doesNotObserveEntityes;
 
                         // Подходят ли уже наблюдаемые сущности под наблюдательные области
-                        for(EntityId_t eId : iterR_W_R->second) {
+                        for(LocalEntityId_t eId : iterR_W_R->second) {
                             if(eId >= region.Entityes.size()) {
                                 lostEntityes.push_back(eId);
                                 break;
@@ -762,13 +765,13 @@ void GameServer::stepWorlds() {
                         }
 
                         // Удалим чанки которые наблюдатель уже видит
-                        for(EntityId_t eId : iterR_W_R->second)
+                        for(LocalEntityId_t eId : iterR_W_R->second)
                             newEntityesSet.erase(eId);
                     }
 
                     doesNotObserveEntityes:
 
-                    cec->onEntityEnterLost(pWorld.first, pRegion.first, newEntityesSet, std::unordered_set<EntityId_t>(lostEntityes.begin(), lostEntityes.end()));
+                    cec->onEntityEnterLost(pWorld.first, pRegion.first, newEntityesSet, std::unordered_set<LocalEntityId_t>(lostEntityes.begin(), lostEntityes.end()));
                     // Отправить полную информацию о новых наблюдаемых сущностях наблюдателю
                 }
 

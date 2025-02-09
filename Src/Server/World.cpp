@@ -4,7 +4,9 @@
 namespace LV::Server {
 
 
-World::World(WorldId_t id) {
+World::World(DefWorldId_t defId)
+    : DefId(defId)
+{
 
 }
 

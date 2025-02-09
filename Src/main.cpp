@@ -1,7 +1,10 @@
 #include <boost/asio/buffer.hpp>
+#include <boost/asio/deadline_timer.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/detail/chrono.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/write.hpp>
+#include <boost/chrono/duration.hpp>
 #include <iostream>
 #include <memory>
 #include "Client/ServerSession.hpp"
@@ -18,6 +21,9 @@ coro<> runClient(asio::io_context &ioc, uint16_t port) {
 		tcp::socket sock = co_await Net::asyncConnectTo("localhost:"+std::to_string(port));
 		co_await Client::ServerSession::asyncAuthorizeWithServer(sock, "DrSocalkwe3n", "1password2", 1);
 		std::unique_ptr<Net::AsyncSocket> asock = co_await Client::ServerSession::asyncInitGameProtocol(ioc, std::move(sock));
+		asio::deadline_timer timer(ioc);
+		timer.expires_from_now(boost::posix_time::seconds(1));
+		co_await timer.async_wait();
 	} catch(const std::exception &exc) {
 		std::cout << exc.what() << std::endl;
 	}

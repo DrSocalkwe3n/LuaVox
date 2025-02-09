@@ -99,7 +99,7 @@ public:
                             .Voxel = {
                                 .Chunk = Pos::Local16_u(beg.x, beg.y, beg.z),
                                 .Index = static_cast<uint32_t>(iter),
-                                .Id = cube.Material
+                                .Id = cube.VoxelId
                             }
                         };
 
@@ -113,7 +113,7 @@ public:
 
     }
 
-    EntityId_t pushEntity(Entity &entity) {
+    LocalEntityId_t pushEntity(Entity &entity) {
         for(size_t iter = 0; iter < Entityes.size(); iter++) {
             Entity &obj = Entityes[iter];
 
@@ -130,19 +130,19 @@ public:
             return Entityes.size()-1;
         }
 
-        return EntityId_t(-1);
+        return LocalEntityId_t(-1);
     }
 };
 
 class World {
-    WorldId_t Id;
+    DefWorldId_t DefId;
 
 public:
     std::vector<Pos::GlobalRegion> NeedToLoad;
     std::unordered_map<Pos::GlobalRegion, std::unique_ptr<Region>> Regions;
 
 public:
-    World(WorldId_t id);
+    World(DefWorldId_t defId);
     ~World();
 
     /*
@@ -155,6 +155,8 @@ public:
     void onCEC_RegionsLost(ContentEventController *cec, const std::vector<Pos::GlobalRegion> &lost);
 
     Region* forceLoadOrGetRegion(Pos::GlobalRegion pos);
+
+    DefWorldId_t getDefId() const { return DefId; }
 };
 
 

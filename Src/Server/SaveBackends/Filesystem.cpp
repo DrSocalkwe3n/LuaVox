@@ -48,7 +48,7 @@ public:
             for(js::value &jvVoxel : jaVoxels) {
                 js::object &joVoxel = jvVoxel.as_object();
                 VoxelCube_Region cube;
-                cube.Material = joVoxel.at("Material").as_uint64();
+                cube.VoxelId = joVoxel.at("Material").as_uint64();
                 cube.Left.X = joVoxel.at("LeftX").as_uint64();
                 cube.Left.Y = joVoxel.at("LeftY").as_uint64();
                 cube.Left.Z = joVoxel.at("LeftZ").as_uint64();
@@ -74,7 +74,7 @@ public:
             js::array jaVoxels;
             for(const VoxelCube_Region &cube : data->Voxels) {
                 js::object joVoxel;
-                joVoxel["Material"] = cube.Material;
+                joVoxel["Material"] = cube.VoxelId;
                 joVoxel["LeftX"] = cube.Left.X;
                 joVoxel["LeftY"] = cube.Left.Y;
                 joVoxel["LeftZ"] = cube.Left.Z;

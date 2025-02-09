@@ -2,6 +2,7 @@
 #include "Common/Abstract.hpp"
 #include "RemoteClient.hpp"
 #include "Server/Abstract.hpp"
+#include "World.hpp"
 
 
 namespace LV::Server {
@@ -51,7 +52,11 @@ void ContentEventController::onRegionsLost(WorldId_t worldId, const std::vector<
     }
 }
 
-void ContentEventController::onChunksEnterLost(WorldId_t worldId, Pos::GlobalRegion regionPos, const std::unordered_set<Pos::Local16_u> &enter, const std::unordered_set<Pos::Local16_u> &lost) {
+void ContentEventController::onChunksEnterLost(WorldId_t worldId, World *worldObj, Pos::GlobalRegion regionPos, const std::unordered_set<Pos::Local16_u> &enter, const std::unordered_set<Pos::Local16_u> &lost) {    
+    if(!Subscribed.Chunks.contains(worldId)) {
+        Remote->prepareWorldNew(worldId, worldObj);
+    }
+    
     std::unordered_set<Pos::Local16_u> &chunks = Subscribed.Chunks[worldId][regionPos];
     
     chunks.insert(enter.begin(), enter.end());
@@ -66,6 +71,11 @@ void ContentEventController::onChunksEnterLost(WorldId_t worldId, Pos::GlobalReg
         );
 
         Remote->prepareChunkRemove(worldId, chunkPos);
+    }
+
+    if(Subscribed.Chunks[worldId].empty()) {
+        Subscribed.Chunks.erase(Subscribed.Chunks.find(worldId));
+        Remote->prepareWorldRemove(worldId);
     }
 }
 
@@ -145,7 +155,7 @@ void ContentEventController::onChunksUpdate_LightPrism(WorldId_t worldId, Pos::G
 }
 
 void ContentEventController::onEntityEnterLost(WorldId_t worldId, Pos::GlobalRegion regionPos, 
-    const std::unordered_set<EntityId_t> &enter, const std::unordered_set<EntityId_t> &lost)
+    const std::unordered_set<LocalEntityId_t> &enter, const std::unordered_set<LocalEntityId_t> &lost)
 {
     auto pWorld = Subscribed.Entities.find(worldId);
     if(pWorld == Subscribed.Entities.end()) {
@@ -161,9 +171,9 @@ void ContentEventController::onEntityEnterLost(WorldId_t worldId, Pos::GlobalReg
         pRegion = pWorld->second.find(regionPos);
     }
 
-    std::unordered_set<EntityId_t> &entityesId = pRegion->second;
+    std::unordered_set<LocalEntityId_t> &entityesId = pRegion->second;
 
-    for(EntityId_t eId : lost) {
+    for(LocalEntityId_t eId : lost) {
         entityesId.erase(eId);
     }
     
@@ -177,13 +187,13 @@ void ContentEventController::onEntityEnterLost(WorldId_t worldId, Pos::GlobalReg
     }
 
     // Сообщить Remote
-    for(EntityId_t eId : lost) {
-        Remote->prepareEntityRemove(worldId, regionPos, eId);
+    for(LocalEntityId_t eId : lost) {
+        Remote->prepareEntityRemove({worldId, regionPos, eId});
     }
 }
 
 void ContentEventController::onEntitySwap(WorldId_t lastWorldId, Pos::GlobalRegion lastRegionPos, 
-    EntityId_t lastId, WorldId_t newWorldId, Pos::GlobalRegion newRegionPos, EntityId_t newId)
+    LocalEntityId_t lastId, WorldId_t newWorldId, Pos::GlobalRegion newRegionPos, LocalEntityId_t newId)
 {
     // Проверим отслеживается ли эта сущность нами
     auto lpWorld = Subscribed.Entities.find(lastWorldId);
@@ -210,13 +220,13 @@ void ContentEventController::onEntitySwap(WorldId_t lastWorldId, Pos::GlobalRegi
             lpRegion->second.erase(lpceId);
             npRegion->second.insert(newId);
 
-            Remote->prepareEntitySwap(lastWorldId, lastRegionPos, lastId, newWorldId, newRegionPos, newId);
+            Remote->prepareEntitySwap({lastWorldId, lastRegionPos, lastId}, {newWorldId, newRegionPos, newId});
 
             goto entitySwaped;
         }
     }
 
-    Remote->prepareEntityRemove(lastWorldId, lastRegionPos, lastId);
+    Remote->prepareEntityRemove({lastWorldId, lastRegionPos, lastId});
 
     entitySwaped:
     return;
@@ -239,7 +249,7 @@ void ContentEventController::onEntityUpdates(WorldId_t worldId, Pos::GlobalRegio
         if(!lpRegion->second.contains(eId))
             continue;
 
-        Remote->prepareEntityUpdate(worldId, regionPos, eId, &entities[eId]);
+        Remote->prepareEntityUpdate({worldId, regionPos, eId}, &entities[eId]);
     }
 }
 

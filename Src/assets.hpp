@@ -3,7 +3,7 @@
 #include <istream>
 #include <memory>
 
-namespace AL {
+namespace LV {
 
 namespace detail {
 struct membuf : std::streambuf {

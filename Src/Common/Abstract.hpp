@@ -32,7 +32,7 @@ struct Local16 {
 
     using Key = uint16_t;
     operator Key() const {
-        return Key(X) | (Key(Y) << 4) | (Key(Z) << 8);
+        return Key(uint8_t(X)) | (Key(uint8_t(Y) << 4)) | (Key(uint8_t(Z)) << 8);
     };
 
     Local4_u left() const { return Local4_u{uint8_t(uint16_t(X) >> 2), uint8_t(uint16_t(Y) >> 2), uint8_t(uint16_t(Z) >> 2)}; }
@@ -74,18 +74,18 @@ struct GlobalNode {
 
     using Key = uint64_t;
     operator Key() const {
-        return Key(X) | (Key(Y) << 20) | (Key(Z) << 40);
+        return Key(uint32_t(X)) | (Key(uint32_t(Y) << 20)) | (Key(uint32_t(Z)) << 40);
     };
 
     auto operator<=>(const GlobalNode&) const = default;
 };
 
 struct GlobalChunk {
-    int16_t X : 16, Y : 16, Z : 16;
+    int16_t X, Y, Z;
 
     using Key = uint64_t;
     operator Key() const {
-        return Key(X) | (Key(Y) << 16) | (Key(Z) << 32);
+        return Key(uint16_t(X)) | (Key(uint16_t(Y)) << 16) | (Key(uint16_t(Z)) << 32);
     };
 
     auto operator<=>(const GlobalChunk&) const = default;
@@ -96,7 +96,7 @@ struct GlobalRegion {
 
     using Key = uint64_t;
     operator Key() const {
-        return Key(X) | (Key(Y) << 12) | (Key(Z) << 24);
+        return Key(uint16_t(X)) | (Key(uint16_t(Y) << 12)) | (Key(uint16_t(Z)) << 24);
     };
 
     auto operator<=>(const GlobalRegion&) const = default;
@@ -117,6 +117,20 @@ struct Object_t {
 struct LightPrism {
     uint8_t R : 2, G : 2, B : 2;
 };
+
+// Идентификаторы на стороне клиента
+using TextureId_c = uint16_t;
+using SoundId_c = uint16_t;
+using ModelId_c = uint16_t;
+
+using DefWorldId_c = uint8_t;
+using DefVoxelId_c = uint16_t;
+using DefNodeId_c = uint16_t;
+using DefPortalId_c = uint8_t;
+using WorldId_c = uint8_t;
+using PortalId_c = uint8_t;
+using DefEntityId_c = uint16_t;
+using EntityId_c = uint16_t;
 
 }
 

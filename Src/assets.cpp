@@ -9,7 +9,7 @@
 extern std::unordered_map<std::string, std::tuple<const char*, const char*>> _binary_assets_symbols;
 namespace fs = std::filesystem;
 
-namespace AL {
+namespace LV {
 
 Resource::Resource() = default;
 Resource::~Resource() = default;

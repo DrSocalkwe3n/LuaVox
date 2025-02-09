@@ -8,20 +8,6 @@
 
 namespace LV::Server {
 
-// Идентификаторы на стороне клиента
-using TextureId_c = uint16_t;
-using SoundId_c = uint16_t;
-using ModelId_c = uint16_t;
-
-using DefWorldId_c = uint8_t;
-using WorldId_c = uint8_t;
-using VoxelId_c = uint16_t;
-using NodeId_c = uint16_t;
-using DefPortalId_c = uint8_t;
-using PortalId_c = uint8_t;
-using DefEntityId_c = uint16_t;
-using EntityId_c = uint16_t;
-
 using ResourceId_t = uint32_t;
 
 // Двоичные данные

@@ -1,6 +1,7 @@
 #include "GameServer.hpp"
 #include "Common/Abstract.hpp"
 #include "Common/Net.hpp"
+#include "Common/Packets.hpp"
 #include "Server/Abstract.hpp"
 #include "Server/ContentEventController.hpp"
 #include <boost/json/parse.hpp>
@@ -248,7 +249,7 @@ void GameServer::run() {
         if(IsGoingShutdown) {
             // Отключить игроков
             for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
-                cec->Remote->shutdown(ShutdownReason);
+                cec->Remote->shutdown(EnumDisconnect::ByInterface, ShutdownReason);
             }
             
             // Сохранить данные
@@ -259,7 +260,7 @@ void GameServer::run() {
                 auto lock = External.NewConnectedPlayers.lock_write();
 
                 for(std::unique_ptr<RemoteClient> &client : *lock) {
-                    client->shutdown(ShutdownReason);
+                    client->shutdown(EnumDisconnect::ByInterface, ShutdownReason);
                 }
 
                 bool hasNewConnected = !lock->empty();
@@ -361,6 +362,14 @@ void GameServer::stepPlayers() {
     for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
         // Убрать отключившихся
         if(!cec->Remote->isConnected()) {
+            for(auto wPair : cec->SubscribedRegions) {
+                auto wIter = Expanse.Worlds.find(wPair.first);
+                if(wIter == Expanse.Worlds.end())
+                    continue;
+
+                wIter->second->onCEC_RegionsLost(cec.get(), wPair.second);
+            }
+            
             cec.reset();
         }
 

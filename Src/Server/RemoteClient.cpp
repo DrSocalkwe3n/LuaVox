@@ -14,7 +14,11 @@
 namespace LV::Server {
 
 RemoteClient::~RemoteClient() {
-    shutdown("~RemoteClient()");
+    shutdown(EnumDisconnect::ByInterface, "~RemoteClient()");
+    if(Socket.isAlive()) {
+        Socket.closeRead();
+    }
+    
     UseLock.wait_no_use();
 }
 
@@ -23,7 +27,7 @@ coro<> RemoteClient::run() {
 
     try {
         while(!IsGoingShutdown && IsConnected) {
-            co_await Socket.read<uint8_t>();
+            co_await readPacket(Socket);
         }
     } catch(const std::exception &exc) {
         if(const auto *errc = dynamic_cast<const boost::system::system_error*>(&exc); 
@@ -40,7 +44,7 @@ coro<> RemoteClient::run() {
     co_return;
 }
 
-void RemoteClient::shutdown(const std::string reason) {
+void RemoteClient::shutdown(EnumDisconnect type, const std::string reason) {
     if(IsGoingShutdown)
         return;
 
@@ -48,7 +52,17 @@ void RemoteClient::shutdown(const std::string reason) {
 
     NextPacket << (uint8_t) ToClient::L1::System
         << (uint8_t) ToClient::L2System::Disconnect
-        << reason;
+        << (uint8_t) type << reason;
+
+    std::string info;
+    if(type == EnumDisconnect::ByInterface)
+        info = "по запросу интерфейса " + reason;
+    else if(type == EnumDisconnect::CriticalError)
+        info = "на сервере произошла критическая ошибка " + reason;
+    else if(type == EnumDisconnect::ProtocolError)
+        info = "ошибка протокола (сервер) " + reason;
+
+    LOG.info() << "Игрок '" << Username << "' отключился " << info;
 }
 
 
@@ -70,7 +84,7 @@ void RemoteClient::prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk
     std::unordered_set<DefVoxelId_t> NeedVoxelsSet(NeedVoxels.begin(), NeedVoxels.end());
 
     // Собираем информацию о конвертации идентификаторов
-    std::unordered_map<DefVoxelId_t, VoxelId_c> LocalRemapper;
+    std::unordered_map<DefVoxelId_t, DefVoxelId_c> LocalRemapper;
     for(DefVoxelId_t vId : NeedVoxelsSet) {
         LocalRemapper[vId] = ResRemap.DefVoxels.toClient(vId);
     }
@@ -87,7 +101,7 @@ void RemoteClient::prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk
                     // Определение больше не используется
 
                     ResUses.DefVoxel.erase(ResUses.DefVoxel.find(id));
-                    VoxelId_c cId = ResRemap.DefVoxels.erase(id);
+                    DefVoxelId_c cId = ResRemap.DefVoxels.erase(id);
                     // TODO: отправить пакет потери идентификатора
                     LOG.debug() << "Определение вокселя потеряно: " << id << " -> " << cId;
                 }
@@ -99,7 +113,7 @@ void RemoteClient::prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk
                 if(++ResUses.DefVoxel[id] == 1) {
                     // Определение только появилось
                     NextRequest.NewVoxels.push_back(id);
-                    VoxelId_c cId = ResRemap.DefVoxels.toClient(id);
+                    DefVoxelId_c cId = ResRemap.DefVoxels.toClient(id);
                     LOG.debug() << "Новое определение вокселя: " << id << " -> " << cId;
                 }
             }
@@ -108,24 +122,23 @@ void RemoteClient::prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk
         prevSet = std::move(nextSet);
     }
 
-    // TODO: отправить новую информацию о расположении вокселей
-    LOG.debug() << "Новый чанк: " << worldId << " / " << chunkPos.X << ":" << chunkPos.Y << ":" << chunkPos.Z;
-    // Packet Id
-    // NextPacket << uint16_t(0);
-    // NextPacket << wcId << Pos::GlobalChunk::Key(chunkPos);
-    // NextPacket << uint16_t(voxels.size());
+    LOG.debug() << "Воксели чанка: " << worldId << " / " << chunkPos.X << ":" << chunkPos.Y << ":" << chunkPos.Z;
 
-    // for(const VoxelCube &cube : voxels) {
-    //     NextPacket << LocalRemapper[cube.VoxelId]
-    //         << cube.Left.X << cube.Left.Y << cube.Left.Z
-    //         << cube.Right.X << cube.Right.Y << cube.Right.Z;
-    // }
+    NextPacket << (uint8_t) ToClient::L1::Content
+        << (uint8_t) ToClient::L2Content::ChunkVoxels << wcId 
+        << Pos::GlobalChunk::Key(chunkPos);
+    NextPacket << uint16_t(voxels.size());
+    // TODO: 
+    for(const VoxelCube &cube : voxels) {
+        NextPacket << LocalRemapper[cube.VoxelId]
+            << cube.Left.X << cube.Left.Y << cube.Left.Z
+            << cube.Right.X << cube.Right.Y << cube.Right.Z;
+    }
 }
 
 void RemoteClient::prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, 
     const std::unordered_map<Pos::Local16_u, Node> &nodes)
 {
-    // Перебиндить идентификаторы нод
 
 }
 
@@ -144,7 +157,7 @@ void RemoteClient::prepareChunkRemove(WorldId_t worldId, Pos::GlobalChunk chunkP
             // Определение больше не используется
 
             ResUses.DefVoxel.erase(ResUses.DefVoxel.find(id));
-            VoxelId_c cId = ResRemap.DefVoxels.erase(id);
+            DefVoxelId_c cId = ResRemap.DefVoxels.erase(id);
             // TODO: отправить пакет потери идентификатора
             LOG.debug() << "Определение вокселя потеряно: " << id << " -> " << cId;
         }
@@ -154,7 +167,7 @@ void RemoteClient::prepareChunkRemove(WorldId_t worldId, Pos::GlobalChunk chunkP
     WorldId_c cwId = ResRemap.Worlds.toClient(worldId);
     NextPacket << (uint8_t) ToClient::L1::Content
         << (uint8_t) ToClient::L2Content::RemoveChunk
-        << cwId << chunkPos.X << chunkPos.Y << chunkPos.Z;
+        << cwId << Pos::GlobalChunk::Key(chunkPos);
 }
 
 void RemoteClient::prepareWorldNew(WorldId_t worldId, World* world)
@@ -166,7 +179,7 @@ void RemoteClient::prepareWorldNew(WorldId_t worldId, World* world)
         DefWorldId_c cdId = ResRemap.DefWorlds.toClient(res.DefId);
         NextRequest.NewWorlds.push_back(res.DefId);
 
-        LOG.debug() << "Новое определение мира: " << res.DefId << " -> " << cdId;
+        LOG.debug() << "Новое определение мира: " << res.DefId << " -> " << int(cdId);
         NextPacket << (uint8_t) ToClient::L1::Definition
             << (uint8_t) ToClient::L2Definition::World
             << cdId;
@@ -468,7 +481,7 @@ void RemoteClient::informateDefVoxel(const std::unordered_map<DefVoxelId_t, void
         if(!ResUses.DefWorld.contains(sId))
             continue;
 
-        VoxelId_c cId = ResRemap.DefVoxels.toClient(sId);
+        DefVoxelId_c cId = ResRemap.DefVoxels.toClient(sId);
 
         NextPacket << (uint8_t) ToClient::L1::Definition
             << (uint8_t) ToClient::L2Definition::Voxel
@@ -483,7 +496,7 @@ void RemoteClient::informateDefNode(const std::unordered_map<DefNodeId_t, void*>
         if(!ResUses.DefNode.contains(sId))
             continue;
 
-        NodeId_c cId = ResRemap.DefNodes.toClient(sId);
+        DefNodeId_c cId = ResRemap.DefNodes.toClient(sId);
 
         NextPacket << (uint8_t) ToClient::L1::Definition
             << (uint8_t) ToClient::L2Definition::Node
@@ -518,6 +531,46 @@ void RemoteClient::informateDefPortals(const std::unordered_map<DefPortalId_t, v
         NextPacket << (uint8_t) ToClient::L1::Definition
             << (uint8_t) ToClient::L2Definition::Portal
             << cId;
+    }
+}
+
+void RemoteClient::protocolError() {
+    shutdown(EnumDisconnect::ProtocolError, "Ошибка протокола");
+}
+
+coro<> RemoteClient::readPacket(Net::AsyncSocket &sock) {
+    uint8_t first = co_await sock.read<uint8_t>();
+
+    switch((ToServer::L1) first) {
+    case ToServer::L1::System: co_await rP_System(sock);       co_return;
+    default:
+        protocolError();
+    }
+}
+
+coro<> RemoteClient::rP_System(Net::AsyncSocket &sock) {
+    uint8_t second = co_await sock.read<uint8_t>();
+
+    switch((ToServer::L2System) second) {
+    case ToServer::L2System::InitEnd:
+
+        co_return;
+    case ToServer::L2System::Disconnect:
+    {
+        EnumDisconnect type = (EnumDisconnect) co_await sock.read<uint8_t>();
+        shutdown(EnumDisconnect::ByInterface, "Вы были отключены от игры");
+        std::string reason;
+        if(type == EnumDisconnect::CriticalError)
+            reason = ": Критическая ошибка";
+        else
+            reason = ": Ошибка протокола (клиент)";
+
+        LOG.info() << "Игрок '" << Username << "' отключился" << reason;
+        
+        co_return;
+    }
+    default:
+        protocolError();
     }
 }
 

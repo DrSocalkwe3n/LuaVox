@@ -27,6 +27,7 @@ public:
 
         co_spawn(run());
         IsAlive.store(true);
+        IsAlive.notify_all();
     }
 
     ~Server();
@@ -78,9 +79,24 @@ protected:
     public:
         Packet() = default;
         Packet(const Packet&) = default;
-        Packet(Packet&&) = default;
+        Packet(Packet &&obj)
+            : Size(obj.Size), Pages(std::move(obj.Pages))
+        {
+            obj.Size = 0;
+        }
+
         Packet& operator=(const Packet&) = default;
-        Packet& operator=(Packet&&) = default;
+
+        Packet& operator=(Packet &&obj) {
+            if(&obj == this)
+                return *this;
+
+            Size = obj.Size;
+            Pages = std::move(obj.Pages);
+            obj.Size = 0;
+
+            return *this;
+        }
 
         inline Packet& write(const std::byte *data, uint16_t size) {
             assert(Size+size < MAX_PACKET_SIZE);
@@ -213,17 +229,24 @@ protected:
             boost::asio::ip::tcp::no_delay optionNoDelay(true); // Отключает попытки объёденить данные в крупные пакеты
             Socket.set_option(optionNoDelay);
 
-            asio::co_spawn(ioc, runSender(SendPackets.Context), asio::detached);
+            co_spawn(runSender(SendPackets.Context));
         }
 
         ~AsyncSocket();
         
         void pushPackets(std::vector<Packet> *simplePackets, std::vector<SmartPacket> *smartPackets = nullptr);
+        
+        void pushPacket(Packet &&simplePacket) {
+            std::vector<Packet> out(1);
+            out[0] = std::move(simplePacket);
+            pushPackets(&out);
+        }
 
         std::string getError() const;
         bool isAlive() const;
 
         coro<> read(std::byte *data, uint32_t size);
+        void closeRead();
 
         template<typename T, std::enable_if_t<std::is_integral_v<T> or std::is_same_v<T, std::string>, int> = 0>
         coro<T> read() {

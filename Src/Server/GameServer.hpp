@@ -114,7 +114,8 @@ public:
 
 
     void shutdown(const std::string reason) {
-        ShutdownReason = reason;
+        if(ShutdownReason.empty())
+            ShutdownReason = reason;
         IsGoingShutdown = true;
     }
 

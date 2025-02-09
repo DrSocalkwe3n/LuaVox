@@ -112,7 +112,7 @@ public:
                 return;
 
             std::atomic_bool flag = false;
-            Deadline.async_wait([&](boost::system::error_code errc) { flag.store(true); });
+            Deadline.async_wait([&](boost::system::error_code errc) { flag.store(true); flag.notify_all(); });
             lock.unlock();
             flag.wait(false);
         }
@@ -129,7 +129,7 @@ public:
                 return;
 
             std::atomic_bool flag = false;
-            Deadline.async_wait([&](boost::system::error_code errc) { flag.store(true); });
+            Deadline.async_wait([&](boost::system::error_code errc) { flag.store(true); flag.notify_all(); });
             lock.unlock();
             flag.wait(false);
         }

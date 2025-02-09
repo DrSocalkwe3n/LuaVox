@@ -1,8 +1,13 @@
+#include <boost/asio/io_context.hpp>
 #include <filesystem>
 #include <memory>
 #include <mutex>
 #include <thread>
 #include "Vulkan.hpp"
+#include "Client/ServerSession.hpp"
+#include "Common/Async.hpp"
+#include "Common/Net.hpp"
+#include "assets.hpp"
 #include "imgui.h"
 #include <GLFW/glfw3.h>
 #ifdef HAS_IMGUI
@@ -20,10 +25,22 @@
 #include <exception>
 #include <functional>
 #include <png++/png.hpp>
+#include "VulkanRenderSession.hpp"
+#include <Server/GameServer.hpp>
 
 extern void LoadSymbolsVulkan(TOS::DynamicLibrary &library);
 
-namespace TOS::VK {
+namespace LV::Client::VK {
+
+struct ServerObj {
+	Server::GameServer GS;
+	Net::Server LS;
+
+	ServerObj(asio::io_context &ioc)
+		: GS(ioc, ""), LS(ioc, [&](tcp::socket sock) -> coro<> { co_await GS.pushSocketConnect(std::move(sock)); }, 7890)
+	{
+	}
+};
 
 ByteBuffer loadPNG(std::ifstream &&read, int &width, int &height, bool &hasAlpha, bool flipOver)
 {
@@ -55,35 +72,38 @@ ByteBuffer loadPNG(std::istream &&read, int &width, int &height, bool &hasAlpha,
 	return buff;
 }
 
-IWindowCallbackListener::~IWindowCallbackListener() = default;
-
-void IWindowCallbackListener::onFrameBufferResize(uint32_t width, uint32_t height) {}
-void IWindowCallbackListener::onScale(float x, float y) {}
-void IWindowCallbackListener::onMouseClick(int btn, int state, int mods) {}
-void IWindowCallbackListener::onMousePos(double x, double y) {}
-void IWindowCallbackListener::onKeyboardClick(int key, int scancode, int action, int mods) {}
-void IWindowCallbackListener::onFocus(int focused) {}
-
-Vulkan::Vulkan(uint16_t width, uint16_t height)
+Vulkan::Vulkan(asio::io_context &ioc)
+	: AsyncObject(ioc), GuardLock(ioc.get_executor())
 {
-	if(width)
-		Screen.Width = width;
-	if(height)
-		Screen.Height = height;
+	Screen.Width = 1920/2;
+	Screen.Height = 1080/2;
 	getSettingsNext() = getBestSettings();
+	reInit();
+
+    addImGUIFont(LV::getResource("default.ttf")->makeView());
+	Game.ImGuiInterfaces.push_back(&Vulkan::gui_MainMenu);
+
+	Game.MainThread = std::thread([&]() {
+		auto useLock = Game.UseLock.lock();
+		run(); 
+		GuardLock.reset();
+
+		if(Game.Session) {
+			Game.Session->shutdown(EnumDisconnect::ByInterface);
+			Game.Session = nullptr;
+			Game.RSession = nullptr;
+		}
+
+		if(Game.Server) {
+			Game.Server->GS.shutdown("Завершение работы из-за остановки клиента");
+			Game.Server = nullptr;
+		}
+	});
 }
 
 Vulkan::~Vulkan()
 {
-	WindowEventListener = nullptr;
-	for(size_t watchdog = 0; watchdog < 100 && isAlive(); watchdog++)
-	{
-		glfwSetWindowShouldClose(Graphics.Window, 1);
-		Time::sleep3(100);
-	}
-
-	if(isAlive())
-		LOGGER.error() << "WatchDog: Не дождались завершения потока рендера в течении 10 секунд";
+	Game.UseLock.wait_no_use();
 
 	for(std::shared_ptr<IVulkanDependent> dependent : ROS_Dependents)
 		dependent->free(this);
@@ -96,6 +116,8 @@ Vulkan::~Vulkan()
 		glfwDestroyWindow(Graphics.Window);
 		Graphics.Window = nullptr;
 	}
+
+	Game.MainThread.join();
 }
 
 void Vulkan::run()
@@ -122,8 +144,29 @@ void Vulkan::run()
 			}
 		}
 
-		if(CallBeforeDraw)
-			CallBeforeDraw(this);
+		if(glfwWindowShouldClose(Graphics.Window)) {
+			NeedShutdown = true;
+		}
+
+		if(Game.Session) {
+			ServerSession &sobj = *Game.Session;
+
+			// Спрятать или показать курсор
+			{
+				int mode = glfwGetInputMode(Graphics.Window, GLFW_CURSOR);
+				if(mode == GLFW_CURSOR_HIDDEN && sobj.CursorMode != ISurfaceEventListener::EnumCursorMoveMode::MoveAndHidden)
+					glfwSetInputMode(Graphics.Window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+				else if(mode == GLFW_CURSOR_NORMAL && sobj.CursorMode != ISurfaceEventListener::EnumCursorMoveMode::Default) {
+					glfwSetInputMode(Graphics.Window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
+					glfwSetCursorPos(Graphics.Window, Screen.Width/2., Screen.Height/2.);
+				}
+			}
+
+
+		}
+
+		// if(CallBeforeDraw)
+		// 	CallBeforeDraw(this);
 
 		glfwPollEvents();
 
@@ -208,8 +251,8 @@ void Vulkan::run()
 			vkCmdSetScissor(Graphics.CommandBufferRender, 0, 1, &scissor);
 		}
 
-		if(CallOnDraw)
-			CallOnDraw(this, 0, Graphics.CommandBufferRender);
+		// if(CallOnDraw)
+		// 	CallOnDraw(this, 0, Graphics.CommandBufferRender);
 
 		vkCmdEndRenderPass(Graphics.CommandBufferRender);
 		
@@ -254,7 +297,7 @@ void Vulkan::run()
 		{
 			const VkClearValue clear_values[2] =
 			{
-				[0] = { .color = { .float32 = { 0.2f, 0.2f, 0.4f, 1.2f }}},
+				[0] = { .color = { .float32 = { 0.1f, 0.1f, 0.1f, 1.0f }}},
 				[1] = { .depthStencil = { 1, 0 } },
 			};
 		
@@ -279,12 +322,13 @@ void Vulkan::run()
 		ImGui_ImplVulkan_NewFrame();
 		ImGui_ImplGlfw_NewFrame();
 		ImGui::NewFrame();
-		#endif
 
-		if(CallOnDraw)
-			CallOnDraw(this, 1, Graphics.CommandBufferRender);
+		ImGui::SetNextWindowPos({0, 0});
+		ImGui::SetNextWindowSize({(float) Screen.Width, (float) Screen.Height});
 
-		#ifdef HAS_IMGUI
+		assert(Game.ImGuiInterfaces.size());
+		(this->*Game.ImGuiInterfaces.back())();
+
 		ImGui::Render();
 		ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), Graphics.CommandBufferRender);
 		#endif
@@ -819,45 +863,52 @@ void Vulkan::glfwCallbackOnResize(GLFWwindow *window, int width, int height)
 		handler->freeSwapchains();
 		handler->buildSwapchains();
 
-		if(handler->WindowEventListener)
-			handler->WindowEventListener->onFrameBufferResize(width, height);
+		if(handler->Game.Session)
+			handler->Game.Session->onResize(width, height);
 	}
 }
 
 void Vulkan::glfwCallbackOnMouseButton(GLFWwindow* window, int button, int action, int mods)
 {
 	Vulkan *handler = (Vulkan*) glfwGetWindowUserPointer(window);
-	if(handler && handler->WindowEventListener)
-		handler->WindowEventListener->onMouseClick(button, action, mods);
+
+	if(handler->Game.Session)
+		handler->Game.Session->onCursorBtn((ISurfaceEventListener::EnumCursorBtn) button, action);
 }
 
 void Vulkan::glfwCallbackOnCursorPos(GLFWwindow* window, double xpos, double ypos)
 {
 	Vulkan *handler = (Vulkan*) glfwGetWindowUserPointer(window);
-	if(handler && handler->WindowEventListener)
-		handler->WindowEventListener->onMousePos(xpos, ypos);
+
+	if(handler->Game.Session) {
+		ServerSession &sobj = *handler->Game.Session;
+		if(sobj.CursorMode == ISurfaceEventListener::EnumCursorMoveMode::Default) {
+			sobj.onCursorPosChange((int32_t) xpos, (int32_t) ypos);
+		} else {
+			glfwSetCursorPos(handler->Graphics.Window, handler->Screen.Width/2., handler->Screen.Height/2.);
+			sobj.onCursorMove(xpos-handler->Screen.Width/2., handler->Screen.Height/2.-ypos);
+		}
+	}
 }
 
 void Vulkan::glfwCallbackOnScale(GLFWwindow* window, float xscale, float yscale)
 {
 	Vulkan *handler = (Vulkan*) glfwGetWindowUserPointer(window);
-	if(handler && handler->WindowEventListener)
-		handler->WindowEventListener->onScale(xscale, yscale);
 
 }
 
 void Vulkan::glfwCallbackOnKey(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
 	Vulkan *handler = (Vulkan*) glfwGetWindowUserPointer(window);
-	if(handler && handler->WindowEventListener)
-		handler->WindowEventListener->onKeyboardClick(key, scancode, action, mods);
+	if(handler->Game.Session)
+		handler->Game.Session->onKeyboardBtn(key, action);
 }
 
 void Vulkan::glfwCallbackOnFocus(GLFWwindow* window, int focused)
 {
 	Vulkan *handler = (Vulkan*) glfwGetWindowUserPointer(window);
-	if(handler && handler->WindowEventListener)
-		handler->WindowEventListener->onFocus(focused);
+	if(handler->Game.Session)
+		handler->Game.Session->onChangeFocusState(focused);
 }
 
 void Vulkan::checkLibrary()
@@ -1066,7 +1117,7 @@ void Vulkan::checkLibrary()
 		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 		//glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
 
-		Graphics.Window = glfwCreateWindow(Screen.Width, Screen.Height, "Duckout", nullptr, nullptr);
+		Graphics.Window = glfwCreateWindow(Screen.Width, Screen.Height, "LuaVox", nullptr, nullptr);
 		if (!Graphics.Window)
 		{
 			const char *error_msg;
@@ -1716,11 +1767,9 @@ void Vulkan::deInitVulkan()
 			if(Graphics.ImGuiDescPool)
 				vkDestroyDescriptorPool(Graphics.Device, Graphics.ImGuiDescPool, nullptr);
 
-
 			// Удаляем SwapChain
 			if(Graphics.Swapchain)
 				vkDestroySwapchainKHR(Graphics.Device, Graphics.Swapchain, nullptr);
-
 
 			// Очистка буферов команд
 			if(Graphics.CommandBufferData)
@@ -1728,7 +1777,6 @@ void Vulkan::deInitVulkan()
 
 			if(Graphics.CommandBufferRender)
 				vkFreeCommandBuffers(Graphics.Device, Graphics.Pool, 1, &Graphics.CommandBufferRender);
-
 
 			// Освобождение пула команд
 			if(Graphics.Pool)
@@ -1739,8 +1787,8 @@ void Vulkan::deInitVulkan()
 				vkDestroyRenderPass(Graphics.Device, Graphics.RenderPass, nullptr);
 
 			// Освобождение виртуального устройства
-			if(Graphics.Device)
-				vkDestroyDevice(Graphics.Device, nullptr);
+			//if(Graphics.Device)
+			//	vkDestroyDevice(Graphics.Device, nullptr);
 		}
 
 		if(Graphics.Surface)
@@ -1837,7 +1885,7 @@ Vulkan& Vulkan::operator<<(std::shared_ptr<IVulkanDependent> dependent)
 	return *this;
 }
 
-void Vulkan::addImGUIFont(const ByteBuffer &font) {
+void Vulkan::addImGUIFont(std::string_view view) {
 	ImFontConfig fontConfig;
 	fontConfig.MergeMode = false;
 	fontConfig.PixelSnapH = true;
@@ -1845,15 +1893,120 @@ void Vulkan::addImGUIFont(const ByteBuffer &font) {
 	fontConfig.OversampleV = 1;
 
 	auto &io = ImGui::GetIO();
-	uint8_t *fontPtr = new uint8_t[font.size()];
-	std::copy(font.begin(), font.end(), fontPtr);
+	uint8_t *fontPtr = new uint8_t[view.size()];
+	std::copy(view.begin(), view.end(), fontPtr);
 	try{
-		io.Fonts->AddFontFromMemoryTTF(fontPtr, font.size(), 16.0f, &fontConfig, io.Fonts->GetGlyphRangesCyrillic());
+		io.Fonts->AddFontFromMemoryTTF(fontPtr, view.size(), 16.0f, &fontConfig, io.Fonts->GetGlyphRangesCyrillic());
 	} catch(...) {
 		delete[] fontPtr;
 		throw;
 	}
 }
+
+void Vulkan::gui_MainMenu() {
+	if(!ImGui::Begin("MainMenu", nullptr, ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove))
+		return;
+
+	static struct {
+		char Address[256] = "localhost", Username[256], Password[256];
+		bool Cancel = false, InProgress = false;
+		std::string Progress;
+
+		std::unique_ptr<Net::AsyncSocket> Socket;
+
+		coro<> connect(asio::io_context &ioc) {
+			try {
+				std::string a(Address, strlen(Address));
+				std::string u(Username, strlen(Username));
+				std::string p(Password, strlen(Password));
+
+				tcp::socket sock = co_await Net::asyncConnectTo(a, [&](const std::string &text) {
+					Progress += text;
+				});
+
+				co_await Client::ServerSession::asyncAuthorizeWithServer(sock, u, p, 1, [&](const std::string &text) {
+					Progress += text;
+				});
+				
+				Socket = co_await Client::ServerSession::asyncInitGameProtocol(ioc, std::move(sock), [&](const std::string &text) {
+					Progress += text;
+				});
+			} catch(const std::exception &exc) {
+				Progress += "\n-> ";
+				Progress += exc.what();
+			}
+
+			InProgress = false;
+
+			co_return;
+		}
+	} ConnectionProgress;
+
+	ImGui::InputText("Address", ConnectionProgress.Address, sizeof(ConnectionProgress.Address));
+	ImGui::InputText("Username", ConnectionProgress.Username, sizeof(ConnectionProgress.Username));
+	ImGui::InputText("Password", ConnectionProgress.Password, sizeof(ConnectionProgress.Password), ImGuiInputTextFlags_Password);
+	
+	if(!ConnectionProgress.InProgress && !ConnectionProgress.Socket) {
+		if(ImGui::Button("Подключиться")) {
+			ConnectionProgress.InProgress = true;
+			ConnectionProgress.Cancel = false;
+			ConnectionProgress.Progress.clear();
+			co_spawn(ConnectionProgress.connect(IOC));
+		} 
+		
+		if(!Game.Server) {
+			if(ImGui::Button("Запустить сервер")) {
+				try {
+					Game.Server = std::make_unique<ServerObj>(IOC);
+					ConnectionProgress.Progress = "Сервер запущен на порту " + std::to_string(Game.Server->LS.getPort());
+				} catch(const std::exception &exc) {
+					ConnectionProgress.Progress = "Не удалось запустить внутренний сервер: " + std::string(exc.what());
+				}
+			}
+		} else {
+			if(!Game.Server->GS.isAlive())
+				Game.Server = nullptr;
+			else if(ImGui::Button("Остановить сервер")) {
+				Game.Server->GS.shutdown("Сервер останавливается по запросу интерфейса");
+			}
+		}
+	}
+
+	if(ConnectionProgress.InProgress) {
+		if(ImGui::Button("Отмена")) 
+			ConnectionProgress.Cancel = true;
+	}
+	
+	if(!ConnectionProgress.Progress.empty()) {
+		if(ImGui::BeginChild("Прогресс", {0, 0}, ImGuiChildFlags_Borders, ImGuiWindowFlags_AlwaysVerticalScrollbar | ImGuiWindowFlags_HorizontalScrollbar)) {
+			ImGui::Text("Прогресс:\n%s", ConnectionProgress.Progress.c_str());
+			ImGui::EndChild();
+		}
+	}
+
+	if(ConnectionProgress.Socket) {
+		std::unique_ptr<Net::AsyncSocket> sock = std::move(ConnectionProgress.Socket);
+		Game.RSession = std::make_unique<VulkanRenderSession>(this);
+		Game.Session = std::make_unique<ServerSession>(IOC, std::move(sock), Game.RSession.get());
+		Game.RSession->setServerSession(Game.Session.get());
+		Game.ImGuiInterfaces.push_back(&Vulkan::gui_ConnectedToServer);
+	}
+
+
+	ImGui::End();
+}
+
+void Vulkan::gui_ConnectedToServer() {
+	if(Game.Session) {
+		if(Game.Session->isConnected())
+			return;
+
+		Game.RSession = nullptr;
+		Game.Session = nullptr;
+		Game.ImGuiInterfaces.pop_back();
+	}
+}
+
 
 EnumRebuildType IVulkanDependent::needRebuild() { return EnumRebuildType::None; }
 IVulkanDependent::~IVulkanDependent() = default;
@@ -1947,7 +2100,7 @@ Vulkan::vkInstance::~vkInstance()
 	if(!Instance)
 		return;
 
-	vkDestroyInstance(Instance, nullptr);
+	//vkDestroyInstance(Instance, nullptr);
 }
 
 

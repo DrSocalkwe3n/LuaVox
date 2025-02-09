@@ -1,7 +1,10 @@
 #pragma once
 
 #include "Abstract.hpp"
+#include "Common/Async.hpp"
+#include "Common/Lockable.hpp"
 #include "Common/Net.hpp"
+#include "Common/Packets.hpp"
 #include <TOSLib.hpp>
 #include <boost/asio/io_context.hpp>
 
@@ -9,16 +12,23 @@
 namespace LV::Client {
 
 class ServerSession : public AsyncObject, public IServerSession, public ISurfaceEventListener {
-    std::unique_ptr<Net::AsyncSocket> _Socket;
-    Net::AsyncSocket &Socket;
+    std::unique_ptr<Net::AsyncSocket> Socket;
     IRenderSession *RS = nullptr;
+    DestroyLock UseLock;
+    bool IsConnected = true, IsGoingShutdown = false;
+
+    TOS::Logger LOG = "ServerSession";
+
+    struct {
+        glm::quat Quat;
+    } Camera;
 
 public:
     // Нужен сокет, на котором только что был согласован игровой протокол (asyncInitGameProtocol)
     ServerSession(asio::io_context &ioc, std::unique_ptr<Net::AsyncSocket> &&socket, IRenderSession *rs = nullptr)
-        : AsyncObject(ioc), _Socket(std::move(socket)), Socket(*socket), RS(rs)
+        : AsyncObject(ioc), Socket(std::move(socket)), RS(rs)
     {
-        assert(socket.get());
+        assert(Socket.get());
         co_spawn(run());
     }
 
@@ -29,23 +39,38 @@ public:
     // Начать игровой протокол в авторизированном сокете
     static coro<std::unique_ptr<Net::AsyncSocket>> asyncInitGameProtocol(asio::io_context &ioc, tcp::socket &&socket, std::function<void(const std::string&)> onProgress = nullptr);
 
+    void shutdown(EnumDisconnect type);
+
+    bool isConnected() { 
+        return IsConnected; 
+    }
+
+    void waitShutdown() {
+        UseLock.wait_no_use();
+    }
 
 
     // ISurfaceEventListener
     
-    // virtual void onResize(uint32_t width, uint32_t height) override;
-    // virtual void onChangeFocusState(bool isFocused) override;
-    // virtual void onCursorPosChange(int32_t width, int32_t height) override;
-    // virtual void onCursorMove(float xMove, float yMove) override;
-    // virtual void onFrameRendering() override;
-    // virtual void onFrameRenderEnd() override;
+    virtual void onResize(uint32_t width, uint32_t height) override;
+    virtual void onChangeFocusState(bool isFocused) override;
+    virtual void onCursorPosChange(int32_t width, int32_t height) override;
+    virtual void onCursorMove(float xMove, float yMove) override;
+    virtual void onFrameRendering() override;
+    virtual void onFrameRenderEnd() override;
 
-    // virtual void onCursorBtn(EnumCursorBtn btn, bool state) override;
-    // virtual void onKeyboardBtn(int btn, int state) override;
-    // virtual void onJoystick() override;
+    virtual void onCursorBtn(EnumCursorBtn btn, bool state) override;
+    virtual void onKeyboardBtn(int btn, int state) override;
+    virtual void onJoystick() override;
 
 private:
     coro<> run();
+    void protocolError();
+    coro<> readPacket(Net::AsyncSocket &sock);
+    coro<> rP_System(Net::AsyncSocket &sock);
+    coro<> rP_Resource(Net::AsyncSocket &sock);
+    coro<> rP_Definition(Net::AsyncSocket &sock);
+    coro<> rP_Content(Net::AsyncSocket &sock);
 };
 
 }

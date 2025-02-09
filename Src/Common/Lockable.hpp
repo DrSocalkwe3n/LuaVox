@@ -110,10 +110,12 @@ public:
             : Lock(lock)
         {
             lock.UseCount++;
+            lock.UseCount.notify_all();
         }
 
         ~Guard() {
             Lock.UseCount--;
+            Lock.UseCount.notify_all();
         }
 
     private:

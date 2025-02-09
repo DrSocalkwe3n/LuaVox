@@ -4,6 +4,7 @@
 #include <Common/Lockable.hpp>
 #include <Common/Net.hpp>
 #include "Abstract.hpp"
+#include "Common/Packets.hpp"
 #include "Server/ContentEventController.hpp"
 #include <Common/Abstract.hpp>
 #include <bitset>
@@ -249,8 +250,8 @@ class RemoteClient {
         SCSKeyRemapper<BinModelId_t, ModelId_c> BinModels;
 
         SCSKeyRemapper<DefWorldId_t, DefWorldId_c> DefWorlds;
-        SCSKeyRemapper<DefVoxelId_t, VoxelId_c> DefVoxels;
-        SCSKeyRemapper<DefNodeId_t, NodeId_c> DefNodes;
+        SCSKeyRemapper<DefVoxelId_t, DefVoxelId_c> DefVoxels;
+        SCSKeyRemapper<DefNodeId_t, DefNodeId_c> DefNodes;
         SCSKeyRemapper<DefPortalId_t, DefPortalId_c> DefPortals;
         SCSKeyRemapper<DefEntityId_t, DefEntityId_c> DefEntityes;
 
@@ -275,7 +276,7 @@ public:
     ~RemoteClient();
 
     coro<> run();
-    void shutdown(const std::string reason);
+    void shutdown(EnumDisconnect type, const std::string reason);
     bool isConnected() { return IsConnected; }
 
     void pushPackets(std::vector<Net::Packet> *simplePackets, std::vector<Net::SmartPacket> *smartPackets = nullptr) {
@@ -330,6 +331,10 @@ public:
     void informateDefPortals(const std::unordered_map<DefPortalId_t, void*> &portals);
 
 private:
+    void protocolError();
+    coro<> readPacket(Net::AsyncSocket &sock);
+    coro<> rP_System(Net::AsyncSocket &sock);
+
     void incrementBinary(std::unordered_set<BinTextureId_t> &textures, std::unordered_set<BinSoundId_t> &sounds,
         std::unordered_set<BinModelId_t> &models);
     void decrementBinary(std::unordered_set<BinTextureId_t> &textures, std::unordered_set<BinSoundId_t> &sounds,

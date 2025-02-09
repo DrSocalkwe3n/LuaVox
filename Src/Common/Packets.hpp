@@ -6,8 +6,14 @@
 
 namespace LV {
 
-namespace ToServer {
+enum struct EnumDisconnect {
+    ByInterface,
+    CriticalError,
+    ProtocolError
+};
 
+namespace ToServer {
+    
 struct PacketQuat {
     uint8_t Data[5];
 
@@ -50,6 +56,17 @@ struct PacketQuat {
         0 - Новая позиция камеры WorldId_c+ObjectPos+PacketQuat
 
 */
+
+// Первый уровень
+enum struct L1 : uint8_t {
+    System,
+};
+
+// Второй уровень
+enum struct L2System : uint8_t {
+    InitEnd,
+    Disconnect
+};
 
 }
 

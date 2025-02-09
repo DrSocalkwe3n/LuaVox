@@ -1,6 +1,7 @@
 #include "Net.hpp"
 #include <TOSLib.hpp>
 #include <boost/asio/buffer.hpp>
+#include <boost/asio/socket_base.hpp>
 
 namespace LV::Net {
 
@@ -17,15 +18,14 @@ bool Server::isStopped() {
 
 void Server::stop() {
     NeedClose = true;
+    NeedClose.notify_all();
     if(Acceptor.is_open())
         Acceptor.close();
 }
 
 void Server::wait() {
-    if(!IsAlive)
-        return;
-
-    Lock.wait();
+    while(bool val = IsAlive)
+        IsAlive.wait(val);
 }
 
 coro<void> Server::async_wait() {
@@ -45,6 +45,7 @@ coro<void> Server::run() {
     }
 
     IsAlive.store(false);
+    IsAlive.notify_all();
     Lock.cancel();
 }
 
@@ -56,6 +57,7 @@ AsyncSocket::~AsyncSocket() {
         SendPackets.Context->NeedShutdown = true;
 
     SendPackets.SenderGuard.cancel();
+    WorkDeadline.cancel();
 }
 
 void AsyncSocket::pushPackets(std::vector<Packet> *simplePackets, std::vector<SmartPacket> *smartPackets) {
@@ -133,6 +135,10 @@ coro<> AsyncSocket::read(std::byte *data, uint32_t size) {
         if(RecvPos >= RecvBuffer.size())
             RecvPos = 0;
     }
+}
+
+void AsyncSocket::closeRead() {
+    Socket.shutdown(boost::asio::socket_base::shutdown_receive);
 }
 
 coro<> AsyncSocket::waitForSend() {
@@ -249,8 +255,7 @@ coro<tcp::socket> asyncConnectTo(const std::string address, std::function<void(c
     if(!re) {
         re = Str::match(address, "([-_\\.\\w\\d]+)(?:\\:(\\d+))?");
         if(!re) {
-            addLog("Не удалось разобрать адрес");
-            co_return nullptr;
+            MAKE_ERROR("Не удалось разобрать адрес");
         }
 
         tcp::resolver resv{ioc};
@@ -288,8 +293,7 @@ coro<tcp::socket> asyncConnectTo(const std::string address, std::function<void(c
         }
     }
 
-    addLog("Не удалось подключится к серверу");
-    MAKE_ERROR(progress);
+    MAKE_ERROR("Не удалось подключится к серверу");
 }
 
 }

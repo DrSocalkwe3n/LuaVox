@@ -9,17 +9,13 @@
 
 namespace LV::Client {
 
-using VoxelId_t = uint16_t;
-
 struct VoxelCube {
+    DefVoxelId_c VoxelId;
     Pos::Local256 Left, Right;
-    VoxelId_t Material;
 };
 
-using NodeId_t = uint16_t;
-
 struct Node {
-    NodeId_t NodeId;
+    DefNodeId_c NodeId;
     uint8_t Rotate : 6;
 };
 
@@ -34,15 +30,11 @@ struct Chunk {
     LightPrism Lights[16][16];
 };
 
-using WorldId_t = uint8_t;
-using PortalId_t = uint16_t;
-using EntityId_t = uint16_t;
-
 class Entity {
 public:
     // PosQuat
-    WorldId_t WorldId;
-    PortalId_t LastUsedPortal;
+    DefWorldId_c WorldId;
+    DefPortalId_c LastUsedPortal;
     Pos::Object Pos;
     glm::quat Quat;
     static constexpr uint16_t HP_BS = 4096, HP_BS_Bit = 12;
@@ -54,51 +46,24 @@ public:
     // states
 };
 
-using TextureId_t = uint16_t;
-
-struct TextureInfo {
-
-};
-
-using ModelId_t = uint16_t;
-
-struct ModelInfo {
-
-};
-
 /* Интерфейс рендера текущего подключения к серверу */
 class IRenderSession {
 public:
+    virtual void onDefTexture(TextureId_c id, std::vector<std::byte> &&info) = 0;
+    virtual void onDefTextureLost(const std::vector<TextureId_c> &&lost) = 0;
+    virtual void onDefModel(ModelId_c id, std::vector<std::byte> &&info) = 0;
+    virtual void onDefModelLost(const std::vector<ModelId_c> &&lost) = 0;
+
+    virtual void onDefWorldUpdates(const std::vector<DefWorldId_c> &updates) = 0;
+    virtual void onDefVoxelUpdates(const std::vector<DefVoxelId_c> &updates) = 0;
+    virtual void onDefNodeUpdates(const std::vector<DefNodeId_c> &updates) = 0;
+    virtual void onDefPortalUpdates(const std::vector<DefPortalId_c> &updates) = 0;
+    virtual void onDefEntityUpdates(const std::vector<DefEntityId_c> &updates) = 0;
+
     // Сообщаем об изменившихся чанках
-    virtual void onChunksChange(WorldId_t worldId, const std::vector<Pos::GlobalChunk> &changeOrAddList, const std::vector<Pos::GlobalChunk> &remove);
-    // Подключаем камеру к сущности
-    virtual void attachCameraToEntity(EntityId_t id);
-
-    // 
-
-    // Мир уже есть в глобальном списке
-    virtual void onWorldAdd(WorldId_t id);
-    // Мира уже нет в списке
-    virtual void onWorldRemove(WorldId_t id);
-    // Изменение состояния мира
-    virtual void onWorldChange(WorldId_t id);
-
-    // Сущности уже есть в глобальном списке
-    virtual void onEntitysAdd(const std::vector<EntityId_t> &list);
-    //
-    virtual void onEntitysRemove(const std::vector<EntityId_t> &list);
-    //
-    virtual void onEntitysPosQuatChanges(const std::vector<EntityId_t> &list);
-    //
-    virtual void onEntitysStateChanges(const std::vector<EntityId_t> &list);
-
-    virtual TextureId_t allocateTexture();
-    virtual void freeTexture(TextureId_t id);
-    virtual void setTexture(TextureId_t id, TextureInfo info);
-
-    virtual ModelId_t allocateModel();
-    virtual void freeModel(ModelId_t id);
-    virtual void setModel(ModelId_t id, ModelInfo info);
+    virtual void onChunksChange(WorldId_c worldId, const std::vector<Pos::GlobalChunk> &changeOrAddList, const std::vector<Pos::GlobalChunk> &remove) = 0;
+    // Установить позицию для камеры
+    virtual void setCameraPos(WorldId_c worldId, Pos::Object pos, glm::quat quat) = 0;
 
     virtual ~IRenderSession();
 };
@@ -110,13 +75,25 @@ struct Region {
 
 
 struct World {
-    std::vector<EntityId_t> Entitys;
+    std::vector<EntityId_c> Entitys;
     std::unordered_map<Pos::GlobalRegion::Key, Region> Regions;
 };
 
 
-class ChunksIterator {
-public:
+struct DefWorldInfo {
+
+};
+
+struct DefPortalInfo {
+
+};
+
+struct DefEntityInfo {
+
+};
+
+struct WorldInfo {
+
 };
 
 struct VoxelInfo {
@@ -127,13 +104,28 @@ struct NodeInfo {
 
 };
 
+struct PortalInfo {
+
+};
+
+struct EntityInfo {
+
+};
+
 /* Интерфейс обработчика сессии с сервером */
 class IServerSession {
 public:
-    std::unordered_map<EntityId_t, Entity> Entitys;
-    std::unordered_map<WorldId_t, World> Worlds;
-    std::unordered_map<VoxelId_t, VoxelInfo> VoxelRegistry;
-    std::unordered_map<NodeId_t, NodeInfo> NodeRegistry;
+    struct {
+        std::unordered_map<DefWorldId_c, DefWorldInfo>      DefWorlds;
+        std::unordered_map<DefVoxelId_c, VoxelInfo>            DefVoxels;
+        std::unordered_map<DefNodeId_c, NodeInfo>              DefNodes;
+        std::unordered_map<DefPortalId_c, DefPortalInfo>    DefPortals;
+        std::unordered_map<DefEntityId_c, DefEntityInfo>    DefEntityes;
+
+        std::unordered_map<WorldId_c, WorldInfo>            Worlds;
+        std::unordered_map<PortalId_c, PortalInfo>          Portals;
+        std::unordered_map<EntityId_c, EntityInfo>          Entityes;
+    } Registry;
 
     virtual ~IServerSession();
 };

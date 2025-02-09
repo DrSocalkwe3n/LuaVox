@@ -1,3 +1,4 @@
+#include <GLFW/glfw3.h>
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/deadline_timer.hpp>
 #include <boost/asio/detached.hpp>
@@ -9,6 +10,7 @@
 #include <memory>
 #include "Client/ServerSession.hpp"
 #include "Common/Net.hpp"
+#include "Common/Packets.hpp"
 #include "Server/GameServer.hpp"
 #include <Client/Vulkan/Vulkan.hpp>
 
@@ -16,14 +18,14 @@ namespace LV {
 
 using namespace TOS;
 
+std::unique_ptr<Client::ServerSession> session;
+
 coro<> runClient(asio::io_context &ioc, uint16_t port) {
 	try {
 		tcp::socket sock = co_await Net::asyncConnectTo("localhost:"+std::to_string(port));
 		co_await Client::ServerSession::asyncAuthorizeWithServer(sock, "DrSocalkwe3n", "1password2", 1);
 		std::unique_ptr<Net::AsyncSocket> asock = co_await Client::ServerSession::asyncInitGameProtocol(ioc, std::move(sock));
-		asio::deadline_timer timer(ioc);
-		timer.expires_from_now(boost::posix_time::seconds(1));
-		co_await timer.async_wait();
+		session = std::make_unique<Client::ServerSession>(ioc, std::move(asock), nullptr);
 	} catch(const std::exception &exc) {
 		std::cout << exc.what() << std::endl;
 	}
@@ -31,33 +33,41 @@ coro<> runClient(asio::io_context &ioc, uint16_t port) {
 
 int main() {
 
-	VK::Vulkan VkInst;
-	VkInst.getSettingsNext() = VkInst.getBestSettings();
-	VkInst.reInit();
-
-	auto ot = std::async([&](){
-		VkInst.start([&](VK::Vulkan *instance, int subpass, VkCommandBuffer &renderCmd)
-		{
-		});
-	});
-
 	// LuaVox
 
 	asio::io_context ioc;
 
-	Server::GameServer gs(ioc, "");
-
-	Net::Server server(ioc, [&](tcp::socket sock) -> coro<> {
-		server.stop();
-		co_await gs.pushSocketConnect(std::move(sock));
-	}, 6666);
-
-	std::cout << server.getPort() << std::endl;
-
-	asio::co_spawn(ioc, runClient(ioc, server.getPort()), asio::detached);
-
+	LV::Client::VK::Vulkan vkInst(ioc);
 	ioc.run();
-	VkInst.shutdown();
+
+	// Server::GameServer gs(ioc, "");
+
+	// Net::Server server(ioc, [&](tcp::socket sock) -> coro<> {
+	// 	server.stop();
+	// 	co_await gs.pushSocketConnect(std::move(sock));
+	// }, 6666);
+
+	// std::cout << server.getPort() << std::endl;
+
+	// asio::co_spawn(ioc, runClient(ioc, server.getPort()), asio::detached);
+
+
+	// auto ot = std::async([&](){
+	// 	VkInst.start([&](VK::Vulkan *instance, int subpass, VkCommandBuffer &renderCmd)
+	// 	{
+	// 		if(glfwWindowShouldClose(VkInst.Graphics.Window) || (session && !session->isConnected())) {
+	// 			VkInst.shutdown();
+
+	// 			if(glfwWindowShouldClose(VkInst.Graphics.Window) && session)
+	// 				session->shutdown(EnumDisconnect::ByInterface);
+	// 		}
+	// 	});
+
+	// 	session = nullptr;
+	// });
+
+	// ioc.run();
+	// VkInst.shutdown();
 
 	return 0;
 }

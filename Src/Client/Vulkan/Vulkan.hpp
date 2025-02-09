@@ -1,6 +1,10 @@
 #pragma once
 
+#include "Client/ServerSession.hpp"
+#include "Common/Async.hpp"
 #include <TOSLib.hpp>
+#include <boost/asio/executor_work_guard.hpp>
+#include <boost/asio/io_context.hpp>
 #include <functional>
 #include <list>
 #include <memory>
@@ -26,7 +30,10 @@
 
 #define IMGUI_ENABLE_STB_TEXTEDIT_UNICODE
 
-namespace TOS::VK {
+namespace LV::Client::VK {
+
+class VulkanRenderSession;
+using namespace TOS;
 
 ByteBuffer loadPNG(std::ifstream &&file, int &width, int &height, bool &hasAlpha, bool flipOver = true);
 ByteBuffer loadPNG(std::istream &&file, int &width, int &height, bool &hasAlpha, bool flipOver = true);
@@ -49,21 +56,7 @@ struct Settings {
 	}
 };
 
-
-class IWindowCallbackListener {
-public:
-	IWindowCallbackListener() = default;
-	virtual ~IWindowCallbackListener();
-
-	virtual void onFrameBufferResize(uint32_t width, uint32_t height);
-	virtual void onScale(float x, float y);
-	virtual void onMouseClick(int btn, int state, int mods);
-	virtual void onMousePos(double x, double y);
-	virtual void onKeyboardClick(int key, int scancode, int action, int mods);
-	virtual void onFocus(int focused);
-};
-
-
+class ServerObj;
 class DescriptorLayout;
 class Pipeline;
 class DescriptorPool;
@@ -76,7 +69,7 @@ class Buffer;
 	Vulkan.reInit();
 */
 
-class Vulkan {
+class Vulkan : public AsyncObject {
 private:
 	struct vkInstanceLayer {
 		std::string LayerName = "nullptr", Description = "nullptr";
@@ -173,10 +166,9 @@ private:
 		VkCommandBuffer Cmd = nullptr;
 		VkFramebuffer FrameBuffer = nullptr;
 	};
-
-	std::function<void(Vulkan*, int subpass, VkCommandBuffer&)> CallOnDraw;
-	std::function<void(Vulkan*)> CallBeforeDraw;
+	
 	bool NeedShutdown = false;
+	asio::executor_work_guard<asio::io_context::executor_type> GuardLock;
 
 public:
 	struct {
@@ -243,6 +235,16 @@ public:
 		DrawState State = DrawState::Begin;
 	} Screen;
 
+	struct {
+    	DestroyLock UseLock;
+		std::thread MainThread;
+		std::unique_ptr<VulkanRenderSession> RSession;
+		std::unique_ptr<ServerSession> Session;
+
+		std::list<void (Vulkan::*)()> ImGuiInterfaces;
+		std::unique_ptr<ServerObj> Server;
+	} Game;
+
 private:
 	Logger LOGGER = "Vulkan";
 	Settings
@@ -256,7 +258,6 @@ private:
 	std::optional<DynamicLibrary> LibraryVulkan;
 	
 	std::queue<std::function<void(Vulkan&)>> VulkanContext;
-	std::shared_ptr<IWindowCallbackListener> WindowEventListener;
 
 	// Объекты рисовки
 	std::unordered_set<std::shared_ptr<IVulkanDependent>> ROS_Dependents;
@@ -298,7 +299,7 @@ private:
 	void buildSwapchains();
 
 public:
-	Vulkan(uint16_t width = 0, uint16_t height = 0);
+	Vulkan(asio::io_context &ioc);
 	~Vulkan();
 
 	Vulkan(const Vulkan&) = delete;
@@ -339,12 +340,6 @@ public:
 		Settings& getSettingsNext() { return SettingsNext; }
 
 	bool isAlive() { return false; }
-	void start(std::function<void(Vulkan*, int subpass, VkCommandBuffer&)> &&onDraw, std::function<void(Vulkan*)> &&beforeDraw = {}) 
-	{ 
-		CallOnDraw = std::move(onDraw);
-		CallBeforeDraw = std::move(beforeDraw);
-		run();
-	}
 
 	// Добавить обработчик перед началом рисовки кадра
 	void beforeDraw(std::function<void(Vulkan*)> &&callback) {
@@ -356,10 +351,11 @@ public:
 		return std::this_thread::get_id() == Graphics.ThisThread;
 	}
 
-	void setWindowEventListener(std::shared_ptr<IWindowCallbackListener> listener) { WindowEventListener = listener; }
 	void shutdown() { NeedShutdown = true; }
+	void addImGUIFont(std::string_view view);
 
-	void addImGUIFont(const ByteBuffer &font);
+	void gui_MainMenu();
+	void gui_ConnectedToServer();
 };
 
 enum class EnumRebuildType {

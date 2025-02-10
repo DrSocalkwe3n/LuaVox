@@ -7,9 +7,21 @@
 #include "Common/Packets.hpp"
 #include <TOSLib.hpp>
 #include <boost/asio/io_context.hpp>
+#include <memory>
+#include <boost/lockfree/spsc_queue.hpp>
 
 
 namespace LV::Client {
+
+struct ParsedPacket {
+    ToClient::L1 Level1;
+    uint8_t Level2;
+
+    ParsedPacket(ToClient::L1 l1, uint8_t l2)
+        : Level1(l1), Level2(l2)
+    {}
+    virtual ~ParsedPacket();
+};
 
 class ServerSession : public AsyncObject, public IServerSession, public ISurfaceEventListener {
     std::unique_ptr<Net::AsyncSocket> Socket;
@@ -23,10 +35,12 @@ class ServerSession : public AsyncObject, public IServerSession, public ISurface
         glm::quat Quat;
     } Camera;
 
+    boost::lockfree::spsc_queue<std::unique_ptr<ParsedPacket>> NetInputPackets;
+
 public:
     // Нужен сокет, на котором только что был согласован игровой протокол (asyncInitGameProtocol)
     ServerSession(asio::io_context &ioc, std::unique_ptr<Net::AsyncSocket> &&socket, IRenderSession *rs = nullptr)
-        : AsyncObject(ioc), Socket(std::move(socket)), RS(rs)
+        : AsyncObject(ioc), Socket(std::move(socket)), RS(rs), NetInputPackets(1024)
     {
         assert(Socket.get());
         co_spawn(run());
@@ -62,6 +76,8 @@ public:
     virtual void onCursorBtn(EnumCursorBtn btn, bool state) override;
     virtual void onKeyboardBtn(int btn, int state) override;
     virtual void onJoystick() override;
+
+    virtual void atFreeDrawTime() override;
 
 private:
     coro<> run();

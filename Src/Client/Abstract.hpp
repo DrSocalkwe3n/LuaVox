@@ -128,6 +128,8 @@ public:
     } Registry;
 
     virtual ~IServerSession();
+
+    virtual void atFreeDrawTime() = 0;
 };
 
 

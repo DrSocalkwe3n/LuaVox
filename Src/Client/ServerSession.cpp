@@ -1,5 +1,6 @@
 #include "ServerSession.hpp"
 #include "Client/Abstract.hpp"
+#include "Common/Abstract.hpp"
 #include "Common/Net.hpp"
 #include <boost/asio/deadline_timer.hpp>
 #include <boost/asio/this_coro.hpp>
@@ -12,6 +13,18 @@
 
 
 namespace LV::Client {
+
+ParsedPacket::~ParsedPacket() = default;
+
+struct PP_Content_ChunkVoxels : public ParsedPacket {
+    WorldId_c Id;
+    Pos::GlobalChunk Pos;
+    std::vector<VoxelCube> Cubes;
+
+    PP_Content_ChunkVoxels(ToClient::L1 l1, uint8_t l2, WorldId_c id, Pos::GlobalChunk pos, std::vector<VoxelCube> &&cubes)
+        : ParsedPacket(l1, l2), Id(id), Pos(pos), Cubes(std::move(cubes))
+    {}
+};
 
 using namespace TOS;
 
@@ -172,6 +185,10 @@ void ServerSession::onKeyboardBtn(int btn, int state) {
 
 void ServerSession::onJoystick() {
     
+}
+
+void ServerSession::atFreeDrawTime() {
+
 }
 
 coro<> ServerSession::run() {
@@ -362,6 +379,16 @@ coro<> ServerSession::rP_Content(Net::AsyncSocket &sock) {
             cube.Right.Y = co_await sock.read<uint8_t>();
             cube.Right.Z = co_await sock.read<uint8_t>();
         }
+
+        auto packet = std::make_unique<PP_Content_ChunkVoxels>(
+            ToClient::L1::Content,
+            (uint8_t) ToClient::L2Content::ChunkVoxels,
+            wcId,
+            pos,
+            std::move(cubes)
+        );
+
+        while(!NetInputPackets.push(std::move(packet)));
 
         LOG.info() << "Приняты воксели чанка " << int(wcId) << " / " << pos.X << ":" << pos.Y << ":" << pos.Z << " Вокселей " << cubes.size();
 

@@ -1163,23 +1163,7 @@ void Vulkan::checkLibrary()
 			bool canContinue = true;
 
 			// Необходимый функционал
-			if(!device.DeviceFeatures.depthBounds)
-			{
-				report << "\t*depthBounds: "
-				<< device.DeviceFeatures.depthBounds
-				<< '\n';
-				canContinue = false;
-			}
-
 			if(!device.DeviceFeatures.geometryShader)
-			{
-				report << "\t*geometryShader: "
-				<< device.DeviceFeatures.imageCubeArray
-				<< '\n';
-				canContinue = false;
-			}
-
-			if(!device.DeviceFeatures.dualSrcBlend)
 			{
 				report << "\t*geometryShader: "
 				<< device.DeviceFeatures.imageCubeArray
@@ -1428,10 +1412,7 @@ void Vulkan::initNextSettings()
 			.features = {0}
 		};
 
-		features.features.depthBounds 	 = true;
 		features.features.geometryShader = true;
-		features.features.dualSrcBlend 	 = true;
-		features.features.shaderInt16    = true;
 
 		feat11.uniformAndStorageBuffer16BitAccess = true;
 		feat11.storageBuffer16BitAccess = true;

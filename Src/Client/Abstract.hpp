@@ -9,6 +9,26 @@
 
 namespace LV::Client {
 
+struct GlobalTime {
+	uint32_t Seconds : 22, Sub : 10;
+
+    GlobalTime() = default;
+    GlobalTime(double gTime) {
+		Seconds = int(gTime);
+		Sub = (gTime-int(gTime))*1024;
+    }
+
+    GlobalTime& operator=(double gTime) {
+		Seconds = int(gTime);
+		Sub = (gTime-int(gTime))*1024;
+        return *this;
+    }
+
+    operator double() const {
+        return double(Seconds) + double(Sub)/1024.;
+    }
+};
+
 struct VoxelCube {
     DefVoxelId_c VoxelId;
     Pos::Local256 Left, Right;
@@ -129,7 +149,7 @@ public:
 
     virtual ~IServerSession();
 
-    virtual void atFreeDrawTime() = 0;
+    virtual void atFreeDrawTime(GlobalTime gTime, float dTime) = 0;
 };
 
 

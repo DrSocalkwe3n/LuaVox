@@ -234,11 +234,11 @@ public:
 		std::queue<std::function<void(Vulkan*)>> BeforeDraw;
 		DrawState State = DrawState::Begin;
 	} Screen;
-
+		
 	struct {
     	DestroyLock UseLock;
 		std::thread MainThread;
-		std::unique_ptr<VulkanRenderSession> RSession;
+		std::shared_ptr<VulkanRenderSession> RSession;
 		std::unique_ptr<ServerSession> Session;
 
 		std::list<void (Vulkan::*)()> ImGuiInterfaces;
@@ -358,17 +358,10 @@ public:
 	void gui_ConnectedToServer();
 };
 
-enum class EnumRebuildType {
-	None,
-	Need,
-	Urgently
-};
-
 class IVulkanDependent : public std::enable_shared_from_this<IVulkanDependent> {
 protected:
 	virtual void free(Vulkan *instance) = 0;
 	virtual void init(Vulkan *instance) = 0;
-	virtual EnumRebuildType needRebuild();
 
 	friend Vulkan;
 	friend Pipeline;
@@ -449,8 +442,6 @@ protected:
 
 	virtual void free(Vulkan *instance) override;
 	virtual void init(Vulkan *instance) override;
-	// Если необходимо изменить графический конвейер, будет вызвано free и init
-	virtual EnumRebuildType needRebuild() override;
 
 public:
 	Pipeline(std::shared_ptr<DescriptorLayout> layout);
@@ -998,6 +989,30 @@ public:
 	GlyphInfo getGlyph(UChar wc, uint16_t size);
 	// Время последнего изменения данных
 	size_t getLastUpdate() { return LastUpdate; }
+};
+
+class PipelineVF : public Pipeline {
+    std::string PathVertex, PathFragment;
+	std::shared_ptr<ShaderModule> ShaderVertex, ShaderFragment;
+
+protected:
+	virtual void init(Vulkan *instance) override;
+
+public:
+	PipelineVF(std::shared_ptr<DescriptorLayout> layout, const std::string &vertex, const std::string &fragment);
+	virtual ~PipelineVF();
+};
+
+class PipelineVGF : public Pipeline {
+    std::string PathVertex, PathGeometry, PathFragment;
+	std::shared_ptr<ShaderModule> ShaderVertex, ShaderGeometry, ShaderFragment;
+
+protected:
+	virtual void init(Vulkan *instance) override;
+
+public:
+	PipelineVGF(std::shared_ptr<DescriptorLayout> layout, const std::string &vertex, const std::string &geometry, const std::string &fragment);
+	virtual ~PipelineVGF();
 };
 
 } /* namespace TOS::Navie::VK */

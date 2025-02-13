@@ -37,6 +37,12 @@ class ServerSession : public AsyncObject, public IServerSession, public ISurface
 
     boost::lockfree::spsc_queue<std::unique_ptr<ParsedPacket>> NetInputPackets;
 
+    //
+    glm::vec3 PYR = glm::vec3(0), PYR_Offset = glm::vec3(0);
+    double PYR_At = 0;
+    static constexpr float PYR_TIME_DELTA = 30;
+    GlobalTime GTime;
+
 public:
     // Нужен сокет, на котором только что был согласован игровой протокол (asyncInitGameProtocol)
     ServerSession(asio::io_context &ioc, std::unique_ptr<Net::AsyncSocket> &&socket, IRenderSession *rs = nullptr)
@@ -70,14 +76,12 @@ public:
     virtual void onChangeFocusState(bool isFocused) override;
     virtual void onCursorPosChange(int32_t width, int32_t height) override;
     virtual void onCursorMove(float xMove, float yMove) override;
-    virtual void onFrameRendering() override;
-    virtual void onFrameRenderEnd() override;
 
     virtual void onCursorBtn(EnumCursorBtn btn, bool state) override;
     virtual void onKeyboardBtn(int btn, int state) override;
     virtual void onJoystick() override;
 
-    virtual void atFreeDrawTime() override;
+    virtual void atFreeDrawTime(GlobalTime gTime, float dTime) override;
 
 private:
     coro<> run();

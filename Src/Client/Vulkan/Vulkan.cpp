@@ -87,17 +87,6 @@ Vulkan::Vulkan(asio::io_context &ioc)
 		auto useLock = Game.UseLock.lock();
 		run(); 
 		GuardLock.reset();
-
-		if(Game.Session) {
-			Game.Session->shutdown(EnumDisconnect::ByInterface);
-			Game.Session = nullptr;
-			Game.RSession = nullptr;
-		}
-
-		if(Game.Server) {
-			Game.Server->GS.shutdown("Завершение работы из-за остановки клиента");
-			Game.Server = nullptr;
-		}
 	});
 }
 
@@ -132,8 +121,14 @@ void Vulkan::run()
 	assert(!vkCreateSemaphore(Graphics.Device, &semaphoreCreateInfo, NULL, &SemaphoreDrawComplete));
 
 
-	while(!NeedShutdown)
+	double prevTime = glfwGetTime();
+	while(!NeedShutdown
+		|| (Game.Session && Game.Session->isConnected())
+		|| (Game.Server && Game.Server->GS.isAlive()))
 	{
+		float dTime = glfwGetTime()-prevTime;
+		prevTime = glfwGetTime();
+
 		Screen.State = DrawState::Begin;
 		{
 			std::lock_guard lock(Screen.BeforeDrawMtx);
@@ -144,8 +139,16 @@ void Vulkan::run()
 			}
 		}
 
-		if(glfwWindowShouldClose(Graphics.Window)) {
+		if(!NeedShutdown && glfwWindowShouldClose(Graphics.Window)) {
 			NeedShutdown = true;
+
+			if(Game.Session) {
+				Game.Session->shutdown(EnumDisconnect::ByInterface);
+			}
+
+			if(Game.Server) {
+				Game.Server->GS.shutdown("Завершение работы из-за остановки клиента");
+			}
 		}
 
 		if(Game.Session) {
@@ -167,6 +170,10 @@ void Vulkan::run()
 
 		// if(CallBeforeDraw)
 		// 	CallBeforeDraw(this);
+
+		if(Game.RSession) {
+			Game.RSession->beforeDraw();
+		}
 
 		glfwPollEvents();
 
@@ -251,8 +258,17 @@ void Vulkan::run()
 			vkCmdSetScissor(Graphics.CommandBufferRender, 0, 1, &scissor);
 		}
 
-		// if(CallOnDraw)
-		// 	CallOnDraw(this, 0, Graphics.CommandBufferRender);
+		GlobalTime gTime = glfwGetTime();
+
+		if(Game.RSession) {
+			auto &robj = *Game.RSession;
+			// Рендер мира
+
+			robj.drawWorld(gTime, dTime, Graphics.CommandBufferRender);
+
+            uint16_t minSize = std::min(Screen.Width, Screen.Height);
+            glm::ivec2 interfaceSize = {int(Screen.Width*720/minSize), int(Screen.Height*720/minSize)};
+		}
 
 		vkCmdEndRenderPass(Graphics.CommandBufferRender);
 		
@@ -400,6 +416,10 @@ void Vulkan::run()
 				assert(!err);
 		}
 
+		if(Game.Session) {
+			Game.Session->atFreeDrawTime(gTime, dTime);
+		}
+
 		assert(!vkQueueWaitIdle(Graphics.DeviceQueueGraphic));
 
 		vkDeviceWaitIdle(Graphics.Device);
@@ -410,6 +430,10 @@ void Vulkan::run()
 	vkDestroySemaphore(Graphics.Device, SemaphoreDrawComplete, nullptr);
 
 	Graphics.ThisThread = std::thread::id();
+
+	Game.Session = nullptr;
+	Game.RSession = nullptr;
+	Game.Server = nullptr;
 }
 
 void Vulkan::glfwCallbackError(int error, const char *description)
@@ -1308,7 +1332,7 @@ void Vulkan::initNextSettings()
 	} else {
 		for(const std::shared_ptr<IVulkanDependent> &dependent : ROS_Dependents)
 		{
-			if(dependent->needRebuild() != EnumRebuildType::None || dynamic_cast<Pipeline*>(dependent.get()))
+			if(/*dependent->needRebuild() != EnumRebuildType::None || */ dynamic_cast<Pipeline*>(dependent.get()))
 				dependent->free(this);
 		}
 
@@ -1842,6 +1866,7 @@ bool Vulkan::needFullVulkanRebuild()
 std::shared_ptr<ShaderModule> Vulkan::createShader(const ByteBuffer &data)
 {
 	assert(Graphics.Device);
+	assert(data.size());
 	std::shared_ptr<ShaderModule> module = std::make_shared<ShaderModule>(data);
 	std::dynamic_pointer_cast<IVulkanDependent>(module)->init(this);
 	ROS_Dependents.insert(module);
@@ -1967,7 +1992,8 @@ void Vulkan::gui_MainMenu() {
 
 	if(ConnectionProgress.Socket) {
 		std::unique_ptr<Net::AsyncSocket> sock = std::move(ConnectionProgress.Socket);
-		Game.RSession = std::make_unique<VulkanRenderSession>(this);
+		Game.RSession = std::make_unique<VulkanRenderSession>();
+		*this << Game.RSession;
 		Game.Session = std::make_unique<ServerSession>(IOC, std::move(sock), Game.RSession.get());
 		Game.RSession->setServerSession(Game.Session.get());
 		Game.ImGuiInterfaces.push_back(&Vulkan::gui_ConnectedToServer);
@@ -1989,19 +2015,18 @@ void Vulkan::gui_ConnectedToServer() {
 }
 
 
-EnumRebuildType IVulkanDependent::needRebuild() { return EnumRebuildType::None; }
 IVulkanDependent::~IVulkanDependent() = default;
 
 void Vulkan::updateResources()
 {
-	for(const std::shared_ptr<IVulkanDependent> &dependent : ROS_Dependents)
-	{
-		if(dependent->needRebuild() != EnumRebuildType::None)
-		{
-			dependent->free(this);
-			dependent->init(this);
-		}
-	}
+	// for(const std::shared_ptr<IVulkanDependent> &dependent : ROS_Dependents)
+	// {
+	// 	if(dependent->needRebuild() != EnumRebuildType::None)
+	// 	{
+	// 		dependent->free(this);
+	// 		dependent->init(this);
+	// 	}
+	// }
 }
 
 
@@ -2410,11 +2435,6 @@ void Pipeline::init(Vulkan *instance)
 	infoPipelineCache.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
 
 	assert(!vkCreateGraphicsPipelines(instance->Graphics.Device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &PipelineObj));
-}
-
-EnumRebuildType Pipeline::needRebuild()
-{
-	return PipelineObj ? EnumRebuildType::None : EnumRebuildType::Urgently;
 }
 
 
@@ -4416,6 +4436,117 @@ FontAtlas::GlyphInfo FontAtlas::getGlyph(UChar wc, uint16_t size)
 	info.PosY = 0;
 
 	return CharToInfo[glyphId] = info;
+}
+
+
+
+PipelineVF::PipelineVF(std::shared_ptr<DescriptorLayout> layout, const std::string &vertex, 
+	const std::string &fragment)
+	: Pipeline(layout), PathVertex(vertex), PathFragment(fragment)
+{
+}
+
+PipelineVF::~PipelineVF() = default;
+
+void PipelineVF::init(Vulkan *instance)
+{
+	if(!ShaderVertex)
+		ShaderVertex = instance->createShaderFromFile(PathVertex);
+
+	if(!ShaderFragment)
+		ShaderFragment = instance->createShaderFromFile(PathFragment);
+
+	Settings.ShaderStages =
+	{
+		{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.pNext = nullptr,
+			.flags = 0,
+			.stage = VK_SHADER_STAGE_VERTEX_BIT,
+			.module = *ShaderVertex,
+			.pName = "main",
+			.pSpecializationInfo = nullptr
+		}, {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.pNext = nullptr,
+			.flags = 0,
+			.stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.module = *ShaderFragment,
+			.pName = "main",
+			.pSpecializationInfo = nullptr
+		}
+	};
+
+	Pipeline::init(instance);
+}
+
+PipelineVGF::PipelineVGF(std::shared_ptr<DescriptorLayout> layout, const std::string &vertex, 
+	const std::string &geometry, const std::string &fragment)
+	: Pipeline(layout), PathVertex(vertex), PathGeometry(geometry), PathFragment(fragment)
+{
+	// Settings.ShaderVertexBindings =
+	// {
+	// 	{
+	// 		.binding = 0,
+	// 		.stride = sizeof(Client::Chunk::Vertex),
+	// 		.inputRate = VK_VERTEX_INPUT_RATE_VERTEX
+	// 	}
+	// };
+
+	// Settings.ShaderVertexAttribute =
+	// {
+	// 	{
+	// 		.location = 0,
+	// 		.binding = 0,
+	// 		.format = VK_FORMAT_R32_UINT,
+	// 		.offset = 0
+	// 	}
+	// };
+}
+
+PipelineVGF::~PipelineVGF() = default;
+
+void PipelineVGF::init(Vulkan *instance)
+{
+	if(!ShaderVertex)
+		ShaderVertex = instance->createShaderFromFile(PathVertex);
+
+	if(!ShaderGeometry)
+		ShaderGeometry = instance->createShaderFromFile(PathGeometry);
+
+	if(!ShaderFragment)
+		ShaderFragment = instance->createShaderFromFile(PathFragment);
+
+	Settings.ShaderStages =
+	{
+		{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.pNext = nullptr,
+			.flags = 0,
+			.stage = VK_SHADER_STAGE_VERTEX_BIT,
+			.module = *ShaderVertex,
+			.pName = "main",
+			.pSpecializationInfo = nullptr
+		}, {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.pNext = nullptr,
+			.flags = 0,
+			.stage = VK_SHADER_STAGE_GEOMETRY_BIT,
+			.module = *ShaderGeometry,
+			.pName = "main",
+			.pSpecializationInfo = nullptr
+		}, {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.pNext = nullptr,
+			.flags = 0,
+			.stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.module = *ShaderFragment,
+			.pName = "main",
+			.pSpecializationInfo = nullptr
+		}
+	};
+
+	Pipeline::init(instance);
 }
 
 }

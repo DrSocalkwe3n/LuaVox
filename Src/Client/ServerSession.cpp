@@ -2,13 +2,13 @@
 #include "Client/Abstract.hpp"
 #include "Common/Abstract.hpp"
 #include "Common/Net.hpp"
+#include <GLFW/glfw3.h>
 #include <boost/asio/deadline_timer.hpp>
 #include <boost/asio/this_coro.hpp>
 #include <boost/date_time/posix_time/posix_time_duration.hpp>
 #include <functional>
 #include <memory>
 #include <Common/Packets.hpp>
-#include <GLFW/glfw3.h>
 #include <glm/ext.hpp>
 
 
@@ -162,15 +162,22 @@ void ServerSession::onCursorPosChange(int32_t width, int32_t height) {
 }
 
 void ServerSession::onCursorMove(float xMove, float yMove) {
+    glm::vec3 deltaPYR;
+
+    static constexpr float PI = glm::pi<float>(), PI2 = PI*2, PI_HALF = PI/2, PI_DEG = PI/180;
+
+    deltaPYR.x = std::clamp(PYR.x + yMove*PI_DEG, -PI_HALF+PI_DEG, PI_HALF-PI_DEG)-PYR.x;
+    deltaPYR.y = std::fmod(PYR.y + xMove*PI_DEG, PI2)-PYR.y;
+    deltaPYR.z = 0;
+
+    double gTime = GTime;
+    float deltaTime = 1-std::min<float>(gTime-PYR_At, 1/PYR_TIME_DELTA)*PYR_TIME_DELTA;
+    PYR_At = GTime;
+
+    PYR += deltaPYR;
+    PYR_Offset = deltaPYR+deltaTime*PYR_Offset;
+
     glm::vec3 front = Camera.Quat*glm::vec3(0.0f, 0.0f, -1.0f);
-}
-
-void ServerSession::onFrameRendering() {
-
-}
-
-void ServerSession::onFrameRenderEnd() {
-
 }
 
 void ServerSession::onCursorBtn(ISurfaceEventListener::EnumCursorBtn btn, bool state) {
@@ -187,8 +194,8 @@ void ServerSession::onJoystick() {
     
 }
 
-void ServerSession::atFreeDrawTime() {
-
+void ServerSession::atFreeDrawTime(GlobalTime gTime, float dTime) {
+    GTime = gTime;
 }
 
 coro<> ServerSession::run() {

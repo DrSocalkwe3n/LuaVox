@@ -71,6 +71,8 @@ class Buffer;
 
 class Vulkan : public AsyncObject {
 private:
+	Logger LOG = "Vulkan";
+
 	struct vkInstanceLayer {
 		std::string LayerName = "nullptr", Description = "nullptr";
 	    uint32_t SpecVersion = -2, ImplementationVersion = -2;
@@ -351,7 +353,6 @@ public:
 		return std::this_thread::get_id() == Graphics.ThisThread;
 	}
 
-	void shutdown() { NeedShutdown = true; }
 	void addImGUIFont(std::string_view view);
 
 	void gui_MainMenu();

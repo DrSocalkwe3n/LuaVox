@@ -84,7 +84,11 @@ Vulkan::Vulkan(asio::io_context &ioc)
 
 	Game.MainThread = std::thread([&]() {
 		auto useLock = Game.UseLock.lock();
-		run(); 
+		try {
+			run();
+		} catch(const std::exception &exc) {
+			LOG.error() << "Vulkan::run: " << exc.what();
+		}
 		GuardLock.reset();
 	});
 }
@@ -138,16 +142,31 @@ void Vulkan::run()
 		if(!NeedShutdown && glfwWindowShouldClose(Graphics.Window)) {
 			NeedShutdown = true;
 
-			if(Game.Session)
-				Game.Session->shutdown(EnumDisconnect::ByInterface);
-
-			if(Game.Server) {
-				Game.Server->GS.shutdown("Завершение работы из-за остановки клиента");
+			try {
+				if(Game.Session)
+					Game.Session->shutdown(EnumDisconnect::ByInterface);
+			} catch(const std::exception &exc) {
+				LOG.error() << "Game.Session->shutdown: " << exc.what();
 			}
 
-			Game.RSession = nullptr;
-			Game.Session = nullptr;
-			Game.Server = nullptr;
+			try {
+				if(Game.Server) 
+					Game.Server->GS.shutdown("Завершение работы из-за остановки клиента");
+			} catch(const std::exception &exc) {
+				LOG.error() << "Game.Server->GS.shutdown: " << exc.what();
+			}
+
+			try { Game.RSession = nullptr; } catch(const std::exception &exc) {
+				LOG.error() << "Game.RSession = nullptr: " << exc.what();
+			}
+
+			try { Game.Session = nullptr; } catch(const std::exception &exc) {
+				LOG.error() << "Game.Session = nullptr: " << exc.what();
+			}
+
+			try { Game.Server = nullptr; } catch(const std::exception &exc) {
+				LOG.error() << "Game.Server = nullptr: " << exc.what();
+			}
 		}
 
 		if(Game.Session) {

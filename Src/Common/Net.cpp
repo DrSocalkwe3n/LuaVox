@@ -46,9 +46,9 @@ coro<void> Server::run() {
             // TODO: std::cout << exc.what() << std::endl;
     }
 
+    Lock.cancel();
     IsAlive.store(false);
     IsAlive.notify_all();
-    Lock.cancel();
 }
 
 

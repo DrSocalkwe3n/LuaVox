@@ -70,8 +70,8 @@ void RemoteClient::shutdown(EnumDisconnect type, const std::string reason) {
 void RemoteClient::prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk chunkPos, 
     const std::vector<VoxelCube> &voxels)
 {
-    WorldId_c wcId = ResRemap.Worlds.toClient(worldId);
-    assert(wcId != WorldId_c(-1));
+    WorldId_c wcId = worldId ? ResRemap.Worlds.toClient(worldId) : 0;
+    assert(wcId != WorldId_c(-1)); // Пока ожидается, что игрок не будет одновременно наблюдать 256 миров
 
     // Перебиндить идентификаторы вокселей
     std::vector<DefVoxelId_t> NeedVoxels;

@@ -131,6 +131,7 @@ coro<std::unique_ptr<Net::AsyncSocket>> ServerSession::asyncInitGameProtocol(asi
 
 void ServerSession::shutdown(EnumDisconnect type) {
     IsGoingShutdown = true;
+    Socket->closeRead();
     Net::Packet packet;
     packet << (uint8_t) ToServer::L1::System
         << (uint8_t) ToServer::L2System::Disconnect
@@ -206,11 +207,11 @@ coro<> ServerSession::run() {
             co_await readPacket(*Socket);
         }
     } catch(const std::exception &exc) {
-        if(const auto *errc = dynamic_cast<const boost::system::system_error*>(&exc); 
-            errc && errc->code() == boost::asio::error::operation_aborted)
-        {
-            co_return;
-        }
+        // if(const auto *errc = dynamic_cast<const boost::system::system_error*>(&exc); 
+        //     errc && errc->code() == boost::asio::error::operation_aborted)
+        // {
+        //     co_return;
+        // }
 
         TOS::Logger("ServerSession").warn() << exc.what();
     }
@@ -387,7 +388,7 @@ coro<> ServerSession::rP_Content(Net::AsyncSocket &sock) {
             cube.Right.Z = co_await sock.read<uint8_t>();
         }
 
-        auto packet = std::make_unique<PP_Content_ChunkVoxels>(
+        PP_Content_ChunkVoxels *packet = new PP_Content_ChunkVoxels(
             ToClient::L1::Content,
             (uint8_t) ToClient::L2Content::ChunkVoxels,
             wcId,
@@ -395,7 +396,7 @@ coro<> ServerSession::rP_Content(Net::AsyncSocket &sock) {
             std::move(cubes)
         );
 
-        while(!NetInputPackets.push(std::move(packet)));
+        while(!NetInputPackets.push(packet));
 
         LOG.info() << "Приняты воксели чанка " << int(wcId) << " / " << pos.X << ":" << pos.Y << ":" << pos.Z << " Вокселей " << cubes.size();
 

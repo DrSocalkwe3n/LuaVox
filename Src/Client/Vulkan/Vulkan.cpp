@@ -80,7 +80,6 @@ Vulkan::Vulkan(asio::io_context &ioc)
 	getSettingsNext() = getBestSettings();
 	reInit();
 
-    addImGUIFont(LV::getResource("default.ttf")->makeView());
 	Game.ImGuiInterfaces.push_back(&Vulkan::gui_MainMenu);
 
 	Game.MainThread = std::thread([&]() {
@@ -93,6 +92,7 @@ Vulkan::Vulkan(asio::io_context &ioc)
 Vulkan::~Vulkan()
 {
 	Game.UseLock.wait_no_use();
+	Game.MainThread.join();
 
 	for(std::shared_ptr<IVulkanDependent> dependent : ROS_Dependents)
 		dependent->free(this);
@@ -105,8 +105,6 @@ Vulkan::~Vulkan()
 		glfwDestroyWindow(Graphics.Window);
 		Graphics.Window = nullptr;
 	}
-
-	Game.MainThread.join();
 }
 
 void Vulkan::run()
@@ -122,9 +120,7 @@ void Vulkan::run()
 
 
 	double prevTime = glfwGetTime();
-	while(!NeedShutdown
-		|| (Game.Session && Game.Session->isConnected())
-		|| (Game.Server && Game.Server->GS.isAlive()))
+	while(!NeedShutdown)
 	{
 		float dTime = glfwGetTime()-prevTime;
 		prevTime = glfwGetTime();
@@ -142,13 +138,16 @@ void Vulkan::run()
 		if(!NeedShutdown && glfwWindowShouldClose(Graphics.Window)) {
 			NeedShutdown = true;
 
-			if(Game.Session) {
+			if(Game.Session)
 				Game.Session->shutdown(EnumDisconnect::ByInterface);
-			}
 
 			if(Game.Server) {
 				Game.Server->GS.shutdown("Завершение работы из-за остановки клиента");
 			}
+
+			Game.RSession = nullptr;
+			Game.Session = nullptr;
+			Game.Server = nullptr;
 		}
 
 		if(Game.Session) {
@@ -428,12 +427,6 @@ void Vulkan::run()
 
 	vkDestroySemaphore(Graphics.Device, SemaphoreImageAcquired, nullptr);
 	vkDestroySemaphore(Graphics.Device, SemaphoreDrawComplete, nullptr);
-
-	Graphics.ThisThread = std::thread::id();
-
-	Game.Session = nullptr;
-	Game.RSession = nullptr;
-	Game.Server = nullptr;
 }
 
 void Vulkan::glfwCallbackError(int error, const char *description)
@@ -1856,6 +1849,7 @@ void Vulkan::reInit()
 {
 	checkLibrary();
 	initNextSettings();
+    addImGUIFont(LV::getResource("default.ttf")->makeView());
 }
 
 bool Vulkan::needFullVulkanRebuild()
@@ -1899,12 +1893,15 @@ void Vulkan::addImGUIFont(std::string_view view) {
 	fontConfig.OversampleV = 1;
 
 	auto &io = ImGui::GetIO();
-	uint8_t *fontPtr = new uint8_t[view.size()];
+	uint8_t *fontPtr = (uint8_t*) malloc(view.size());
+	if(!fontPtr)
+		MAKE_ERROR("Not enough memory");
+
 	std::copy(view.begin(), view.end(), fontPtr);
 	try{
 		io.Fonts->AddFontFromMemoryTTF(fontPtr, view.size(), 16.0f, &fontConfig, io.Fonts->GetGlyphRangesCyrillic());
 	} catch(...) {
-		delete[] fontPtr;
+		free(fontPtr);
 		throw;
 	}
 }

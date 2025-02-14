@@ -35,7 +35,7 @@ class ServerSession : public AsyncObject, public IServerSession, public ISurface
         glm::quat Quat;
     } Camera;
 
-    boost::lockfree::spsc_queue<std::unique_ptr<ParsedPacket>> NetInputPackets;
+    boost::lockfree::spsc_queue<ParsedPacket*> NetInputPackets;
 
     //
     glm::vec3 PYR = glm::vec3(0), PYR_Offset = glm::vec3(0);
@@ -62,7 +62,7 @@ public:
     void shutdown(EnumDisconnect type);
 
     bool isConnected() { 
-        return IsConnected; 
+        return Socket->isAlive() && IsConnected; 
     }
 
     void waitShutdown() {

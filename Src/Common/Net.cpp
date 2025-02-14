@@ -1,7 +1,9 @@
 #include "Net.hpp"
 #include <TOSLib.hpp>
 #include <boost/asio/buffer.hpp>
+#include <boost/asio/error.hpp>
 #include <boost/asio/socket_base.hpp>
+#include <boost/system/system_error.hpp>
 
 namespace LV::Net {
 
@@ -116,7 +118,8 @@ std::string AsyncSocket::getError() const {
 
 bool AsyncSocket::isAlive() const {
     return !SendPackets.Context->NeedShutdown
-        && !SendPackets.Context->RunSendShutdowned;
+        && !SendPackets.Context->RunSendShutdowned
+        && Socket.is_open();
 }
 
 coro<> AsyncSocket::read(std::byte *data, uint32_t size) {
@@ -138,7 +141,10 @@ coro<> AsyncSocket::read(std::byte *data, uint32_t size) {
 }
 
 void AsyncSocket::closeRead() {
-    Socket.shutdown(boost::asio::socket_base::shutdown_receive);
+    if(Socket.is_open() && !ReadShutdowned) {
+        ReadShutdowned = true;
+        Socket.shutdown(boost::asio::socket_base::shutdown_receive);
+    }
 }
 
 coro<> AsyncSocket::waitForSend() {

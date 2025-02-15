@@ -1,6 +1,7 @@
 /.cache
 /.vscode
 /build
+/Work/*
 
 /CMakeFiles
 /CMakeCache.txt

@@ -9,41 +9,30 @@
 #include <boost/asio/write.hpp>
 #include <boost/thread.hpp>
 #include <boost/circular_buffer.hpp>
+#include <condition_variable>
 
 namespace LV::Net {
 
-class Server : public AsyncObject {
+class SocketServer : public AsyncObject {
 protected:
-    std::atomic_bool IsAlive = false, NeedClose = false;
     tcp::acceptor Acceptor;
-    asio::deadline_timer Lock;
-    std::function<coro<>(tcp::socket)> OnConnect;
 
 public:
-    Server(asio::io_context &ioc, std::function<coro<>(tcp::socket)> &&onConnect, uint16_t port = 0)
-        : AsyncObject(ioc), Acceptor(ioc, tcp::endpoint(tcp::v4(), port)), Lock(ioc, boost::posix_time::pos_infin), OnConnect(std::move(onConnect))
+    SocketServer(asio::io_context &ioc, std::function<coro<>(tcp::socket)> &&onConnect, uint16_t port = 0)
+        : AsyncObject(ioc), Acceptor(ioc, tcp::endpoint(tcp::v4(), port))
     {
-        assert(OnConnect);
+        assert(onConnect);
 
-        co_spawn(run());
-        IsAlive.store(true);
-        IsAlive.notify_all();
+        co_spawn(run(std::move(onConnect)));
     }
-
-    ~Server();
 
     bool isStopped();
     uint16_t getPort() {
         return Acceptor.local_endpoint().port();
     }
 
-    void stop();
-    void wait();
-
-    coro<void> async_wait();
-
 protected:
-    coro<void> run();
+    coro<void> run(std::function<coro<>(tcp::socket)> onConnect);
 };
 
 #if defined(__BYTE_ORDER) && __BYTE_ORDER == __LITTLE_ENDIAN

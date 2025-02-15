@@ -177,8 +177,6 @@ void ServerSession::onCursorMove(float xMove, float yMove) {
 
     PYR += deltaPYR;
     PYR_Offset = deltaPYR+deltaTime*PYR_Offset;
-
-    glm::vec3 front = Camera.Quat*glm::vec3(0.0f, 0.0f, -1.0f);
 }
 
 void ServerSession::onCursorBtn(ISurfaceEventListener::EnumCursorBtn btn, bool state) {
@@ -197,6 +195,19 @@ void ServerSession::onJoystick() {
 
 void ServerSession::atFreeDrawTime(GlobalTime gTime, float dTime) {
     GTime = gTime;
+
+    if(!RS)
+        return;
+
+    // Расчёт камеры
+    {
+        float deltaTime = 1-std::min<float>(gTime-PYR_At, 1/PYR_TIME_DELTA)*PYR_TIME_DELTA;
+        glm::quat quat = 
+            glm::angleAxis(PYR.x-deltaTime*PYR_Offset.x, glm::vec3(1.f, 0.f, 0.f))
+            *   glm::angleAxis(PYR.y-deltaTime*PYR_Offset.y, glm::vec3(0.f, 1.f, 0.f));
+
+        RS->setCameraPos(0, {0, 0, 0}, quat);
+    }
 }
 
 coro<> ServerSession::run() {

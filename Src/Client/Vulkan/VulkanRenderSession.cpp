@@ -1,4 +1,7 @@
 #include "VulkanRenderSession.hpp"
+#include "Client/Vulkan/Vulkan.hpp"
+#include "assets.hpp"
+#include <glm/ext/matrix_transform.hpp>
 #include <vulkan/vulkan_core.h>
 
 namespace LV::Client::VK {
@@ -29,8 +32,11 @@ void VulkanRenderSession::free(Vulkan *instance) {
             
 		if(MainAtlasDescLayout)
 			vkDestroyDescriptorSetLayout(instance->Graphics.Device, MainAtlasDescLayout, nullptr);
-		if(LightMapDescLayout)
-			vkDestroyDescriptorSetLayout(instance->Graphics.Device, LightMapDescLayout, nullptr);
+		if(VoxelLightMapDescLayout)
+			vkDestroyDescriptorSetLayout(instance->Graphics.Device, VoxelLightMapDescLayout, nullptr);
+    
+        if(DescriptorPool)
+            vkDestroyDescriptorPool(instance->Graphics.Device, DescriptorPool, nullptr);
     }
 
     VoxelOpaquePipeline = VK_NULL_HANDLE;
@@ -41,7 +47,13 @@ void VulkanRenderSession::free(Vulkan *instance) {
     MainAtlas_LightMap_PipelineLayout = VK_NULL_HANDLE;
 
     MainAtlasDescLayout = VK_NULL_HANDLE;
-    LightMapDescLayout = VK_NULL_HANDLE;
+    VoxelLightMapDescLayout = VK_NULL_HANDLE;
+
+    DescriptorPool = VK_NULL_HANDLE;
+    MainAtlasDescriptor = VK_NULL_HANDLE;
+    VoxelLightMapDescriptor = VK_NULL_HANDLE;
+
+    VKCTX = nullptr;
 }
 
 void VulkanRenderSession::init(Vulkan *instance) {
@@ -50,6 +62,23 @@ void VulkanRenderSession::init(Vulkan *instance) {
     }
 
     // Разметка дескрипторов
+    if(!DescriptorPool) {
+        std::vector<VkDescriptorPoolSize> pool_sizes = {
+          {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
+          {VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 3}
+        };
+
+        VkDescriptorPoolCreateInfo descriptor_pool = {};
+        descriptor_pool.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        descriptor_pool.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+        descriptor_pool.maxSets = 8;
+        descriptor_pool.poolSizeCount = (uint32_t) pool_sizes.size();
+        descriptor_pool.pPoolSizes = pool_sizes.data();
+
+        assert(!vkCreateDescriptorPool(VkInst->Graphics.Device, &descriptor_pool, nullptr,
+                                     &DescriptorPool));
+    }
+
     if(!MainAtlasDescLayout) {
 	    std::vector<VkDescriptorSetLayoutBinding> shaderLayoutBindings =
         {
@@ -81,7 +110,20 @@ void VulkanRenderSession::init(Vulkan *instance) {
             instance->Graphics.Device, &descriptorLayout, nullptr, &MainAtlasDescLayout));
     }
 
-    if(!LightMapDescLayout) {
+    if(!MainAtlasDescriptor) {
+        VkDescriptorSetAllocateInfo ciAllocInfo =
+        {
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                .pNext = nullptr,
+                .descriptorPool = DescriptorPool,
+                .descriptorSetCount = 1,
+                .pSetLayouts = &MainAtlasDescLayout
+        };
+
+        assert(!vkAllocateDescriptorSets(instance->Graphics.Device, &ciAllocInfo, &MainAtlasDescriptor));
+    }
+
+    if(!VoxelLightMapDescLayout) {
 	    std::vector<VkDescriptorSetLayoutBinding> shaderLayoutBindings =
         {
             {
@@ -108,9 +150,21 @@ void VulkanRenderSession::init(Vulkan *instance) {
 			.pBindings = shaderLayoutBindings.data()
 		};
 
-        assert(!vkCreateDescriptorSetLayout( instance->Graphics.Device, &descriptorLayout, nullptr, &LightMapDescLayout));
+        assert(!vkCreateDescriptorSetLayout( instance->Graphics.Device, &descriptorLayout, nullptr, &VoxelLightMapDescLayout));
     }
-        
+
+    if(!VoxelLightMapDescriptor) {
+        VkDescriptorSetAllocateInfo ciAllocInfo =
+        {
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                .pNext = nullptr,
+                .descriptorPool = DescriptorPool,
+                .descriptorSetCount = 1,
+                .pSetLayouts = &VoxelLightMapDescLayout
+        };
+
+        assert(!vkAllocateDescriptorSets(instance->Graphics.Device, &ciAllocInfo, &VoxelLightMapDescriptor));
+    }
 
     std::vector<VkPushConstantRange> worldWideShaderPushConstants =
     {
@@ -121,12 +175,39 @@ void VulkanRenderSession::init(Vulkan *instance) {
         }
     };
 
+    if(!VKCTX) {
+        VKCTX = std::make_shared<VulkanContext>(VkInst);
+        
+        VKCTX->MainTest.atlasAddCallbackOnUniformChange([this]() -> bool {
+            updateDescriptor_MainAtlas();
+            return true;
+        });
+
+        VKCTX->LightDummy.atlasAddCallbackOnUniformChange([this]() -> bool {
+            updateDescriptor_VoxelsLight();
+            return true;
+        });
+
+        NodeVertexStatic *array = (NodeVertexStatic*) VKCTX->TestQuad.mapMemory();
+        array[0] = {112, 114, 113, 0, 0, 0, 0, 0, 0};
+        array[1] = {114, 114, 113, 0, 0, 0, 0, 65535, 0};
+        array[2] = {114, 112, 113, 0, 0, 0, 0, 65535, 65535};
+        array[3] = {112, 114, 113, 0, 0, 0, 0, 0, 0};
+        array[4] = {114, 112, 113, 0, 0, 0, 0, 65535, 65535};
+        array[5] = {112, 112, 113, 0, 0, 0, 0, 0, 65535};
+        VKCTX->TestQuad.unMapMemory();
+    }
+
+    updateDescriptor_MainAtlas();
+    updateDescriptor_VoxelsLight();
+    updateDescriptor_ChunksLight();
+
     // Разметка графических конвейеров
     if(!MainAtlas_LightMap_PipelineLayout) {
         std::vector<VkDescriptorSetLayout> layouts =
         {
             MainAtlasDescLayout,
-            LightMapDescLayout
+            VoxelLightMapDescLayout
         };
 
 		const VkPipelineLayoutCreateInfo pPipelineLayoutCreateInfo =
@@ -168,16 +249,16 @@ void VulkanRenderSession::init(Vulkan *instance) {
     {
         // Для статичных непрозрачных и полупрозрачных вокселей
         if(!VoxelShaderVertex)
-            VoxelShaderVertex = VkInst->createShaderFromFile("assets/shaders/chunk/voxel.vert.bin");
+            VoxelShaderVertex = VkInst->createShader(getResource("shaders/chunk/voxel.vert.bin")->makeView());
 
         if(!VoxelShaderGeometry)
-            VoxelShaderGeometry = VkInst->createShaderFromFile("assets/shaders/chunk/voxel.geom.bin");
+            VoxelShaderGeometry = VkInst->createShader(getResource("shaders/chunk/voxel.geom.bin")->makeView());
 
         if(!VoxelShaderFragmentOpaque)
-            VoxelShaderFragmentOpaque = VkInst->createShaderFromFile("assets/shaders/chunk/voxel_opaque.frag.bin");
+            VoxelShaderFragmentOpaque = VkInst->createShader(getResource("shaders/chunk/voxel_opaque.frag.bin")->makeView());
 
         if(!VoxelShaderFragmentTransparent)
-            VoxelShaderFragmentTransparent = VkInst->createShaderFromFile("assets/shaders/chunk/voxel_transparent.frag.bin");
+            VoxelShaderFragmentTransparent = VkInst->createShader(getResource("shaders/chunk/voxel_transparent.frag.bin")->makeView());
 
 		// Конвейер шейдеров
 		std::vector<VkPipelineShaderStageCreateInfo> shaderStages =
@@ -404,16 +485,16 @@ void VulkanRenderSession::init(Vulkan *instance) {
 
         // Для статичных непрозрачных и полупрозрачных нод
         if(!NodeShaderVertex)
-            NodeShaderVertex = VkInst->createShaderFromFile("assets/shaders/chunk/node.vert.bin");
+            NodeShaderVertex = VkInst->createShader(getResource("shaders/chunk/node.vert.bin")->makeView());
 
         if(!NodeShaderGeometry)
-            NodeShaderGeometry = VkInst->createShaderFromFile("assets/shaders/chunk/node.geom.bin");
+            NodeShaderGeometry = VkInst->createShader(getResource("shaders/chunk/node.geom.bin")->makeView());
 
         if(!NodeShaderFragmentOpaque)
-            NodeShaderFragmentOpaque = VkInst->createShaderFromFile("assets/shaders/chunk/node_opaque.frag.bin");
+            NodeShaderFragmentOpaque = VkInst->createShader(getResource("shaders/chunk/node_opaque.frag.bin")->makeView());
 
         if(!NodeShaderFragmentTransparent)
-            NodeShaderFragmentTransparent = VkInst->createShaderFromFile("assets/shaders/chunk/node_transparent.frag.bin");
+            NodeShaderFragmentTransparent = VkInst->createShader(getResource("shaders/chunk/node_transparent.frag.bin")->makeView());
 
         ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
 
@@ -510,6 +591,85 @@ void VulkanRenderSession::beforeDraw() {
 }
 
 void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuffer drawCmd) {
+    glm::mat4 proj = glm::perspective<float>(75, float(VkInst->Screen.Width)/float(VkInst->Screen.Height), 0.5, std::pow(2, 17));
+    PCO.ProjView = glm::mat4(Quat);
+    //PCO.ProjView *= proj;
+    PCO.Model = glm::mat4(1); //= glm::rotate(glm::mat4(1), float(gTime/10), glm::vec3(0, 1, 0));
+
+    vkCmdBindPipeline(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, NodeStaticOpaquePipeline);
+	vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, 0, sizeof(WorldPCO), &PCO);
+    vkCmdBindDescriptorSets(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, 
+        MainAtlas_LightMap_PipelineLayout,  0, 2, 
+        (const VkDescriptorSet[]) {MainAtlasDescriptor, VoxelLightMapDescriptor}, 0, nullptr);
+
+    VkDeviceSize vkOffsets = 0;
+    VkBuffer vkBuffer = VKCTX->TestQuad;
+    vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
+    vkCmdDraw(drawCmd, 6, 1, 0, 0);
+}
+
+void VulkanRenderSession::updateDescriptor_MainAtlas() {
+    VkDescriptorBufferInfo bufferInfo = VKCTX->MainTest;
+    VkDescriptorImageInfo imageInfo = VKCTX->MainTest;
+
+    std::vector<VkWriteDescriptorSet> ciDescriptorSet =
+    {
+        {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .pNext = nullptr,
+                .dstSet = MainAtlasDescriptor,
+                .dstBinding = 0,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .pImageInfo = &imageInfo
+        }, {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .pNext = nullptr,
+                .dstSet = MainAtlasDescriptor,
+                .dstBinding = 1,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .pBufferInfo = &bufferInfo
+        }
+    };
+
+    vkUpdateDescriptorSets(VkInst->Graphics.Device, ciDescriptorSet.size(), ciDescriptorSet.data(), 0, nullptr);
+}
+
+void VulkanRenderSession::updateDescriptor_VoxelsLight() {
+    VkDescriptorBufferInfo bufferInfo = VKCTX->LightDummy;
+    VkDescriptorImageInfo imageInfo = VKCTX->LightDummy;
+
+    std::vector<VkWriteDescriptorSet> ciDescriptorSet =
+    {
+        {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .pNext = nullptr,
+            .dstSet = VoxelLightMapDescriptor,
+            .dstBinding = 0,
+            .dstArrayElement = 0,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo = &imageInfo
+        }, {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .pNext = nullptr,
+            .dstSet = VoxelLightMapDescriptor,
+            .dstBinding = 1,
+            .dstArrayElement = 0,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .pBufferInfo = &bufferInfo
+        }
+    };
+
+    vkUpdateDescriptorSets(VkInst->Graphics.Device, ciDescriptorSet.size(), ciDescriptorSet.data(), 0, nullptr);
+}
+
+void VulkanRenderSession::updateDescriptor_ChunksLight() {
 
 }
 

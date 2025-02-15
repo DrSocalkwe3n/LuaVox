@@ -9,54 +9,33 @@ namespace LV::Net {
 
 using namespace TOS;
 
-Server::~Server() {
-    stop();
-    wait();
+bool SocketServer::isStopped() {
+    return !Acceptor.is_open();
 }
 
-bool Server::isStopped() {
-    return !IsAlive;
-}
 
-void Server::stop() {
-    NeedClose = true;
-    NeedClose.notify_all();
-    if(Acceptor.is_open())
-        Acceptor.close();
-}
-
-void Server::wait() {
-    while(bool val = IsAlive)
-        IsAlive.wait(val);
-}
-
-coro<void> Server::async_wait() {
-    co_await Lock.async_wait();
-}
-
-coro<void> Server::run() {
-    IsAlive.store(true);
-
-    try {
-        while(true) { // TODO: ловить ошибки на async_accept
-            co_spawn(OnConnect(co_await Acceptor.async_accept()));
+coro<void> SocketServer::run(std::function<coro<>(tcp::socket)> onConnect) {
+    while(true) { // TODO: ловить ошибки на async_accept
+        try {
+            co_spawn(onConnect(co_await Acceptor.async_accept()));
+        } catch(const std::exception &exc) {
+            if(const boost::system::system_error *errc = dynamic_cast<const boost::system::system_error*>(&exc);
+                    errc && (errc->code() == asio::error::operation_aborted || errc->code() == asio::error::bad_descriptor))
+                break;
         }
-    } catch(const std::exception &exc) {
-        //if(!NeedClose)
-            // TODO: std::cout << exc.what() << std::endl;
     }
-
-    Lock.cancel();
-    IsAlive.store(false);
-    IsAlive.notify_all();
 }
 
 
 AsyncSocket::~AsyncSocket() {
-    boost::lock_guard lock(SendPackets.Mtx);
-
     if(SendPackets.Context)
         SendPackets.Context->NeedShutdown = true;
+
+    boost::lock_guard lock(SendPackets.Mtx);
+
+    if(Socket.is_open())
+        try { Socket.close(); } catch(...) {}
+
 
     SendPackets.SenderGuard.cancel();
     WorkDeadline.cancel();
@@ -70,7 +49,7 @@ void AsyncSocket::pushPackets(std::vector<Packet> *simplePackets, std::vector<Sm
             || SendPackets.SmartBuffer.size() + (smartPackets ? smartPackets->size() : 0) >= MAX_SMART_PACKETS
             || SendPackets.SizeInQueue >= MAX_PACKETS_SIZE_IN_WAIT)) 
     {
-        Socket.close();
+        try { Socket.close(); } catch(...) {}
         // TODO: std::cout << "Передоз пакетами, сокет закрыт" << std::endl;
     }
 
@@ -143,7 +122,7 @@ coro<> AsyncSocket::read(std::byte *data, uint32_t size) {
 void AsyncSocket::closeRead() {
     if(Socket.is_open() && !ReadShutdowned) {
         ReadShutdowned = true;
-        Socket.shutdown(boost::asio::socket_base::shutdown_receive);
+        try { Socket.shutdown(boost::asio::socket_base::shutdown_receive); } catch(...) {}
     }
 }
 

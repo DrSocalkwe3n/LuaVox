@@ -3,6 +3,7 @@
 #include "Common/Abstract.hpp"
 #include <Client/Vulkan/Vulkan.hpp>
 #include <glm/ext/matrix_transform.hpp>
+#include <vulkan/vulkan_core.h>
 
 /*
     У движка есть один текстурный атлас VK_IMAGE_VIEW_TYPE_2D_ARRAY(RGBA_UINT) и к нему Storage с инфой о положении текстур
@@ -52,7 +53,6 @@ struct VoxelVertexPoint {
 };
 
 /*
-    Из-за карт освещения индексов не будет
     Максимальный размер меша 14^3 м от центра ноды
     Координатное пространство то же, что и у вокселей + 8 позиций с двух сторон
     Рисуется полигонами
@@ -78,6 +78,20 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
     Pos::Object Pos;
     glm::quat Quat;
 
+    struct VulkanContext {
+        AtlasImage MainTest, LightDummy;
+        Buffer TestQuad;
+
+        VulkanContext(Vulkan *vkInst)
+            : MainTest(vkInst), LightDummy(vkInst),
+            TestQuad(vkInst, sizeof(NodeVertexStatic)*6)
+        {}
+    };
+
+    std::shared_ptr<VulkanContext> VKCTX;
+
+    VkDescriptorPool DescriptorPool = VK_NULL_HANDLE;
+
     /*
         .binding = 0,
         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,    Текстурный атлас
@@ -85,13 +99,15 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,            Данные к атласу
     */
 	VkDescriptorSetLayout MainAtlasDescLayout = VK_NULL_HANDLE;
+    VkDescriptorSet MainAtlasDescriptor = VK_NULL_HANDLE;
     /*
         .binding = 2,
-        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,    Карта освещения
+        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,    Воксельная карта освещения
         .binding = 3,
         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,            Информация о размерах карты для приведения размеров
     */
-	VkDescriptorSetLayout LightMapDescLayout = VK_NULL_HANDLE;
+	VkDescriptorSetLayout VoxelLightMapDescLayout = VK_NULL_HANDLE;
+    VkDescriptorSet VoxelLightMapDescriptor = VK_NULL_HANDLE;
 
     // Для отрисовки с использованием текстурного атласа и карты освещения
     VkPipelineLayout MainAtlas_LightMap_PipelineLayout = VK_NULL_HANDLE;
@@ -146,6 +162,11 @@ public:
 
     void beforeDraw();
     void drawWorld(GlobalTime gTime, float dTime, VkCommandBuffer drawCmd);
+
+private:
+    void updateDescriptor_MainAtlas();
+    void updateDescriptor_VoxelsLight();
+    void updateDescriptor_ChunksLight();
 };
 
 }

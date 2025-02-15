@@ -34,7 +34,7 @@ namespace LV::Client::VK {
 
 struct ServerObj {
 	Server::GameServer GS;
-	Net::Server LS;
+	Net::SocketServer LS;
 
 	ServerObj(asio::io_context &ioc)
 		: GS(ioc, ""), LS(ioc, [&](tcp::socket sock) -> coro<> { co_await GS.pushSocketConnect(std::move(sock)); }, 7890)
@@ -89,6 +89,19 @@ Vulkan::Vulkan(asio::io_context &ioc)
 		} catch(const std::exception &exc) {
 			LOG.error() << "Vulkan::run: " << exc.what();
 		}
+
+		try { Game.RSession = nullptr; } catch(const std::exception &exc) {
+			LOG.error() << "Game.RSession = nullptr: " << exc.what();
+		}
+
+		try { Game.Session = nullptr; } catch(const std::exception &exc) {
+			LOG.error() << "Game.Session = nullptr: " << exc.what();
+		}
+
+		try { Game.Server = nullptr; } catch(const std::exception &exc) {
+			LOG.error() << "Game.Server = nullptr: " << exc.what();
+		}
+
 		GuardLock.reset();
 	});
 }
@@ -154,18 +167,6 @@ void Vulkan::run()
 					Game.Server->GS.shutdown("Завершение работы из-за остановки клиента");
 			} catch(const std::exception &exc) {
 				LOG.error() << "Game.Server->GS.shutdown: " << exc.what();
-			}
-
-			try { Game.RSession = nullptr; } catch(const std::exception &exc) {
-				LOG.error() << "Game.RSession = nullptr: " << exc.what();
-			}
-
-			try { Game.Session = nullptr; } catch(const std::exception &exc) {
-				LOG.error() << "Game.Session = nullptr: " << exc.what();
-			}
-
-			try { Game.Server = nullptr; } catch(const std::exception &exc) {
-				LOG.error() << "Game.Server = nullptr: " << exc.what();
 			}
 		}
 
@@ -235,7 +236,7 @@ void Vulkan::run()
 				.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 				.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-				.image = Graphics.InlineTexture.Image,
+				.image = Graphics.DrawBuffers[Graphics.DrawBufferCurrent].Image, // Graphics.InlineTexture.Image,
 				.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
 			};
 
@@ -246,7 +247,7 @@ void Vulkan::run()
 		{
 			const VkClearValue clear_values[2] =
 			{
-				[0] = { .color = { .float32 = { 0.2f, 0.2f, 0.4f, 1.f }}},
+				[0] = { .color = { .float32 = { 0.1f, 0.1f, 0.1f, 1.f }}},
 				[1] = { .depthStencil = { 1, 0 } },
 			};
 		
@@ -255,7 +256,7 @@ void Vulkan::run()
 				.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
 				.pNext = nullptr,
 				.renderPass = Graphics.RenderPass,
-				.framebuffer = Graphics.InlineTexture.Frame,
+				.framebuffer = Graphics.DrawBuffers[Graphics.DrawBufferCurrent].FrameBuffer, //Graphics.InlineTexture.Frame,
 				.renderArea = VkRect2D {
 					.offset = {0, 0},
 					.extent = Screen.FrameExtent
@@ -288,69 +289,163 @@ void Vulkan::run()
             glm::ivec2 interfaceSize = {int(Screen.Width*720/minSize), int(Screen.Height*720/minSize)};
 		}
 
-		vkCmdEndRenderPass(Graphics.CommandBufferRender);
+		// vkCmdEndRenderPass(Graphics.CommandBufferRender);
+
+		// {
+		// 	VkImageMemoryBarrier src_barrier =
+		// 	{
+		// 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+		// 		.pNext = nullptr,
+		// 		.srcAccessMask = 0,
+		// 		.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+		// 		.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		// 		.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		// 		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		// 		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		// 		.image = Graphics.InlineTexture.Image,
+		// 		.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+		// 	};
+
+		// 	VkImageMemoryBarrier dst_barrier =
+		// 	{
+		// 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+		// 		.pNext = nullptr,
+		// 		.srcAccessMask = 0,
+		// 		.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+		// 		.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		// 		.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		// 		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		// 		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		// 		.image = Graphics.DrawBuffers[Graphics.DrawBufferCurrent].Image,
+		// 		.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+		// 	};
+
+		// 	vkCmdPipelineBarrier(
+		// 		Graphics.CommandBufferRender,
+		// 		VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+		// 		VK_PIPELINE_STAGE_TRANSFER_BIT,
+		// 		0,
+		// 		0, nullptr,
+		// 		0, nullptr,
+		// 		1, &src_barrier
+		// 	);
+
+		// 	vkCmdPipelineBarrier(
+		// 		Graphics.CommandBufferRender,
+		// 		VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+		// 		VK_PIPELINE_STAGE_TRANSFER_BIT,
+		// 		0,
+		// 		0, nullptr,
+		// 		0, nullptr,
+		// 		1, &dst_barrier
+		// 	);
+
+		// 	VkImageCopy copy_region =
+		// 	{
+		// 		.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+		// 		.srcOffset = {0, 0, 0},
+		// 		.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+		// 		.dstOffset = {0, 0, 0},
+		// 		.extent = {Screen.FrameExtent.width, Screen.FrameExtent.height, 1}
+		// 	};
+
+		// 	vkCmdCopyImage(
+		// 		Graphics.CommandBufferRender,
+		// 		Graphics.InlineTexture.Image,
+		// 		VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		// 		Graphics.DrawBuffers[Graphics.DrawBufferCurrent].Image,
+		// 		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		// 		1, &copy_region
+		// 	);
+
+		// 	VkImageMemoryBarrier post_copy_barrier =
+		// 	{
+		// 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+		// 		.pNext = nullptr,
+		// 		.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+		// 		.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+		// 		.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		// 		.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		// 		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		// 		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		// 		.image = Graphics.DrawBuffers[Graphics.DrawBufferCurrent].Image,
+		// 		.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+		// 	};
+
+		// 	vkCmdPipelineBarrier(
+		// 		Graphics.CommandBufferRender,
+		// 		VK_PIPELINE_STAGE_TRANSFER_BIT,
+		// 		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		// 		0,
+		// 		0, nullptr,
+		// 		0, nullptr,
+		// 		1, &post_copy_barrier
+		// 	);
+		// }
 		
-		{
-			VkImageMemoryBarrier prePresentBarrier =
-			{
-				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-				.pNext = nullptr,
-				.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-				.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
-				.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-				.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-				.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-				.image = Graphics.InlineTexture.Image,
-				.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
-			};
+		// {
+		// 	VkImageMemoryBarrier prePresentBarrier =
+		// 	{
+		// 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+		// 		.pNext = nullptr,
+		// 		.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+		// 		.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+		// 		.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		// 		.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		// 		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		// 		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		// 		.image = Graphics.InlineTexture.Image,
+		// 		.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+		// 	};
 
-			vkCmdPipelineBarrier(Graphics.CommandBufferRender, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-					0, 0, nullptr, 0, nullptr, 1, &prePresentBarrier);
-		}
+		// 	vkCmdPipelineBarrier(Graphics.CommandBufferRender, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		// 			0, 0, nullptr, 0, nullptr, 1, &prePresentBarrier);
+		// }
 
-		{
-			VkImageMemoryBarrier image_memory_barrier = 
-			{
-				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-				.pNext = nullptr,
-				.srcAccessMask = 0,
-				.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-				.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-				.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-				.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-				.image = Graphics.DrawBuffers[Graphics.DrawBufferCurrent].Image,
-				.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
-			};
+		// {
+		// 	VkImageMemoryBarrier image_memory_barrier = 
+		// 	{
+		// 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+		// 		.pNext = nullptr,
+		// 		.srcAccessMask = 0,
+		// 		.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+		// 		.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		// 		.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		// 		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		// 		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		// 		.image = Graphics.DrawBuffers[Graphics.DrawBufferCurrent].Image,
+		// 		.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+		// 	};
 
-			vkCmdPipelineBarrier(Graphics.CommandBufferRender, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-					0, 0, nullptr, 0, nullptr, 1, &image_memory_barrier);
-		}
+		// 	vkCmdPipelineBarrier(Graphics.CommandBufferRender, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		// 			0, 0, nullptr, 0, nullptr, 1, &image_memory_barrier);
+		// }
 
-		{
-			const VkClearValue clear_values[2] =
-			{
-				[0] = { .color = { .float32 = { 0.1f, 0.1f, 0.1f, 1.0f }}},
-				[1] = { .depthStencil = { 1, 0 } },
-			};
+		// {
+		// 	const VkClearValue clear_values[2] =
+		// 	{
+		// 		[0] = { .color = { .float32 = { 0.1f, 0.1f, 0.1f, 1.0f }}},
+		// 		[1] = { .depthStencil = { 1, 0 } },
+		// 	};
 		
-			const VkRenderPassBeginInfo rp_begin =
-			{
-				.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-				.pNext = nullptr,
-				.renderPass = Graphics.RenderPass,
-				.framebuffer = Graphics.DrawBuffers[Graphics.DrawBufferCurrent].FrameBuffer,
-				.renderArea = VkRect2D {
-					.offset = {0, 0},
-					.extent = Screen.FrameExtent
-				},
-				.clearValueCount = 2,
-				.pClearValues = clear_values
-			};
+		// 	const VkRenderPassBeginInfo rp_begin =
+		// 	{
+		// 		.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+		// 		.pNext = nullptr,
+		// 		.renderPass = Graphics.RenderPass,
+		// 		.framebuffer = Graphics.DrawBuffers[Graphics.DrawBufferCurrent].FrameBuffer,
+		// 		.renderArea = VkRect2D {
+		// 			.offset = {0, 0},
+		// 			.extent = Screen.FrameExtent
+		// 		},
+		// 		.clearValueCount = 2,
+		// 		.pClearValues = clear_values
+		// 	};
 			
-			vkCmdBeginRenderPass(Graphics.CommandBufferRender, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
-		}
+		// 	vkCmdBeginRenderPass(Graphics.CommandBufferRender, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
+		// }
+
+
 
 		#ifdef HAS_IMGUI
 		ImGui_ImplVulkan_NewFrame();
@@ -629,7 +724,8 @@ void Vulkan::buildSwapchains()
 		.imageColorSpace = Graphics.SurfaceColorSpace,
 		.imageExtent = swapchainExtent,
 		.imageArrayLayers = 1,
-		.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+		.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+			| VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 		.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
 		.queueFamilyIndexCount = 0,
 		.pQueueFamilyIndices = nullptr,
@@ -777,9 +873,10 @@ void Vulkan::buildSwapchains()
 			.samples = VK_SAMPLE_COUNT_1_BIT,
 			.tiling = VK_IMAGE_TILING_OPTIMAL,
 			.usage =
-				VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-				VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-				VK_IMAGE_USAGE_SAMPLED_BIT,
+				VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+				| VK_IMAGE_USAGE_TRANSFER_DST_BIT
+				| VK_IMAGE_USAGE_SAMPLED_BIT
+				| VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
 			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
 			.queueFamilyIndexCount = 0,
 			.pQueueFamilyIndices = nullptr,
@@ -1876,7 +1973,7 @@ bool Vulkan::needFullVulkanRebuild()
 	return false;
 }
 
-std::shared_ptr<ShaderModule> Vulkan::createShader(const ByteBuffer &data)
+std::shared_ptr<ShaderModule> Vulkan::createShader(std::string_view data)
 {
 	assert(Graphics.Device);
 	assert(data.size());
@@ -1884,11 +1981,6 @@ std::shared_ptr<ShaderModule> Vulkan::createShader(const ByteBuffer &data)
 	std::dynamic_pointer_cast<IVulkanDependent>(module)->init(this);
 	ROS_Dependents.insert(module);
 	return module;
-}
-
-std::shared_ptr<ShaderModule> Vulkan::createShaderFromFile(std::filesystem::path file)
-{
-	return createShader(std::ifstream(file));
 }
 
 void Vulkan::registerDependent(std::shared_ptr<IVulkanDependent> dependent)
@@ -2457,8 +2549,8 @@ void Pipeline::init(Vulkan *instance)
 // Shader
 
 
-ShaderModule::ShaderModule(const ByteBuffer &buff)
-	: Source(buff)
+ShaderModule::ShaderModule(std::string_view view)
+	: Source(view)
 {}
 
 void ShaderModule::free(Vulkan *instance)
@@ -4467,10 +4559,10 @@ PipelineVF::~PipelineVF() = default;
 void PipelineVF::init(Vulkan *instance)
 {
 	if(!ShaderVertex)
-		ShaderVertex = instance->createShaderFromFile(PathVertex);
+		ShaderVertex = instance->createShader(getResource(PathVertex)->makeView());
 
 	if(!ShaderFragment)
-		ShaderFragment = instance->createShaderFromFile(PathFragment);
+		ShaderFragment = instance->createShader(getResource(PathFragment)->makeView());
 
 	Settings.ShaderStages =
 	{
@@ -4525,13 +4617,13 @@ PipelineVGF::~PipelineVGF() = default;
 void PipelineVGF::init(Vulkan *instance)
 {
 	if(!ShaderVertex)
-		ShaderVertex = instance->createShaderFromFile(PathVertex);
+		ShaderVertex = instance->createShader(getResource(PathVertex)->makeView());
 
 	if(!ShaderGeometry)
-		ShaderGeometry = instance->createShaderFromFile(PathGeometry);
+		ShaderGeometry = instance->createShader(getResource(PathGeometry)->makeView());
 
 	if(!ShaderFragment)
-		ShaderFragment = instance->createShaderFromFile(PathFragment);
+		ShaderFragment = instance->createShader(getResource(PathFragment)->makeView());
 
 	Settings.ShaderStages =
 	{

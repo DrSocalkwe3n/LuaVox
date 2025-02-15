@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.13)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fdata-sections -ffunction-sections")
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -UNDEBUG")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--gc-sections") # -rdynamic
 
 project (LuaVox VERSION 0.0 DESCRIPTION "LuaVox Description")
@@ -59,10 +60,10 @@ target_link_libraries(${PROJECT_NAME} PUBLIC TOS_Lib)
 
 
 # Static Assets
-file(GLOB_RECURSE ASSETS RELATIVE "${PROJECT_SOURCE_DIR}/Work/assets" "Work/assets/*.*")
+file(GLOB_RECURSE ASSETS RELATIVE "${PROJECT_SOURCE_DIR}/assets" "assets/*.*")
 add_custom_command(OUTPUT assets.o resources.cpp INPUT ${ASSETS}
     COMMAND cd ${CMAKE_CURRENT_BINARY_DIR} && ${CMAKE_CURRENT_SOURCE_DIR}/Src/assets.py ${ASSETS}
-    COMMAND cd "${CMAKE_CURRENT_SOURCE_DIR}/Work/assets" && ld -r -b binary -o '${CMAKE_CURRENT_BINARY_DIR}/assets.o' ${ASSETS}
+    COMMAND cd "${CMAKE_CURRENT_SOURCE_DIR}/assets" && ld -r -b binary -o '${CMAKE_CURRENT_BINARY_DIR}/assets.o' ${ASSETS}
     COMMAND objcopy --rename-section .data=.rodata,alloc,load,readonly,data,contents ${CMAKE_CURRENT_BINARY_DIR}/assets.o ${CMAKE_CURRENT_BINARY_DIR}/assets.o)
 
 SET_SOURCE_FILES_PROPERTIES(assets.o PROPERTIES EXTERNAL_OBJECT true GENERATED true)

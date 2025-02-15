@@ -327,9 +327,7 @@ public:
 	/* Части графических конвейеров
 	Удалить можно только после полной деинициализации вулкана */
 	// Загрузка шейдера
-	std::shared_ptr<ShaderModule> createShader(const ByteBuffer &data);
-	// Загрузка шейдера с файла
-	std::shared_ptr<ShaderModule> createShaderFromFile(std::filesystem::path file);
+	std::shared_ptr<ShaderModule> createShader(std::string_view data);
 	// Регистрация объекта зависимого от изменений в графическом конвейере
 	void registerDependent(std::shared_ptr<IVulkanDependent> dependent);
 	// Регистрация объекта зависимого от изменений в графическом конвейере
@@ -472,14 +470,14 @@ public:
 */
 class ShaderModule : public IVulkanDependent {
 	VkShaderModule Module = VK_NULL_HANDLE;
-	ByteBuffer Source;
+	std::string Source;
 
 protected:
 	virtual void free(Vulkan *instance) override;
 	virtual void init(Vulkan *instance) override;
 
 public:
-	ShaderModule(const ByteBuffer &buff);
+	ShaderModule(std::string_view view);
 	virtual ~ShaderModule();
 
 	VkShaderModule getModule() const { return Module; }

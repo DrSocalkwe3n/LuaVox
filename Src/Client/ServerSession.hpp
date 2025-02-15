@@ -37,7 +37,7 @@ class ServerSession : public AsyncObject, public IServerSession, public ISurface
 
     boost::lockfree::spsc_queue<ParsedPacket*> NetInputPackets;
 
-    //
+    // PYR - поворот камеры по осям xyz в радианах, PYR_Offset для сглаживание поворота
     glm::vec3 PYR = glm::vec3(0), PYR_Offset = glm::vec3(0);
     double PYR_At = 0;
     static constexpr float PYR_TIME_DELTA = 30;

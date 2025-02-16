@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Abstract.hpp"
+#include "Common/Abstract.hpp"
 #include "Common/Async.hpp"
 #include "Common/Lockable.hpp"
 #include "Common/Net.hpp"
@@ -31,10 +32,6 @@ class ServerSession : public AsyncObject, public IServerSession, public ISurface
 
     TOS::Logger LOG = "ServerSession";
 
-    struct {
-        glm::quat Quat;
-    } Camera;
-
     boost::lockfree::spsc_queue<ParsedPacket*> NetInputPackets;
 
     // PYR - поворот камеры по осям xyz в радианах, PYR_Offset для сглаживание поворота
@@ -42,6 +39,17 @@ class ServerSession : public AsyncObject, public IServerSession, public ISurface
     double PYR_At = 0;
     static constexpr float PYR_TIME_DELTA = 30;
     GlobalTime GTime;
+
+    struct {
+        bool W = false, A = false, S = false, D = false, SHIFT = false, SPACE = false;
+        bool CTRL = false;
+
+        void clear()
+        {
+            std::memset(this, 0, sizeof(*this));
+        }
+    } Keys;
+    Pos::Object Pos = Pos::Object(0), Speed = Pos::Object(0);
 
 public:
     // Нужен сокет, на котором только что был согласован игровой протокол (asyncInitGameProtocol)

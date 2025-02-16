@@ -16,6 +16,7 @@ struct SB_Region {
     std::unordered_map<Pos::Local16_u, Node> Nodes;
     std::unordered_map<DefNodeId_t, std::string> NodeMap;
     std::vector<Entity> Entityes;
+    std::unordered_map<DefEntityId_t, std::string> EntityMap;
 };
 
 class IWorldSaveBackend {

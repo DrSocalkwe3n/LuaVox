@@ -8,10 +8,12 @@
 #include <chrono>
 #include <glm/geometric.hpp>
 #include <memory>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include "SaveBackends/Filesystem.hpp"
+#include "Server/SaveBackend.hpp"
 
 namespace LV::Server {
 
@@ -27,9 +29,10 @@ static thread_local std::vector<ContentViewCircle> TL_Circles;
 
 std::vector<ContentViewCircle> GameServer::WorldObj::calcCVCs(ContentViewCircle circle, int depth)
 {
-    TL_Circles.reserve(4096);
+    TL_Circles.clear();
+    TL_Circles.reserve(256);
     TL_Circles.push_back(circle);
-    _calcContentViewCircles(TL_Circles.front(), depth);
+    _calcContentViewCircles(circle, depth);
     return TL_Circles;
 }
 
@@ -215,6 +218,42 @@ coro<> GameServer::pushSocketGameProtocol(tcp::socket socket, const std::string 
     }
 }
 
+Region* GameServer::forceGetRegion(WorldId_t worldId, Pos::GlobalRegion pos) {
+    auto worldIter = Expanse.Worlds.find(worldId);
+    assert(worldIter != Expanse.Worlds.end());
+    World &world = *worldIter->second;
+
+    auto iterRegion = world.Regions.find(pos);
+    if(iterRegion == world.Regions.end() || !iterRegion->second->IsLoaded) {
+        std::unique_ptr<Region> &region = world.Regions[pos];
+
+        if(!region)
+            region = std::make_unique<Region>();
+
+        std::string worldName = "world_"+std::to_string(worldId);
+        if(SaveBackend.World->isExist(worldName, pos)) {
+            SB_Region data;
+            SaveBackend.World->load(worldName, pos, &data);
+
+            region->IsLoaded = true;
+            region->load(&data);
+        } else {
+            region->IsLoaded = true;
+            if(pos.Y == 0) {
+                for(int z = 0; z < 16; z++)
+                    for(int x = 0; x < 16; x++) {
+                        region->Voxels[x][0][z].push_back({{0, 0, 0}, {255, 255, 255}, 0});
+                    }
+            }
+        }
+
+        std::fill(region->IsChunkChanged_Voxels, region->IsChunkChanged_Voxels+64, ~0);
+        return region.get();
+    } else {
+        return iterRegion->second.get();
+    }
+}
+
 void GameServer::init(fs::path worldPath) {
     Expanse.Worlds[0] = std::make_unique<World>(0);
 
@@ -302,16 +341,16 @@ void GameServer::run() {
         // Сон или подгонка длительности такта при высоких нагрузках
         std::chrono::steady_clock::time_point atTickEnd = std::chrono::steady_clock::now();
         float currentWastedTime = double((atTickEnd-atTickStart).count() * std::chrono::steady_clock::duration::period::num) / std::chrono::steady_clock::duration::period::den;
-        float freeTime = CurrentTickDuration-currentWastedTime-GlobalTickLagTime;
+        GlobalTickLagTime += CurrentTickDuration-currentWastedTime;
 
-        if(freeTime > 0) {
+        if(GlobalTickLagTime > 0) {
             CurrentTickDuration -= PerTickAdjustment;
             if(CurrentTickDuration < PerTickDuration)
                 CurrentTickDuration = PerTickDuration;
 
-            std::this_thread::sleep_for(std::chrono::milliseconds(uint32_t(1000*freeTime)));
+            std::this_thread::sleep_for(std::chrono::milliseconds(uint32_t(1000*GlobalTickLagTime)));
+            GlobalTickLagTime = 0;
         } else {
-            GlobalTickLagTime = freeTime;
             CurrentTickDuration += PerTickAdjustment;
         }
     }
@@ -558,7 +597,7 @@ void GameServer::stepWorlds() {
 
                     if(rPos != pRegion.first || pWorld.first != entity.WorldId) {
 
-                        Region *toRegion = Expanse.Worlds[entity.WorldId]->forceLoadOrGetRegion(rPos);
+                        Region *toRegion = forceGetRegion(entity.WorldId, rPos);
                         LocalEntityId_t newId = toRegion->pushEntity(entity);
                         // toRegion->Entityes[newId].WorldId = Если мир изменился
 
@@ -808,6 +847,11 @@ void GameServer::stepWorlds() {
             if(needToUnload) {
                 regionsToRemove.push_back(pRegion.first);
             }
+
+            // Сброс информации об изменившихся данных
+
+            std::fill(region.IsChunkChanged_Voxels, region.IsChunkChanged_Voxels+64, 0);
+            std::fill(region.IsChunkChanged_Nodes, region.IsChunkChanged_Nodes+64, 0);
         }
 
         for(Pos::GlobalRegion regionPos : regionsToRemove) {
@@ -962,7 +1006,13 @@ void GameServer::stepSendPlayersPackets() {
 }
 
 void GameServer::stepLoadRegions() {
+    for(auto &iterWorld : Expanse.Worlds) {
+        for(Pos::GlobalRegion pos : iterWorld.second->NeedToLoad) {
+            forceGetRegion(iterWorld.first, pos);
+        }
 
+        iterWorld.second->NeedToLoad.clear();
+    }
 }
 
 void GameServer::stepGlobal() {

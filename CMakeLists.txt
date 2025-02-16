@@ -1,7 +1,17 @@
 cmake_minimum_required(VERSION 3.13)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fdata-sections -ffunction-sections")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fdata-sections -ffunction-sections -DGLM_FORCE_DEPTH_ZERO_TO_ONE")
 set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -UNDEBUG")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--gc-sections") # -rdynamic
+
+# gprof
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pg")
+# set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pg")
+
+# sanitizer
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address")
+#set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
+
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=undefined -fno-sanitize-recover=all -fsanitize=float-divide-by-zero -fsanitize=float-cast-overflow -fno-sanitize=null -fno-sanitize=alignment") 
 
 project (LuaVox VERSION 0.0 DESCRIPTION "LuaVox Description")
 add_executable(${PROJECT_NAME})
@@ -11,20 +21,41 @@ file(GLOB_RECURSE SOURCES RELATIVE ${PROJECT_SOURCE_DIR} "Src/*.cpp")
 target_sources(${PROJECT_NAME} PRIVATE ${SOURCES})
 target_include_directories(${PROJECT_NAME} PUBLIC "${PROJECT_SOURCE_DIR}/Src")
 
+include(FetchContent)
+
 # Boost
 if(POLICY CMP0167)
   cmake_policy(SET CMP0167 NEW)
 endif()
 
 set(Boost_USE_STATIC_LIBS ON)
-find_package(Boost REQUIRED COMPONENTS thread json)
-target_include_directories(${PROJECT_NAME} PUBLIC ${Boost_INCLUDE_DIR})
-target_link_libraries(${PROJECT_NAME} PUBLIC Boost::thread Boost::json)
+# find_package(Boost REQUIRED COMPONENTS thread json)
+# target_include_directories(${PROJECT_NAME} PUBLIC ${Boost_INCLUDE_DIR})
+# target_link_libraries(${PROJECT_NAME} PUBLIC Boost::thread Boost::json)
+
+set(BOOST_INCLUDE_LIBRARIES asio thread json)
+set(BOOST_ENABLE_CMAKE ON)
+FetchContent_Declare(
+  Boost
+  URL https://github.com/boostorg/boost/releases/download/boost-1.87.0/boost-1.87.0-cmake.7z
+  USES_TERMINAL_DOWNLOAD TRUE
+  DOWNLOAD_NO_EXTRACT FALSE
+)
+FetchContent_MakeAvailable(Boost)
+target_link_libraries(${PROJECT_NAME} PUBLIC Boost::asio Boost::thread Boost::json)
 
 # glm
-find_package(glm REQUIRED)
-target_include_directories(${PROJECT_NAME} PUBLIC ${GLM_INCLUDE_DIR})
-target_link_libraries(${PROJECT_NAME} PUBLIC ${GLM_LIBRARY})
+# find_package(glm REQUIRED)
+# target_include_directories(${PROJECT_NAME} PUBLIC ${GLM_INCLUDE_DIR})
+# target_link_libraries(${PROJECT_NAME} PUBLIC ${GLM_LIBRARY})
+
+FetchContent_Declare(
+  glm
+  GIT_REPOSITORY https://github.com/g-truc/glm.git
+  GIT_TAG 1.0.1
+)
+FetchContent_MakeAvailable(glm)
+target_link_libraries(${PROJECT_NAME} PUBLIC glm)
 
 # JPEG
 find_package(JPEG REQUIRED)
@@ -40,13 +71,26 @@ target_link_libraries(${PROJECT_NAME} PUBLIC PNG::PNG)
 target_include_directories(${PROJECT_NAME} PUBLIC "${PROJECT_SOURCE_DIR}/Libs/png++")
 
 # GLFW3
-find_package(glfw3 REQUIRED)
-target_include_directories(${PROJECT_NAME} PUBLIC ${GLFW_INCLUDE_DIRS})
+# find_package(glfw3 REQUIRED)
+# target_include_directories(${PROJECT_NAME} PUBLIC ${GLFW_INCLUDE_DIRS})
+
+FetchContent_Declare(
+    glfw
+    GIT_REPOSITORY https://github.com/glfw/glfw.git
+    GIT_TAG 3.4
+)
+FetchContent_MakeAvailable(glfw)
 target_link_libraries(${PROJECT_NAME} PUBLIC glfw)
 
 # FreeType
 find_package(Freetype REQUIRED)
-target_include_directories(${PROJECT_NAME} PUBLIC ${GLM_INCLUDE_DIRS})
+# FetchContent_Declare(
+#   freetype
+#   GIT_REPOSITORY https://github.com/freetype/freetype.git
+#   GIT_TAG freetype
+# )
+# FetchContent_MakeAvailable(freetype)
+target_include_directories(${PROJECT_NAME} PUBLIC ${freetype_INCLUDE_DIRS})
 target_link_libraries(${PROJECT_NAME} PUBLIC Freetype::Freetype)
 
 # ImGui
@@ -70,5 +114,3 @@ SET_SOURCE_FILES_PROPERTIES(assets.o PROPERTIES EXTERNAL_OBJECT true GENERATED t
 add_library(assets STATIC resources.cpp assets.o)
 SET_TARGET_PROPERTIES(assets PROPERTIES LINKER_LANGUAGE C)
 target_link_libraries(${PROJECT_NAME} PUBLIC assets uring)
-
-#set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=address -fsanitize=undefined -fno-sanitize-recover=all -fsanitize=float-divide-by-zero -fsanitize=float-cast-overflow -fno-sanitize=null -fno-sanitize=alignment") 

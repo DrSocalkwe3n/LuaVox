@@ -16,9 +16,7 @@
 
 #define HAS_IMGUI
 
-#define GLM_FORCE_DEPTH_ZERO_TO_ONE
-
-#include <freetype/freetype.h>
+#include "freetype/freetype.h"
 
 #include <vulkan/vulkan_core.h>
 #include <glm/ext.hpp>
@@ -27,6 +25,8 @@
 #include <vulkan/vulkan.h>
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
+
+static_assert(GLM_CONFIG_CLIP_CONTROL == GLM_CLIP_CONTROL_RH_ZO);
 
 #define IMGUI_ENABLE_STB_TEXTEDIT_UNICODE
 
@@ -245,6 +245,8 @@ public:
 
 		std::list<void (Vulkan::*)()> ImGuiInterfaces;
 		std::unique_ptr<ServerObj> Server;
+
+		double MLastPosX, MLastPosY;
 	} Game;
 
 private:

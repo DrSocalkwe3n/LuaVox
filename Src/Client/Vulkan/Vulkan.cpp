@@ -140,7 +140,7 @@ void Vulkan::run()
 	while(!NeedShutdown)
 	{
 		float dTime = glfwGetTime()-prevTime;
-		prevTime = glfwGetTime();
+		prevTime += dTime;
 
 		Screen.State = DrawState::Begin;
 		{
@@ -176,15 +176,15 @@ void Vulkan::run()
 			// Спрятать или показать курсор
 			{
 				int mode = glfwGetInputMode(Graphics.Window, GLFW_CURSOR);
-				if(mode == GLFW_CURSOR_HIDDEN && sobj.CursorMode != ISurfaceEventListener::EnumCursorMoveMode::MoveAndHidden)
+				if(mode == GLFW_CURSOR_DISABLED && sobj.CursorMode != ISurfaceEventListener::EnumCursorMoveMode::MoveAndHidden)
 					glfwSetInputMode(Graphics.Window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 				else if(mode == GLFW_CURSOR_NORMAL && sobj.CursorMode != ISurfaceEventListener::EnumCursorMoveMode::Default) {
-					glfwSetInputMode(Graphics.Window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
 					glfwSetCursorPos(Graphics.Window, Screen.Width/2., Screen.Height/2.);
+					Game.MLastPosX = Screen.Width/2.;
+					Game.MLastPosY = Screen.Height/2.;
+					glfwSetInputMode(Graphics.Window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 				}
 			}
-
-
 		}
 
 		// if(CallBeforeDraw)
@@ -197,7 +197,8 @@ void Vulkan::run()
 		glfwPollEvents();
 
 		VkResult err;
-		err = vkAcquireNextImageKHR(Graphics.Device, Graphics.Swapchain, UINT64_MAX, SemaphoreImageAcquired, (VkFence) 0, &Graphics.DrawBufferCurrent);
+		err = vkAcquireNextImageKHR(Graphics.Device, Graphics.Swapchain, 1000000000ULL/20, SemaphoreImageAcquired, (VkFence) 0, &Graphics.DrawBufferCurrent);
+		GlobalTime gTime = glfwGetTime();
 
 		if (err == VK_ERROR_OUT_OF_DATE_KHR)
 		{
@@ -207,327 +208,325 @@ void Vulkan::run()
 		} else if (err == VK_SUBOPTIMAL_KHR)
 		{
 			LOGGER.debug() << "VK_SUBOPTIMAL_KHR Pre";
+		} else if(err == VK_SUCCESS) {
+
+			Screen.State = DrawState::Drawing;
+			//Готовим инструкции рисовки
+			{
+				const VkCommandBufferBeginInfo cmd_buf_info =
+				{
+					.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+					.pNext = nullptr,
+					.flags = 0,
+					.pInheritanceInfo = nullptr
+				};
+
+				assert(!vkBeginCommandBuffer(Graphics.CommandBufferRender, &cmd_buf_info));
+			}
+
+			{
+				VkImageMemoryBarrier image_memory_barrier =
+				{
+					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+					.pNext = nullptr,
+					.srcAccessMask = 0,
+					.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+					.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+					.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.image = Graphics.DrawBuffers[Graphics.DrawBufferCurrent].Image, // Graphics.InlineTexture.Image,
+					.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+				};
+
+				vkCmdPipelineBarrier(Graphics.CommandBufferRender, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+						0, 0, nullptr, 0, nullptr, 1, &image_memory_barrier);
+			}
+
+			{
+				const VkClearValue clear_values[2] =
+				{
+					[0] = { .color = { .float32 = { 0.1f, 0.1f, 0.1f, 1.f }}},
+					[1] = { .depthStencil = { 1, 0 } },
+				};
+			
+				const VkRenderPassBeginInfo rp_begin =
+				{
+					.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+					.pNext = nullptr,
+					.renderPass = Graphics.RenderPass,
+					.framebuffer = Graphics.DrawBuffers[Graphics.DrawBufferCurrent].FrameBuffer, //Graphics.InlineTexture.Frame,
+					.renderArea = VkRect2D {
+						.offset = {0, 0},
+						.extent = Screen.FrameExtent
+					},
+					.clearValueCount = 2,
+					.pClearValues = clear_values
+				};
+				
+				vkCmdBeginRenderPass(Graphics.CommandBufferRender, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
+			}
+
+
+			{
+				VkViewport viewport = { 0.f, 0.f, float(Screen.Width), float(Screen.Height), 0.f, 1.f };
+				vkCmdSetViewport(Graphics.CommandBufferRender, 0, 1, &viewport);
+
+				VkRect2D scissor = { { int32_t(0), int32_t(0) }, { Screen.Width, Screen.Height } };
+				vkCmdSetScissor(Graphics.CommandBufferRender, 0, 1, &scissor);
+			}
+
+			if(Game.RSession) {
+				auto &robj = *Game.RSession;
+				// Рендер мира
+
+				robj.drawWorld(gTime, dTime, Graphics.CommandBufferRender);
+
+				uint16_t minSize = std::min(Screen.Width, Screen.Height);
+				glm::ivec2 interfaceSize = {int(Screen.Width*720/minSize), int(Screen.Height*720/minSize)};
+			}
+
+			// vkCmdEndRenderPass(Graphics.CommandBufferRender);
+
+			// {
+			// 	VkImageMemoryBarrier src_barrier =
+			// 	{
+			// 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+			// 		.pNext = nullptr,
+			// 		.srcAccessMask = 0,
+			// 		.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+			// 		.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			// 		.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			// 		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			// 		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			// 		.image = Graphics.InlineTexture.Image,
+			// 		.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+			// 	};
+
+			// 	VkImageMemoryBarrier dst_barrier =
+			// 	{
+			// 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+			// 		.pNext = nullptr,
+			// 		.srcAccessMask = 0,
+			// 		.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+			// 		.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+			// 		.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			// 		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			// 		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			// 		.image = Graphics.DrawBuffers[Graphics.DrawBufferCurrent].Image,
+			// 		.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+			// 	};
+
+			// 	vkCmdPipelineBarrier(
+			// 		Graphics.CommandBufferRender,
+			// 		VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+			// 		VK_PIPELINE_STAGE_TRANSFER_BIT,
+			// 		0,
+			// 		0, nullptr,
+			// 		0, nullptr,
+			// 		1, &src_barrier
+			// 	);
+
+			// 	vkCmdPipelineBarrier(
+			// 		Graphics.CommandBufferRender,
+			// 		VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+			// 		VK_PIPELINE_STAGE_TRANSFER_BIT,
+			// 		0,
+			// 		0, nullptr,
+			// 		0, nullptr,
+			// 		1, &dst_barrier
+			// 	);
+
+			// 	VkImageCopy copy_region =
+			// 	{
+			// 		.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+			// 		.srcOffset = {0, 0, 0},
+			// 		.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+			// 		.dstOffset = {0, 0, 0},
+			// 		.extent = {Screen.FrameExtent.width, Screen.FrameExtent.height, 1}
+			// 	};
+
+			// 	vkCmdCopyImage(
+			// 		Graphics.CommandBufferRender,
+			// 		Graphics.InlineTexture.Image,
+			// 		VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			// 		Graphics.DrawBuffers[Graphics.DrawBufferCurrent].Image,
+			// 		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			// 		1, &copy_region
+			// 	);
+
+			// 	VkImageMemoryBarrier post_copy_barrier =
+			// 	{
+			// 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+			// 		.pNext = nullptr,
+			// 		.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+			// 		.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			// 		.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			// 		.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			// 		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			// 		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			// 		.image = Graphics.DrawBuffers[Graphics.DrawBufferCurrent].Image,
+			// 		.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+			// 	};
+
+			// 	vkCmdPipelineBarrier(
+			// 		Graphics.CommandBufferRender,
+			// 		VK_PIPELINE_STAGE_TRANSFER_BIT,
+			// 		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			// 		0,
+			// 		0, nullptr,
+			// 		0, nullptr,
+			// 		1, &post_copy_barrier
+			// 	);
+			// }
+			
+			// {
+			// 	VkImageMemoryBarrier prePresentBarrier =
+			// 	{
+			// 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+			// 		.pNext = nullptr,
+			// 		.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			// 		.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+			// 		.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			// 		.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			// 		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			// 		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			// 		.image = Graphics.InlineTexture.Image,
+			// 		.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+			// 	};
+
+			// 	vkCmdPipelineBarrier(Graphics.CommandBufferRender, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+			// 			0, 0, nullptr, 0, nullptr, 1, &prePresentBarrier);
+			// }
+
+			// {
+			// 	VkImageMemoryBarrier image_memory_barrier = 
+			// 	{
+			// 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+			// 		.pNext = nullptr,
+			// 		.srcAccessMask = 0,
+			// 		.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			// 		.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+			// 		.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			// 		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			// 		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			// 		.image = Graphics.DrawBuffers[Graphics.DrawBufferCurrent].Image,
+			// 		.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+			// 	};
+
+			// 	vkCmdPipelineBarrier(Graphics.CommandBufferRender, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			// 			0, 0, nullptr, 0, nullptr, 1, &image_memory_barrier);
+			// }
+
+			// {
+			// 	const VkClearValue clear_values[2] =
+			// 	{
+			// 		[0] = { .color = { .float32 = { 0.1f, 0.1f, 0.1f, 1.0f }}},
+			// 		[1] = { .depthStencil = { 1, 0 } },
+			// 	};
+			
+			// 	const VkRenderPassBeginInfo rp_begin =
+			// 	{
+			// 		.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+			// 		.pNext = nullptr,
+			// 		.renderPass = Graphics.RenderPass,
+			// 		.framebuffer = Graphics.DrawBuffers[Graphics.DrawBufferCurrent].FrameBuffer,
+			// 		.renderArea = VkRect2D {
+			// 			.offset = {0, 0},
+			// 			.extent = Screen.FrameExtent
+			// 		},
+			// 		.clearValueCount = 2,
+			// 		.pClearValues = clear_values
+			// 	};
+				
+			// 	vkCmdBeginRenderPass(Graphics.CommandBufferRender, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
+			// }
+
+
+
+			#ifdef HAS_IMGUI
+			ImGui_ImplVulkan_NewFrame();
+			ImGui_ImplGlfw_NewFrame();
+			ImGui::NewFrame();
+
+			ImGui::SetNextWindowPos({0, 0});
+			ImGui::SetNextWindowSize({(float) Screen.Width, (float) Screen.Height});
+
+			assert(Game.ImGuiInterfaces.size());
+			(this->*Game.ImGuiInterfaces.back())();
+
+			ImGui::Render();
+			ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), Graphics.CommandBufferRender);
+			#endif
+
+			vkCmdEndRenderPass(Graphics.CommandBufferRender);
+
+			{
+				VkImageMemoryBarrier prePresentBarrier =
+				{
+					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+					.pNext = nullptr,
+					.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+					.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+					.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+					.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.image = Graphics.DrawBuffers[Graphics.DrawBufferCurrent].Image,
+					.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+				};
+
+				vkCmdPipelineBarrier(Graphics.CommandBufferRender, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+						0, 0, nullptr, 0, nullptr, 1, &prePresentBarrier);
+			}
+
+			assert(!vkEndCommandBuffer(Graphics.CommandBufferRender));
+
+			{
+				VkFence nullFence = VK_NULL_HANDLE;
+				VkPipelineStageFlags pipe_stage_flags = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+				VkSubmitInfo submit_info =
+				{
+					.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+					.pNext = nullptr,
+					.waitSemaphoreCount = 1,
+					.pWaitSemaphores = &SemaphoreImageAcquired,
+					.pWaitDstStageMask = &pipe_stage_flags,
+					.commandBufferCount = 1,
+					.pCommandBuffers = &Graphics.CommandBufferRender,
+					.signalSemaphoreCount = 1,
+					.pSignalSemaphores = &SemaphoreDrawComplete
+				};
+
+				//Рисуем, когда получим картинку
+				assert(!vkQueueSubmit(Graphics.DeviceQueueGraphic, 1, &submit_info, nullFence));
+			}
+
+			{
+				VkPresentInfoKHR present =
+				{
+					.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+					.pNext = NULL,
+					.waitSemaphoreCount = 1,
+					.pWaitSemaphores = &SemaphoreDrawComplete,
+					.swapchainCount = 1,
+					.pSwapchains = &Graphics.Swapchain,
+					.pImageIndices = &Graphics.DrawBufferCurrent
+				};
+
+				// Завершаем картинку
+				err = vkQueuePresentKHR(Graphics.DeviceQueueGraphic, &present);
+				if (err == VK_ERROR_OUT_OF_DATE_KHR)
+				{
+					freeSwapchains();
+					buildSwapchains();
+				} else if (err == VK_SUBOPTIMAL_KHR)
+					LOGGER.debug() << "VK_SUBOPTIMAL_KHR Post";
+				else
+					assert(!err);
+			}
 		} else
-			assert(!err);
-
-
-		Screen.State = DrawState::Drawing;
-		//Готовим инструкции рисовки
-		{
-			const VkCommandBufferBeginInfo cmd_buf_info =
-			{
-				.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-				.pNext = nullptr,
-				.flags = 0,
-				.pInheritanceInfo = nullptr
-			};
-
-			assert(!vkBeginCommandBuffer(Graphics.CommandBufferRender, &cmd_buf_info));
-		}
-
-		{
-			VkImageMemoryBarrier image_memory_barrier =
-			{
-				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-				.pNext = nullptr,
-				.srcAccessMask = 0,
-				.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-				.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-				.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-				.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-				.image = Graphics.DrawBuffers[Graphics.DrawBufferCurrent].Image, // Graphics.InlineTexture.Image,
-				.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
-			};
-
-			vkCmdPipelineBarrier(Graphics.CommandBufferRender, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-					0, 0, nullptr, 0, nullptr, 1, &image_memory_barrier);
-		}
-
-		{
-			const VkClearValue clear_values[2] =
-			{
-				[0] = { .color = { .float32 = { 0.1f, 0.1f, 0.1f, 1.f }}},
-				[1] = { .depthStencil = { 1, 0 } },
-			};
-		
-			const VkRenderPassBeginInfo rp_begin =
-			{
-				.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-				.pNext = nullptr,
-				.renderPass = Graphics.RenderPass,
-				.framebuffer = Graphics.DrawBuffers[Graphics.DrawBufferCurrent].FrameBuffer, //Graphics.InlineTexture.Frame,
-				.renderArea = VkRect2D {
-					.offset = {0, 0},
-					.extent = Screen.FrameExtent
-				},
-				.clearValueCount = 2,
-				.pClearValues = clear_values
-			};
-			
-			vkCmdBeginRenderPass(Graphics.CommandBufferRender, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
-		}
-
-
-		{
-			VkViewport viewport = { 0.f, 0.f, float(Screen.Width), float(Screen.Height), 0.f, 1.f };
-			vkCmdSetViewport(Graphics.CommandBufferRender, 0, 1, &viewport);
-
-			VkRect2D scissor = { { int32_t(0), int32_t(0) }, { Screen.Width, Screen.Height } };
-			vkCmdSetScissor(Graphics.CommandBufferRender, 0, 1, &scissor);
-		}
-
-		GlobalTime gTime = glfwGetTime();
-
-		if(Game.RSession) {
-			auto &robj = *Game.RSession;
-			// Рендер мира
-
-			robj.drawWorld(gTime, dTime, Graphics.CommandBufferRender);
-
-            uint16_t minSize = std::min(Screen.Width, Screen.Height);
-            glm::ivec2 interfaceSize = {int(Screen.Width*720/minSize), int(Screen.Height*720/minSize)};
-		}
-
-		// vkCmdEndRenderPass(Graphics.CommandBufferRender);
-
-		// {
-		// 	VkImageMemoryBarrier src_barrier =
-		// 	{
-		// 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-		// 		.pNext = nullptr,
-		// 		.srcAccessMask = 0,
-		// 		.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-		// 		.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-		// 		.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-		// 		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		// 		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		// 		.image = Graphics.InlineTexture.Image,
-		// 		.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
-		// 	};
-
-		// 	VkImageMemoryBarrier dst_barrier =
-		// 	{
-		// 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-		// 		.pNext = nullptr,
-		// 		.srcAccessMask = 0,
-		// 		.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-		// 		.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-		// 		.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-		// 		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		// 		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		// 		.image = Graphics.DrawBuffers[Graphics.DrawBufferCurrent].Image,
-		// 		.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
-		// 	};
-
-		// 	vkCmdPipelineBarrier(
-		// 		Graphics.CommandBufferRender,
-		// 		VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
-		// 		VK_PIPELINE_STAGE_TRANSFER_BIT,
-		// 		0,
-		// 		0, nullptr,
-		// 		0, nullptr,
-		// 		1, &src_barrier
-		// 	);
-
-		// 	vkCmdPipelineBarrier(
-		// 		Graphics.CommandBufferRender,
-		// 		VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
-		// 		VK_PIPELINE_STAGE_TRANSFER_BIT,
-		// 		0,
-		// 		0, nullptr,
-		// 		0, nullptr,
-		// 		1, &dst_barrier
-		// 	);
-
-		// 	VkImageCopy copy_region =
-		// 	{
-		// 		.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-		// 		.srcOffset = {0, 0, 0},
-		// 		.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-		// 		.dstOffset = {0, 0, 0},
-		// 		.extent = {Screen.FrameExtent.width, Screen.FrameExtent.height, 1}
-		// 	};
-
-		// 	vkCmdCopyImage(
-		// 		Graphics.CommandBufferRender,
-		// 		Graphics.InlineTexture.Image,
-		// 		VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-		// 		Graphics.DrawBuffers[Graphics.DrawBufferCurrent].Image,
-		// 		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-		// 		1, &copy_region
-		// 	);
-
-		// 	VkImageMemoryBarrier post_copy_barrier =
-		// 	{
-		// 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-		// 		.pNext = nullptr,
-		// 		.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-		// 		.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-		// 		.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-		// 		.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-		// 		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		// 		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		// 		.image = Graphics.DrawBuffers[Graphics.DrawBufferCurrent].Image,
-		// 		.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
-		// 	};
-
-		// 	vkCmdPipelineBarrier(
-		// 		Graphics.CommandBufferRender,
-		// 		VK_PIPELINE_STAGE_TRANSFER_BIT,
-		// 		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-		// 		0,
-		// 		0, nullptr,
-		// 		0, nullptr,
-		// 		1, &post_copy_barrier
-		// 	);
-		// }
-		
-		// {
-		// 	VkImageMemoryBarrier prePresentBarrier =
-		// 	{
-		// 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-		// 		.pNext = nullptr,
-		// 		.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-		// 		.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
-		// 		.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-		// 		.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-		// 		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		// 		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		// 		.image = Graphics.InlineTexture.Image,
-		// 		.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
-		// 	};
-
-		// 	vkCmdPipelineBarrier(Graphics.CommandBufferRender, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-		// 			0, 0, nullptr, 0, nullptr, 1, &prePresentBarrier);
-		// }
-
-		// {
-		// 	VkImageMemoryBarrier image_memory_barrier = 
-		// 	{
-		// 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-		// 		.pNext = nullptr,
-		// 		.srcAccessMask = 0,
-		// 		.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-		// 		.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-		// 		.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-		// 		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		// 		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		// 		.image = Graphics.DrawBuffers[Graphics.DrawBufferCurrent].Image,
-		// 		.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
-		// 	};
-
-		// 	vkCmdPipelineBarrier(Graphics.CommandBufferRender, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-		// 			0, 0, nullptr, 0, nullptr, 1, &image_memory_barrier);
-		// }
-
-		// {
-		// 	const VkClearValue clear_values[2] =
-		// 	{
-		// 		[0] = { .color = { .float32 = { 0.1f, 0.1f, 0.1f, 1.0f }}},
-		// 		[1] = { .depthStencil = { 1, 0 } },
-		// 	};
-		
-		// 	const VkRenderPassBeginInfo rp_begin =
-		// 	{
-		// 		.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-		// 		.pNext = nullptr,
-		// 		.renderPass = Graphics.RenderPass,
-		// 		.framebuffer = Graphics.DrawBuffers[Graphics.DrawBufferCurrent].FrameBuffer,
-		// 		.renderArea = VkRect2D {
-		// 			.offset = {0, 0},
-		// 			.extent = Screen.FrameExtent
-		// 		},
-		// 		.clearValueCount = 2,
-		// 		.pClearValues = clear_values
-		// 	};
-			
-		// 	vkCmdBeginRenderPass(Graphics.CommandBufferRender, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
-		// }
-
-
-
-		#ifdef HAS_IMGUI
-		ImGui_ImplVulkan_NewFrame();
-		ImGui_ImplGlfw_NewFrame();
-		ImGui::NewFrame();
-
-		ImGui::SetNextWindowPos({0, 0});
-		ImGui::SetNextWindowSize({(float) Screen.Width, (float) Screen.Height});
-
-		assert(Game.ImGuiInterfaces.size());
-		(this->*Game.ImGuiInterfaces.back())();
-
-		ImGui::Render();
-		ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), Graphics.CommandBufferRender);
-		#endif
-
-		vkCmdEndRenderPass(Graphics.CommandBufferRender);
-
-		{
-			VkImageMemoryBarrier prePresentBarrier =
-			{
-				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-				.pNext = nullptr,
-				.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-				.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
-				.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-				.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-				.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-				.image = Graphics.DrawBuffers[Graphics.DrawBufferCurrent].Image,
-				.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
-			};
-
-			vkCmdPipelineBarrier(Graphics.CommandBufferRender, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-					0, 0, nullptr, 0, nullptr, 1, &prePresentBarrier);
-		}
-
-		assert(!vkEndCommandBuffer(Graphics.CommandBufferRender));
-
-		{
-			VkFence nullFence = VK_NULL_HANDLE;
-			VkPipelineStageFlags pipe_stage_flags = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-			VkSubmitInfo submit_info =
-			{
-				.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-				.pNext = nullptr,
-				.waitSemaphoreCount = 1,
-				.pWaitSemaphores = &SemaphoreImageAcquired,
-				.pWaitDstStageMask = &pipe_stage_flags,
-				.commandBufferCount = 1,
-				.pCommandBuffers = &Graphics.CommandBufferRender,
-				.signalSemaphoreCount = 1,
-				.pSignalSemaphores = &SemaphoreDrawComplete
-			};
-
-			//Рисуем, когда получим картинку
-			assert(!vkQueueSubmit(Graphics.DeviceQueueGraphic, 1, &submit_info, nullFence));
-		}
-
-		{
-			VkPresentInfoKHR present =
-			{
-				.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-				.pNext = NULL,
-				.waitSemaphoreCount = 1,
-				.pWaitSemaphores = &SemaphoreDrawComplete,
-				.swapchainCount = 1,
-				.pSwapchains = &Graphics.Swapchain,
-				.pImageIndices = &Graphics.DrawBufferCurrent
-			};
-
-			// Завершаем картинку
-			err = vkQueuePresentKHR(Graphics.DeviceQueueGraphic, &present);
-			if (err == VK_ERROR_OUT_OF_DATE_KHR)
-			{
-				freeSwapchains();
-				buildSwapchains();
-			} else if (err == VK_SUBOPTIMAL_KHR)
-				LOGGER.debug() << "VK_SUBOPTIMAL_KHR Post";
-			else
-				assert(!err);
-		}
+			assert(err == VK_TIMEOUT);
 
 		if(Game.Session) {
 			Game.Session->atFreeDrawTime(gTime, dTime);
@@ -996,8 +995,15 @@ void Vulkan::glfwCallbackOnResize(GLFWwindow *window, int width, int height)
 		handler->freeSwapchains();
 		handler->buildSwapchains();
 
-		if(handler->Game.Session)
+		if(handler->Game.Session) {
 			handler->Game.Session->onResize(width, height);
+
+			if(handler->Game.Session->CursorMode == ISurfaceEventListener::EnumCursorMoveMode::MoveAndHidden) {
+				glfwSetCursorPos(window, width/2., height/2.);
+				handler->Game.MLastPosX = width/2.;
+				handler->Game.MLastPosY = height/2.;
+			}
+		}
 	}
 }
 
@@ -1018,8 +1024,9 @@ void Vulkan::glfwCallbackOnCursorPos(GLFWwindow* window, double xpos, double ypo
 		if(sobj.CursorMode == ISurfaceEventListener::EnumCursorMoveMode::Default) {
 			sobj.onCursorPosChange((int32_t) xpos, (int32_t) ypos);
 		} else {
-			glfwSetCursorPos(handler->Graphics.Window, handler->Screen.Width/2., handler->Screen.Height/2.);
-			sobj.onCursorMove(xpos-handler->Screen.Width/2., handler->Screen.Height/2.-ypos);
+			sobj.onCursorMove(xpos-handler->Game.MLastPosX, handler->Game.MLastPosY-ypos);
+			handler->Game.MLastPosX = xpos;
+			handler->Game.MLastPosY = ypos;
 		}
 	}
 }

@@ -1,8 +1,10 @@
 #include "VulkanRenderSession.hpp"
 #include "Client/Vulkan/Vulkan.hpp"
+#include "Common/Abstract.hpp"
 #include "assets.hpp"
-#include <glm/ext/matrix_transform.hpp>
+#include <memory>
 #include <vulkan/vulkan_core.h>
+#include <fstream>
 
 namespace LV::Client::VK {
 
@@ -92,7 +94,7 @@ void VulkanRenderSession::init(Vulkan *instance) {
                 .binding = 1,
                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .descriptorCount = 1,
-                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+                .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
                 .pImmutableSamplers = nullptr
             }
         };
@@ -136,7 +138,7 @@ void VulkanRenderSession::init(Vulkan *instance) {
                 .binding = 1,
                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .descriptorCount = 1,
-                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+                .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
                 .pImmutableSamplers = nullptr
             }
         };
@@ -188,13 +190,28 @@ void VulkanRenderSession::init(Vulkan *instance) {
             return true;
         });
 
+        int width, height;
+        bool hasAlpha;
+        ByteBuffer image = VK::loadPNG(std::ifstream("/home/mr_s/Workspace/Alpha/LuaVox/assets/grass.png"), width, height, hasAlpha);
+        uint16_t texId = VKCTX->MainTest.atlasAddTexture(width, height);
+        VKCTX->MainTest.atlasChangeTextureData(texId, (const uint32_t*) image.data());
+
+        /*
+        x left -1 ~ right 1
+        y up -1 ~ down 1
+        z far 1 ~ near 0
+
+        glm
+
+        */
+
         NodeVertexStatic *array = (NodeVertexStatic*) VKCTX->TestQuad.mapMemory();
-        array[0] = {112, 114, 113, 0, 0, 0, 0, 0, 0};
-        array[1] = {114, 114, 113, 0, 0, 0, 0, 65535, 0};
-        array[2] = {114, 112, 113, 0, 0, 0, 0, 65535, 65535};
-        array[3] = {112, 114, 113, 0, 0, 0, 0, 0, 0};
-        array[4] = {114, 112, 113, 0, 0, 0, 0, 65535, 65535};
-        array[5] = {112, 112, 113, 0, 0, 0, 0, 0, 65535};
+        array[0] = {112, 114, 50, 0, 0, 0, 0, 0, 0};
+        array[1] = {114, 114, 50, 0, 0, 0, 0, 65535, 0};
+        array[2] = {114, 112, 50, 0, 0, 0, 0, 65535, 65535};
+        array[3] = {112, 114, 50, 0, 0, 0, 0, 0, 0};
+        array[4] = {114, 112, 50, 0, 0, 0, 0, 65535, 65535};
+        array[5] = {112, 112, 50, 0, 0, 0, 0, 0, 65535};
         VKCTX->TestQuad.unMapMemory();
     }
 
@@ -576,8 +593,32 @@ void VulkanRenderSession::onDefEntityUpdates(const std::vector<DefEntityId_c> &u
 
 }
 
-void VulkanRenderSession::onChunksChange(WorldId_c worldId, const std::vector<Pos::GlobalChunk> &changeOrAddList, const std::vector<Pos::GlobalChunk> &remove) {
+void VulkanRenderSession::onChunksChange(WorldId_c worldId, const std::unordered_set<Pos::GlobalChunk> &changeOrAddList, const std::unordered_set<Pos::GlobalChunk> &remove) {
+    for(Pos::GlobalChunk pos : changeOrAddList) {
+        Pos::GlobalRegion rPos(pos.X >> 4, pos.Y >> 4, pos.Z >> 4);
+        Pos::Local16_u cPos(pos.X & 0xf, pos.Y & 0xf, pos.Z & 0xf);
 
+        const auto &voxels = ServerSession->External.Worlds[worldId].Regions[rPos].Chunks[cPos].Voxels;
+        auto &table = External.ChunkVoxelMesh[worldId];
+
+        if(voxels.empty()) {
+            auto iter = table.find(pos);
+            if(iter != table.end())
+                table.erase(iter);
+
+            if(table.empty())
+                External.ChunkVoxelMesh.erase(External.ChunkVoxelMesh.find(worldId));
+        } else {
+            auto &buffer = table[pos] = std::make_unique<Buffer>(VkInst, voxels.size()*6*6*sizeof(NodeVertexStatic));
+            NodeVertexStatic *vertex = (NodeVertexStatic*) buffer->mapMemory();
+
+            for(const VoxelCube &cube : voxels) {
+                
+            }
+
+            buffer->unMapMemory();
+        }
+    }
 }
 
 void VulkanRenderSession::setCameraPos(WorldId_c worldId, Pos::Object pos, glm::quat quat) {
@@ -587,14 +628,19 @@ void VulkanRenderSession::setCameraPos(WorldId_c worldId, Pos::Object pos, glm::
 }
 
 void VulkanRenderSession::beforeDraw() {
-
+    if(VKCTX) {
+        VKCTX->MainTest.atlasUpdateDynamicData();
+        VKCTX->LightDummy.atlasUpdateDynamicData();
+    }
 }
 
 void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuffer drawCmd) {
     glm::mat4 proj = glm::perspective<float>(75, float(VkInst->Screen.Width)/float(VkInst->Screen.Height), 0.5, std::pow(2, 17));
-    PCO.ProjView = glm::mat4(Quat);
-    //PCO.ProjView *= proj;
-    PCO.Model = glm::mat4(1); //= glm::rotate(glm::mat4(1), float(gTime/10), glm::vec3(0, 1, 0));
+    // Сместить в координаты игрока, повернуть относительно взгляда, ещё поворот на 180 и проецировать на экран
+    PCO.ProjView = glm::mat4(1);
+    PCO.ProjView = glm::translate(PCO.ProjView, -glm::vec3(Pos)/float(Pos::Object_t::BS));
+    PCO.ProjView = proj*glm::mat4(Quat)*glm::rotate(glm::mat4(1), glm::pi<float>(), glm::vec3(0, 1, 0))*PCO.ProjView;
+    PCO.Model = glm::mat4(1);
 
     vkCmdBindPipeline(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, NodeStaticOpaquePipeline);
 	vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
@@ -606,7 +652,14 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
     VkDeviceSize vkOffsets = 0;
     VkBuffer vkBuffer = VKCTX->TestQuad;
     vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
-    vkCmdDraw(drawCmd, 6, 1, 0, 0);
+
+    for(int i = 0; i < 16; i++) {
+        PCO.Model = glm::rotate(PCO.Model, glm::half_pi<float>()*i/4, glm::vec3(0, 1, 0));
+        vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, 0, sizeof(WorldPCO), &PCO);
+        vkCmdDraw(drawCmd, 6, 1, 0, 0);
+    }
+    
 }
 
 void VulkanRenderSession::updateDescriptor_MainAtlas() {

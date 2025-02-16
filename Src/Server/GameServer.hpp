@@ -134,6 +134,9 @@ public:
     // Инициализация игрового протокола для сокета (onSocketAuthorized() может передать сокет в onSocketGame())
     coro<> pushSocketGameProtocol(tcp::socket socket, const std::string username);
 
+    /* Загрузит, сгенерирует или просто выдаст регион из мира, который должен существовать */
+    Region* forceGetRegion(WorldId_t worldId, Pos::GlobalRegion pos);
+
 private:
     void init(fs::path worldPath);
     void prerun();

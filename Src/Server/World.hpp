@@ -3,8 +3,10 @@
 #include "Common/Abstract.hpp"
 #include "Server/Abstract.hpp"
 #include "Server/ContentEventController.hpp"
+#include "Server/SaveBackend.hpp"
 #include <memory>
 #include <unordered_map>
+#include <vector>
 
 
 namespace LV::Server {
@@ -15,7 +17,7 @@ class Region {
 public:
     uint64_t IsChunkChanged_Voxels[64] = {0};
     uint64_t IsChunkChanged_Nodes[64] = {0};
-    bool IsChanged = false;
+    bool IsChanged = false; // Изменён ли был регион, относительно последнего сохранения
     // cx cy cz
     std::vector<VoxelCube> Voxels[16][16][16];
     // x y cx cy cz
@@ -132,6 +134,15 @@ public:
 
         return LocalEntityId_t(-1);
     }
+
+    void load(SB_Region *data) {
+        convertRegionVoxelsToChunks(data->Voxels, (std::vector<VoxelCube>*) Voxels);
+    }
+
+    void save(SB_Region *data) {
+        data->Voxels.clear();
+        convertChunkVoxelsToRegion((const std::vector<VoxelCube>*) Voxels, data->Voxels);
+    }
 };
 
 class World {
@@ -153,8 +164,6 @@ public:
     // Игрок начал отслеживать регионы
     void onCEC_RegionsEnter(ContentEventController *cec, const std::vector<Pos::GlobalRegion> &enter);
     void onCEC_RegionsLost(ContentEventController *cec, const std::vector<Pos::GlobalRegion> &lost);
-
-    Region* forceLoadOrGetRegion(Pos::GlobalRegion pos);
 
     DefWorldId_t getDefId() const { return DefId; }
 };

@@ -46,17 +46,4 @@ void World::onCEC_RegionsLost(ContentEventController *cec, const std::vector<Pos
     }
 }
 
-Region* World::forceLoadOrGetRegion(Pos::GlobalRegion pos) {
-    std::unique_ptr<Region> &region = Regions[pos];
-    if(!region)
-        region = std::make_unique<Region>();
-
-    if(!region->IsLoaded) {
-        region->IsLoaded = true;
-    }
-
-    return region.get();
-}
-
-
 }

@@ -1,9 +1,12 @@
 #pragma once
+
 #include "Client/Abstract.hpp"
 #include "Common/Abstract.hpp"
 #include <Client/Vulkan/Vulkan.hpp>
-#include <glm/ext/matrix_transform.hpp>
+#include <memory>
+#include <unordered_map>
 #include <vulkan/vulkan_core.h>
+
 
 /*
     У движка есть один текстурный атлас VK_IMAGE_VIEW_TYPE_2D_ARRAY(RGBA_UINT) и к нему Storage с инфой о положении текстур
@@ -127,6 +130,10 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
 
     std::map<TextureId_c, uint16_t> ServerToAtlas;
 
+    struct {
+        std::unordered_map<WorldId_c, std::unordered_map<Pos::GlobalChunk, std::unique_ptr<Buffer>>> ChunkVoxelMesh;
+    } External;
+
     virtual void free(Vulkan *instance) override;
     virtual void init(Vulkan *instance) override;
 
@@ -153,7 +160,7 @@ public:
     virtual void onDefPortalUpdates(const std::vector<DefPortalId_c> &updates) override;
     virtual void onDefEntityUpdates(const std::vector<DefEntityId_c> &updates) override;
 
-    virtual void onChunksChange(WorldId_c worldId, const std::vector<Pos::GlobalChunk> &changeOrAddList, const std::vector<Pos::GlobalChunk> &remove) override;
+    virtual void onChunksChange(WorldId_c worldId, const std::unordered_set<Pos::GlobalChunk> &changeOrAddList, const std::unordered_set<Pos::GlobalChunk> &remove) override;
     virtual void setCameraPos(WorldId_c worldId, Pos::Object pos, glm::quat quat) override;
 
     glm::mat4 calcViewMatrix(glm::quat quat, glm::vec3 camOffset = glm::vec3(0)) {

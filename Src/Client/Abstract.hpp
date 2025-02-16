@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <Common/Abstract.hpp>
 
@@ -81,7 +82,7 @@ public:
     virtual void onDefEntityUpdates(const std::vector<DefEntityId_c> &updates) = 0;
 
     // Сообщаем об изменившихся чанках
-    virtual void onChunksChange(WorldId_c worldId, const std::vector<Pos::GlobalChunk> &changeOrAddList, const std::vector<Pos::GlobalChunk> &remove) = 0;
+    virtual void onChunksChange(WorldId_c worldId, const std::unordered_set<Pos::GlobalChunk> &changeOrAddList, const std::unordered_set<Pos::GlobalChunk> &remove) = 0;
     // Установить позицию для камеры
     virtual void setCameraPos(WorldId_c worldId, Pos::Object pos, glm::quat quat) = 0;
 
@@ -90,7 +91,7 @@ public:
 
 
 struct Region {
-    std::unordered_map<Pos::Local4_u::Key, Chunk[4][4][4]> Subs;
+    std::unordered_map<Pos::Local16_u, Chunk> Chunks;
 };
 
 
@@ -137,8 +138,8 @@ class IServerSession {
 public:
     struct {
         std::unordered_map<DefWorldId_c, DefWorldInfo>      DefWorlds;
-        std::unordered_map<DefVoxelId_c, VoxelInfo>            DefVoxels;
-        std::unordered_map<DefNodeId_c, NodeInfo>              DefNodes;
+        std::unordered_map<DefVoxelId_c, VoxelInfo>         DefVoxels;
+        std::unordered_map<DefNodeId_c, NodeInfo>           DefNodes;
         std::unordered_map<DefPortalId_c, DefPortalInfo>    DefPortals;
         std::unordered_map<DefEntityId_c, DefEntityInfo>    DefEntityes;
 
@@ -146,6 +147,10 @@ public:
         std::unordered_map<PortalId_c, PortalInfo>          Portals;
         std::unordered_map<EntityId_c, EntityInfo>          Entityes;
     } Registry;
+
+    struct {
+        std::unordered_map<WorldId_c, World> Worlds;
+    } External;
 
     virtual ~IServerSession();
 

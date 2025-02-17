@@ -1,8 +1,10 @@
 #include "VulkanRenderSession.hpp"
+#include "Client/Abstract.hpp"
 #include "Client/Vulkan/Vulkan.hpp"
 #include "Common/Abstract.hpp"
 #include "assets.hpp"
 #include <memory>
+#include <vector>
 #include <vulkan/vulkan_core.h>
 #include <fstream>
 
@@ -77,7 +79,7 @@ void VulkanRenderSession::init(Vulkan *instance) {
         descriptor_pool.poolSizeCount = (uint32_t) pool_sizes.size();
         descriptor_pool.pPoolSizes = pool_sizes.data();
 
-        assert(!vkCreateDescriptorPool(VkInst->Graphics.Device, &descriptor_pool, nullptr,
+        vkAssert(!vkCreateDescriptorPool(VkInst->Graphics.Device, &descriptor_pool, nullptr,
                                      &DescriptorPool));
     }
 
@@ -108,7 +110,7 @@ void VulkanRenderSession::init(Vulkan *instance) {
 			.pBindings = shaderLayoutBindings.data()
 		};
 
-        assert(!vkCreateDescriptorSetLayout(
+        vkAssert(!vkCreateDescriptorSetLayout(
             instance->Graphics.Device, &descriptorLayout, nullptr, &MainAtlasDescLayout));
     }
 
@@ -122,7 +124,7 @@ void VulkanRenderSession::init(Vulkan *instance) {
                 .pSetLayouts = &MainAtlasDescLayout
         };
 
-        assert(!vkAllocateDescriptorSets(instance->Graphics.Device, &ciAllocInfo, &MainAtlasDescriptor));
+        vkAssert(!vkAllocateDescriptorSets(instance->Graphics.Device, &ciAllocInfo, &MainAtlasDescriptor));
     }
 
     if(!VoxelLightMapDescLayout) {
@@ -152,7 +154,7 @@ void VulkanRenderSession::init(Vulkan *instance) {
 			.pBindings = shaderLayoutBindings.data()
 		};
 
-        assert(!vkCreateDescriptorSetLayout( instance->Graphics.Device, &descriptorLayout, nullptr, &VoxelLightMapDescLayout));
+        vkAssert(!vkCreateDescriptorSetLayout( instance->Graphics.Device, &descriptorLayout, nullptr, &VoxelLightMapDescLayout));
     }
 
     if(!VoxelLightMapDescriptor) {
@@ -165,7 +167,7 @@ void VulkanRenderSession::init(Vulkan *instance) {
                 .pSetLayouts = &VoxelLightMapDescLayout
         };
 
-        assert(!vkAllocateDescriptorSets(instance->Graphics.Device, &ciAllocInfo, &VoxelLightMapDescriptor));
+        vkAssert(!vkAllocateDescriptorSets(instance->Graphics.Device, &ciAllocInfo, &VoxelLightMapDescriptor));
     }
 
     std::vector<VkPushConstantRange> worldWideShaderPushConstants =
@@ -205,14 +207,32 @@ void VulkanRenderSession::init(Vulkan *instance) {
 
         */
 
-        NodeVertexStatic *array = (NodeVertexStatic*) VKCTX->TestQuad.mapMemory();
-        array[0] = {112, 114, 50, 0, 0, 0, 0, 0, 0};
-        array[1] = {114, 114, 50, 0, 0, 0, 0, 65535, 0};
-        array[2] = {114, 112, 50, 0, 0, 0, 0, 65535, 65535};
-        array[3] = {112, 114, 50, 0, 0, 0, 0, 0, 0};
-        array[4] = {114, 112, 50, 0, 0, 0, 0, 65535, 65535};
-        array[5] = {112, 112, 50, 0, 0, 0, 0, 0, 65535};
-        VKCTX->TestQuad.unMapMemory();
+        {
+            NodeVertexStatic *array = (NodeVertexStatic*) VKCTX->TestQuad.mapMemory();
+            array[0] = {112, 114, 50, 0, 0, 0, 0, 0, 0};
+            array[1] = {114, 114, 50, 0, 0, 0, 0, 65535, 0};
+            array[2] = {114, 112, 50, 0, 0, 0, 0, 65535, 65535};
+            array[3] = {112, 114, 50, 0, 0, 0, 0, 0, 0};
+            array[4] = {114, 112, 50, 0, 0, 0, 0, 65535, 65535};
+            array[5] = {112, 112, 50, 0, 0, 0, 0, 0, 65535};
+            VKCTX->TestQuad.unMapMemory();
+        }
+
+        {
+            std::vector<VoxelCube> cubes;
+
+            cubes.emplace_back(0, Pos::Local256_u{0, 0, 0}, Pos::Local256_u{1, 1, 1});
+
+            std::vector<VoxelVertexPoint> vertexs = generateMeshForVoxelChunks(cubes);
+
+            if(!vertexs.empty()) {
+                VKCTX->TestVoxel.emplace(VkInst, vertexs.size()*sizeof(VoxelVertexPoint));
+                VoxelVertexPoint *result = (VoxelVertexPoint*) VKCTX->TestVoxel->mapMemory();
+                std::copy(vertexs.data(), vertexs.data()+vertexs.size(), result);
+                TOS::Logger("Test").debug() << result[0].FX << " " << result[0].FY << " " << result[0].FZ;
+                VKCTX->TestVoxel->unMapMemory();
+            }
+        }
     }
 
     updateDescriptor_MainAtlas();
@@ -238,7 +258,7 @@ void VulkanRenderSession::init(Vulkan *instance) {
 			.pPushConstantRanges = worldWideShaderPushConstants.data()
 		};
         
-		assert(!vkCreatePipelineLayout(instance->Graphics.Device, &pPipelineLayoutCreateInfo, nullptr, &MainAtlas_LightMap_PipelineLayout));
+		vkAssert(!vkCreatePipelineLayout(instance->Graphics.Device, &pPipelineLayoutCreateInfo, nullptr, &MainAtlas_LightMap_PipelineLayout));
     }
 
     // Настройка мультисемплинга
@@ -480,7 +500,7 @@ void VulkanRenderSession::init(Vulkan *instance) {
         };
 
         if(!VoxelOpaquePipeline)
-            assert(!vkCreateGraphicsPipelines(instance->Graphics.Device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &VoxelOpaquePipeline));
+            vkAssert(!vkCreateGraphicsPipelines(instance->Graphics.Device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &VoxelOpaquePipeline));
 
         if(!VoxelTransparentPipeline) {
             shaderStages[2].module = *VoxelShaderFragmentTransparent,
@@ -497,7 +517,7 @@ void VulkanRenderSession::init(Vulkan *instance) {
                 .colorWriteMask = 0xf
             };
 
-           assert(!vkCreateGraphicsPipelines(instance->Graphics.Device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &VoxelTransparentPipeline));
+           vkAssert(!vkCreateGraphicsPipelines(instance->Graphics.Device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &VoxelTransparentPipeline));
         }
 
         // Для статичных непрозрачных и полупрозрачных нод
@@ -532,7 +552,7 @@ void VulkanRenderSession::init(Vulkan *instance) {
         };
 
         if(!NodeStaticOpaquePipeline) {
-            assert(!vkCreateGraphicsPipelines(instance->Graphics.Device, VK_NULL_HANDLE,
+            vkAssert(!vkCreateGraphicsPipelines(instance->Graphics.Device, VK_NULL_HANDLE,
                  1, &pipeline, nullptr, &NodeStaticOpaquePipeline));
         }
 
@@ -551,7 +571,7 @@ void VulkanRenderSession::init(Vulkan *instance) {
                 .colorWriteMask = 0xf
             };
 
-            assert(!vkCreateGraphicsPipelines(instance->Graphics.Device, VK_NULL_HANDLE, 
+            vkAssert(!vkCreateGraphicsPipelines(instance->Graphics.Device, VK_NULL_HANDLE, 
                 1, &pipeline, nullptr, &NodeStaticTransparentPipeline));
         }
     }
@@ -654,12 +674,48 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
     vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
 
     for(int i = 0; i < 16; i++) {
-        PCO.Model = glm::rotate(PCO.Model, glm::half_pi<float>()*i/4, glm::vec3(0, 1, 0));
+        PCO.Model = glm::rotate(PCO.Model, glm::half_pi<float>()/4, glm::vec3(0, 1, 0));
         vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, 0, sizeof(WorldPCO), &PCO);
         vkCmdDraw(drawCmd, 6, 1, 0, 0);
     }
+
+    PCO.Model = glm::mat4(1);
+
+    // Проба рендера вокселей
+    vkCmdBindPipeline(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, VoxelOpaquePipeline);
+	vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, 0, sizeof(WorldPCO), &PCO);
+    vkCmdBindDescriptorSets(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, 
+        MainAtlas_LightMap_PipelineLayout,  0, 2, 
+        (const VkDescriptorSet[]) {MainAtlasDescriptor, VoxelLightMapDescriptor}, 0, nullptr);
+
+    if(VKCTX->TestVoxel) {
+        vkBuffer = *VKCTX->TestVoxel;
+        vkCmdDraw(drawCmd, VKCTX->TestVoxel->getSize() / sizeof(VoxelVertexPoint), 1, 0, 0);
+    }
+}
+
+std::vector<VoxelVertexPoint> VulkanRenderSession::generateMeshForVoxelChunks(const std::vector<VoxelCube> cubes) {
+    std::vector<VoxelVertexPoint> out;
+    out.reserve(cubes.size()*6);
     
+    for(const VoxelCube &cube : cubes) {
+        out.emplace_back(
+            cube.Left.X,
+            cube.Left.Y,
+            cube.Left.Z,
+            0,
+            0,
+            cube.Right.X-cube.Left.X,
+            cube.Right.Z-cube.Left.Z,
+            cube.VoxelId,
+            0, 0,
+            0
+        );
+    }
+
+    return out;
 }
 
 void VulkanRenderSession::updateDescriptor_MainAtlas() {

@@ -4,6 +4,7 @@
 #include "Common/Abstract.hpp"
 #include <Client/Vulkan/Vulkan.hpp>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <vulkan/vulkan_core.h>
 
@@ -84,6 +85,7 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
     struct VulkanContext {
         AtlasImage MainTest, LightDummy;
         Buffer TestQuad;
+        std::optional<Buffer> TestVoxel;
 
         VulkanContext(Vulkan *vkInst)
             : MainTest(vkInst), LightDummy(vkInst),
@@ -169,6 +171,8 @@ public:
 
     void beforeDraw();
     void drawWorld(GlobalTime gTime, float dTime, VkCommandBuffer drawCmd);
+
+    static std::vector<VoxelVertexPoint> generateMeshForVoxelChunks(const std::vector<VoxelCube> cubes); 
 
 private:
     void updateDescriptor_MainAtlas();

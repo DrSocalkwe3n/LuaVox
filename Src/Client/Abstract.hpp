@@ -32,7 +32,7 @@ struct GlobalTime {
 
 struct VoxelCube {
     DefVoxelId_c VoxelId;
-    Pos::Local256 Left, Right;
+    Pos::Local256_u Left, Right;
 };
 
 struct Node {

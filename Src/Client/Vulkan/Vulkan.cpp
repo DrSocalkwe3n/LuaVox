@@ -78,6 +78,9 @@ Vulkan::Vulkan(asio::io_context &ioc)
 	Screen.Width = 1920/2;
 	Screen.Height = 1080/2;
 	getSettingsNext() = getBestSettings();
+#ifdef NDEBUG
+	SettingsNext.Debug = false;
+#endif
 	reInit();
 
 	Game.ImGuiInterfaces.push_back(&Vulkan::gui_MainMenu);
@@ -132,8 +135,8 @@ void Vulkan::run()
 	VkSemaphoreCreateInfo semaphoreCreateInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, nullptr, 0 };
 	VkSemaphore SemaphoreImageAcquired, SemaphoreDrawComplete;
 
-	assert(!vkCreateSemaphore(Graphics.Device, &semaphoreCreateInfo, NULL, &SemaphoreImageAcquired));
-	assert(!vkCreateSemaphore(Graphics.Device, &semaphoreCreateInfo, NULL, &SemaphoreDrawComplete));
+	vkAssert(!vkCreateSemaphore(Graphics.Device, &semaphoreCreateInfo, NULL, &SemaphoreImageAcquired));
+	vkAssert(!vkCreateSemaphore(Graphics.Device, &semaphoreCreateInfo, NULL, &SemaphoreDrawComplete));
 
 
 	double prevTime = glfwGetTime();
@@ -221,7 +224,7 @@ void Vulkan::run()
 					.pInheritanceInfo = nullptr
 				};
 
-				assert(!vkBeginCommandBuffer(Graphics.CommandBufferRender, &cmd_buf_info));
+				vkAssert(!vkBeginCommandBuffer(Graphics.CommandBufferRender, &cmd_buf_info));
 			}
 
 			{
@@ -452,7 +455,7 @@ void Vulkan::run()
 			ImGui::SetNextWindowPos({0, 0});
 			ImGui::SetNextWindowSize({(float) Screen.Width, (float) Screen.Height});
 
-			assert(Game.ImGuiInterfaces.size());
+			vkAssert(Game.ImGuiInterfaces.size());
 			(this->*Game.ImGuiInterfaces.back())();
 
 			ImGui::Render();
@@ -480,7 +483,7 @@ void Vulkan::run()
 						0, 0, nullptr, 0, nullptr, 1, &prePresentBarrier);
 			}
 
-			assert(!vkEndCommandBuffer(Graphics.CommandBufferRender));
+			vkAssert(!vkEndCommandBuffer(Graphics.CommandBufferRender));
 
 			{
 				VkFence nullFence = VK_NULL_HANDLE;
@@ -499,7 +502,7 @@ void Vulkan::run()
 				};
 
 				//Рисуем, когда получим картинку
-				assert(!vkQueueSubmit(Graphics.DeviceQueueGraphic, 1, &submit_info, nullFence));
+				vkAssert(!vkQueueSubmit(Graphics.DeviceQueueGraphic, 1, &submit_info, nullFence));
 			}
 
 			{
@@ -523,16 +526,16 @@ void Vulkan::run()
 				} else if (err == VK_SUBOPTIMAL_KHR)
 					LOGGER.debug() << "VK_SUBOPTIMAL_KHR Post";
 				else
-					assert(!err);
+					vkAssert(!err);
 			}
 		} else
-			assert(err == VK_TIMEOUT);
+			vkAssert(err == VK_TIMEOUT);
 
 		if(Game.Session) {
 			Game.Session->atFreeDrawTime(gTime, dTime);
 		}
 
-		assert(!vkQueueWaitIdle(Graphics.DeviceQueueGraphic));
+		vkAssert(!vkQueueWaitIdle(Graphics.DeviceQueueGraphic));
 
 		vkDeviceWaitIdle(Graphics.Device);
 		Screen.State = DrawState::End;
@@ -646,16 +649,16 @@ static void check_vk_result(VkResult err)
 
 void Vulkan::buildSwapchains()
 {
-	assert(Graphics.PhysicalDevice);
-	assert(Graphics.Surface);
-	assert(Graphics.Window);
+	vkAssert(Graphics.PhysicalDevice);
+	vkAssert(Graphics.Surface);
+	vkAssert(Graphics.Window);
 
 	// Определение нового размера буфера
 	std::stringstream report;
 	report << "Пересоздание цепочки вывода, текущий размер окна: " << Screen.Width << " x " << Screen.Height << '\n';
 
 	VkSurfaceCapabilitiesKHR surfaceCapabilities;
-	assert(!vkGetPhysicalDeviceSurfaceCapabilitiesKHR(Graphics.PhysicalDevice, Graphics.Surface, &surfaceCapabilities));
+	vkAssert(!vkGetPhysicalDeviceSurfaceCapabilitiesKHR(Graphics.PhysicalDevice, Graphics.Surface, &surfaceCapabilities));
 
 	uint32_t count = -1;
 	VkExtent2D swapchainExtent;
@@ -735,15 +738,15 @@ void Vulkan::buildSwapchains()
 		.oldSwapchain = oldSwapchain
 	};
 
-	assert(!vkCreateSwapchainKHR(Graphics.Device, &swapchainInfo, nullptr, &Graphics.Swapchain));
+	vkAssert(!vkCreateSwapchainKHR(Graphics.Device, &swapchainInfo, nullptr, &Graphics.Swapchain));
 
 	if (oldSwapchain != VK_NULL_HANDLE)
 		vkDestroySwapchainKHR(Graphics.Device, oldSwapchain, nullptr);
 
 	// Получение сменных буферов
-	assert(!vkGetSwapchainImagesKHR(Graphics.Device, Graphics.Swapchain, &count, nullptr));
+	vkAssert(!vkGetSwapchainImagesKHR(Graphics.Device, Graphics.Swapchain, &count, nullptr));
 	std::vector<VkImage> swapchainImages(count);
-	assert(!vkGetSwapchainImagesKHR(Graphics.Device, Graphics.Swapchain, &count, swapchainImages.data()));
+	vkAssert(!vkGetSwapchainImagesKHR(Graphics.Device, Graphics.Swapchain, &count, swapchainImages.data()));
 
 	Graphics.DrawBuffers.resize(count);
 	Graphics.DrawBufferCount = count;
@@ -779,7 +782,7 @@ void Vulkan::buildSwapchains()
 		};
 
 		Graphics.DrawBuffers[iter].Image = swapchainImages[iter];
-		assert(!vkCreateImageView(Graphics.Device, &color_attachment_view, nullptr, &Graphics.DrawBuffers[iter].View));
+		vkAssert(!vkCreateImageView(Graphics.Device, &color_attachment_view, nullptr, &Graphics.DrawBuffers[iter].View));
 	}
 
 	// Текущий рабочий буфер обнуляется
@@ -801,7 +804,7 @@ void Vulkan::buildSwapchains()
 		.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
 	};
 
-	assert(!vkCreateImage(Graphics.Device, &depthImage, nullptr, &Graphics.DepthImage));
+	vkAssert(!vkCreateImage(Graphics.Device, &depthImage, nullptr, &Graphics.DepthImage));
 
 	// Самостоятельно выделяем память под буфер
 	VkMemoryRequirements memReqs;
@@ -815,8 +818,8 @@ void Vulkan::buildSwapchains()
 		.memoryTypeIndex = memoryTypeFromProperties(memReqs.memoryTypeBits, 0)
 	};
 
-	assert(!vkAllocateMemory(Graphics.Device, &memAlloc, nullptr, &Graphics.DepthMemory));
-	assert(!vkBindImageMemory(Graphics.Device, Graphics.DepthImage, Graphics.DepthMemory, 0));
+	vkAssert(!vkAllocateMemory(Graphics.Device, &memAlloc, nullptr, &Graphics.DepthMemory));
+	vkAssert(!vkBindImageMemory(Graphics.Device, Graphics.DepthImage, Graphics.DepthMemory, 0));
 
 	// Синхронизация формата изображения
 	VkImageMemoryBarrier infoImageMemoryBarrier =
@@ -857,7 +860,7 @@ void Vulkan::buildSwapchains()
 		}
 	};
 
-	assert(!vkCreateImageView(Graphics.Device, &view, nullptr, &Graphics.DepthView));
+	vkAssert(!vkCreateImageView(Graphics.Device, &view, nullptr, &Graphics.DepthView));
 
 	if(!Graphics.InlineTexture.Image) {
 		VkImageCreateInfo imageCreateInfo = {
@@ -882,7 +885,7 @@ void Vulkan::buildSwapchains()
 			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
 		};
 		
-		assert(!vkCreateImage(Graphics.Device, &imageCreateInfo , nullptr , &Graphics.InlineTexture.Image));
+		vkAssert(!vkCreateImage(Graphics.Device, &imageCreateInfo , nullptr , &Graphics.InlineTexture.Image));
 	}
 
 	if(!Graphics.InlineTexture.Memory) {
@@ -899,8 +902,8 @@ void Vulkan::buildSwapchains()
 			.memoryTypeIndex = memoryTypeFromProperties(memoryReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
 		};
 
-		assert(!vkAllocateMemory(Graphics.Device, &memoryAlloc, nullptr, &Graphics.InlineTexture.Memory));
-		assert(!vkBindImageMemory(Graphics.Device, Graphics.InlineTexture.Image, Graphics.InlineTexture.Memory, 0));
+		vkAssert(!vkAllocateMemory(Graphics.Device, &memoryAlloc, nullptr, &Graphics.InlineTexture.Memory));
+		vkAssert(!vkBindImageMemory(Graphics.Device, Graphics.InlineTexture.Image, Graphics.InlineTexture.Memory, 0));
 
 		VkImageMemoryBarrier prePresentBarrier =
 		{
@@ -927,8 +930,8 @@ void Vulkan::buildSwapchains()
 		view.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		view.components = { 
 			VK_COMPONENT_SWIZZLE_IDENTITY
-		},
-		assert(!vkCreateImageView(Graphics.Device, &view, nullptr, &Graphics.InlineTexture.View));
+		};
+		vkAssert(!vkCreateImageView(Graphics.Device, &view, nullptr, &Graphics.InlineTexture.View));
 	}
 
 	if(!Graphics.InlineTexture.Frame) {
@@ -948,7 +951,7 @@ void Vulkan::buildSwapchains()
 			.layers = 1
 		};
 		
-		assert(!vkCreateFramebuffer(Graphics.Device, &infoFb, nullptr, &Graphics.InlineTexture.Frame));
+		vkAssert(!vkCreateFramebuffer(Graphics.Device, &infoFb, nullptr, &Graphics.InlineTexture.Frame));
 	}
 
 	// Создаём экранные буферы глубины, связанные с одним кадровым буфером глубины
@@ -971,7 +974,7 @@ void Vulkan::buildSwapchains()
 	for (uint32_t iter = 0; iter < Graphics.DrawBufferCount; iter++)
 	{
 		attachments[0] = Graphics.DrawBuffers[iter].View;
-		assert(!vkCreateFramebuffer(Graphics.Device, &infoFb, nullptr, &Graphics.DrawBuffers[iter].FrameBuffer));
+		vkAssert(!vkCreateFramebuffer(Graphics.Device, &infoFb, nullptr, &Graphics.DrawBuffers[iter].FrameBuffer));
 	}
 
 	// Передача информации о количестве сменных буферов в ImGui
@@ -1096,13 +1099,13 @@ void Vulkan::checkLibrary()
 		{
 			uint32_t count = -1;
 
-			assert(!vkEnumerateInstanceLayerProperties(&count, nullptr));
-			assert(count != -1);
+			vkAssert(!vkEnumerateInstanceLayerProperties(&count, nullptr));
+			vkAssert(count != -1);
 
 			if(count)
 			{
 				std::vector<VkLayerProperties> layerProperties(count);
-				assert(!vkEnumerateInstanceLayerProperties(&count, layerProperties.data()));
+				vkAssert(!vkEnumerateInstanceLayerProperties(&count, layerProperties.data()));
 
 				Graphics.InstanceLayers.resize(count);
 
@@ -1123,13 +1126,13 @@ void Vulkan::checkLibrary()
 		{
 			uint32_t count = -1;
 
-			assert(!vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr));
-			assert(count != -1);
+			vkAssert(!vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr));
+			vkAssert(count != -1);
 
 			if(count)
 			{
 				std::vector<VkExtensionProperties> extensionProperties(count);
-				assert(!vkEnumerateInstanceExtensionProperties(nullptr, &count, extensionProperties.data()));
+				vkAssert(!vkEnumerateInstanceExtensionProperties(nullptr, &count, extensionProperties.data()));
 
 				Graphics.InstanceExtensions.resize(count);
 
@@ -1155,7 +1158,7 @@ void Vulkan::checkLibrary()
 				goto onError;
 			}
 
-			assert(count != -1);
+			vkAssert(count != -1);
 
 			if(count)
 			{
@@ -1176,7 +1179,7 @@ void Vulkan::checkLibrary()
 			uint32_t count = -1;
 			VkResult res;
 
-			assert(!vkEnumeratePhysicalDevices(localInstance.getInstance(), &count, nullptr));
+			vkAssert(!vkEnumeratePhysicalDevices(localInstance.getInstance(), &count, nullptr));
 
 			if(!count)
 			{
@@ -1185,7 +1188,7 @@ void Vulkan::checkLibrary()
 			}
 
 			devices.resize(count);
-			assert(!vkEnumeratePhysicalDevices(localInstance.getInstance(), &count, devices.data()));
+			vkAssert(!vkEnumeratePhysicalDevices(localInstance.getInstance(), &count, devices.data()));
 			Graphics.Devices.resize(count);
 
 			// Перебор устройств
@@ -1471,8 +1474,8 @@ void Vulkan::initNextSettings()
 			"VK_LAYER_LUNARG_monitor"
 		};
 
-		//if(!SettingsNext.Debug)
-		//	knownDebugLayers.clear();
+		if(!SettingsNext.Debug)
+			knownDebugLayers.clear();
 
 		std::vector<vkInstanceLayer> enableDebugLayers;
 
@@ -1489,7 +1492,7 @@ void Vulkan::initNextSettings()
 
 	if(!Graphics.Surface)
 	{
-		assert(Graphics.Window);
+		vkAssert(Graphics.Window);
 		VkResult res = glfwCreateWindowSurface(Graphics.Instance->getInstance(), Graphics.Window, nullptr, &Graphics.Surface);
 		if(res)
 			MAKE_ERROR("glfwCreateWindowSurface: " << res);
@@ -1501,12 +1504,12 @@ void Vulkan::initNextSettings()
 		uint32_t count = -1;
 		VkResult res;
 
-		assert(!vkEnumeratePhysicalDevices(Graphics.Instance->getInstance(), &count, nullptr));
+		vkAssert(!vkEnumeratePhysicalDevices(Graphics.Instance->getInstance(), &count, nullptr));
 		if(!count)
 			MAKE_ERROR("vkEnumeratePhysicalDevices сообщил об отсутствии подходящего устройства");
 
 		std::vector<VkPhysicalDevice> devices(count);
-		assert(!vkEnumeratePhysicalDevices(Graphics.Instance->getInstance(), &count, devices.data()));
+		vkAssert(!vkEnumeratePhysicalDevices(Graphics.Instance->getInstance(), &count, devices.data()));
 		for(size_t iter = 0; iter < count; iter++)
 		{
 			VkPhysicalDeviceProperties deviceProperties;
@@ -1571,16 +1574,16 @@ void Vulkan::initNextSettings()
 			.pEnabledFeatures = nullptr
 		};
 
-		assert(!vkCreateDevice(Graphics.PhysicalDevice, &infoDevice, nullptr, &Graphics.Device));
+		vkAssert(!vkCreateDevice(Graphics.PhysicalDevice, &infoDevice, nullptr, &Graphics.Device));
 		vkGetDeviceQueue(Graphics.Device, SettingsNext.QueueGraphics, 0, &Graphics.DeviceQueueGraphic);
 	}
 
 	// Определяемся с форматом экранного буфера
 	uint32_t count = -1;
-	assert(!vkGetPhysicalDeviceSurfaceFormatsKHR(Graphics.PhysicalDevice, Graphics.Surface, &count, VK_NULL_HANDLE));
+	vkAssert(!vkGetPhysicalDeviceSurfaceFormatsKHR(Graphics.PhysicalDevice, Graphics.Surface, &count, VK_NULL_HANDLE));
 	std::vector<VkSurfaceFormatKHR> surfFormats(count);
-	assert(!vkGetPhysicalDeviceSurfaceFormatsKHR(Graphics.PhysicalDevice, Graphics.Surface, &count, surfFormats.data()));
-	assert(surfFormats.size());
+	vkAssert(!vkGetPhysicalDeviceSurfaceFormatsKHR(Graphics.PhysicalDevice, Graphics.Surface, &count, surfFormats.data()));
+	vkAssert(surfFormats.size());
 
 	if (count == 1 && surfFormats[0].format == VK_FORMAT_UNDEFINED) {
 		Graphics.SurfaceFormat = VK_FORMAT_R32G32B32_UINT;
@@ -1589,7 +1592,7 @@ void Vulkan::initNextSettings()
 		LOGGER.debug() << "Формат экранного буфера не определён устройством, используется: VK_FORMAT_B8G8R8A8_UNORM & VK_COLOR_SPACE_SRGB_NONLINEAR_KHR";
 
 	} else {
-		assert(count >= 1 && "Отсутствуют подходящие форматы экранного буфера vkGetPhysicalDeviceSurfaceFormatsKHR");
+		vkAssert(count >= 1 && "Отсутствуют подходящие форматы экранного буфера vkGetPhysicalDeviceSurfaceFormatsKHR");
 
 		bool find = false;
 		for(size_t iter = 0; iter < count; iter++)
@@ -1626,7 +1629,7 @@ void Vulkan::initNextSettings()
 			.queueFamilyIndex = SettingsNext.QueueGraphics
 		};
 
-		assert(!vkCreateCommandPool(Graphics.Device, &infoCmdPool, nullptr, &Graphics.Pool));
+		vkAssert(!vkCreateCommandPool(Graphics.Device, &infoCmdPool, nullptr, &Graphics.Pool));
 	}
 
 	// Создание буферов команд (подготовка данных CommandBufferData, рендер CommandBufferRender)
@@ -1642,7 +1645,7 @@ void Vulkan::initNextSettings()
 
 		if(!Graphics.CommandBufferData)
 		{
-			assert(!vkAllocateCommandBuffers(Graphics.Device, &infoCmd, &Graphics.CommandBufferData));
+			vkAssert(!vkAllocateCommandBuffers(Graphics.Device, &infoCmd, &Graphics.CommandBufferData));
 
 			// Старт очереди команд
 			VkCommandBufferBeginInfo infoCmdBuffer =
@@ -1653,11 +1656,11 @@ void Vulkan::initNextSettings()
 				.pInheritanceInfo = nullptr
 			};
 
-			assert(!vkBeginCommandBuffer(Graphics.CommandBufferData, &infoCmdBuffer));
+			vkAssert(!vkBeginCommandBuffer(Graphics.CommandBufferData, &infoCmdBuffer));
 		}
 
 		if(!Graphics.CommandBufferRender)
-			assert(!vkAllocateCommandBuffers(Graphics.Device, &infoCmd, &Graphics.CommandBufferRender));
+			vkAssert(!vkAllocateCommandBuffers(Graphics.Device, &infoCmd, &Graphics.CommandBufferRender));
 	}
 
 	// Создание RenderPass для экранного буфера
@@ -1755,7 +1758,7 @@ void Vulkan::initNextSettings()
 			.pDependencies = nullptr
 		};
 
-		assert(!vkCreateRenderPass(Graphics.Device, &rp_info, nullptr, &Graphics.RenderPass));
+		vkAssert(!vkCreateRenderPass(Graphics.Device, &rp_info, nullptr, &Graphics.RenderPass));
 	}
 
 	// Цепочки рендера
@@ -1787,7 +1790,7 @@ void Vulkan::initNextSettings()
 		descriptor_pool.poolSizeCount = (uint32_t) IM_ARRAYSIZE(pool_sizes);
 		descriptor_pool.pPoolSizes = pool_sizes;
 
-		assert(!vkCreateDescriptorPool(Graphics.Device, &descriptor_pool, nullptr, &Graphics.ImGuiDescPool));
+		vkAssert(!vkCreateDescriptorPool(Graphics.Device, &descriptor_pool, nullptr, &Graphics.ImGuiDescPool));
 
 		ImGui::CreateContext();
 
@@ -1931,7 +1934,7 @@ void Vulkan::deInitVulkan()
 
 void Vulkan::flushCommandBufferData()
 {
-	assert(!vkEndCommandBuffer(Graphics.CommandBufferData));
+	vkAssert(!vkEndCommandBuffer(Graphics.CommandBufferData));
 
 	const VkCommandBuffer cmd_bufs[] = { Graphics.CommandBufferData };
 	VkFence nullFence = { VK_NULL_HANDLE };
@@ -1948,8 +1951,8 @@ void Vulkan::flushCommandBufferData()
 		.pSignalSemaphores = nullptr
 	};
 
-	assert(!vkQueueSubmit(Graphics.DeviceQueueGraphic, 1, &submit_info, nullFence));
-	assert(!vkQueueWaitIdle(Graphics.DeviceQueueGraphic));
+	vkAssert(!vkQueueSubmit(Graphics.DeviceQueueGraphic, 1, &submit_info, nullFence));
+	vkAssert(!vkQueueWaitIdle(Graphics.DeviceQueueGraphic));
 
 	VkCommandBufferBeginInfo infoCmdBuffer =
 	{
@@ -1959,7 +1962,7 @@ void Vulkan::flushCommandBufferData()
 		.pInheritanceInfo = nullptr
 	};
 
-	assert(!vkBeginCommandBuffer(Graphics.CommandBufferData, &infoCmdBuffer));
+	vkAssert(!vkBeginCommandBuffer(Graphics.CommandBufferData, &infoCmdBuffer));
 }
 
 Settings Vulkan::getBestSettings()
@@ -1982,8 +1985,8 @@ bool Vulkan::needFullVulkanRebuild()
 
 std::shared_ptr<ShaderModule> Vulkan::createShader(std::string_view data)
 {
-	assert(Graphics.Device);
-	assert(data.size());
+	vkAssert(Graphics.Device);
+	vkAssert(data.size());
 	std::shared_ptr<ShaderModule> module = std::make_shared<ShaderModule>(data);
 	std::dynamic_pointer_cast<IVulkanDependent>(module)->init(this);
 	ROS_Dependents.insert(module);
@@ -1992,7 +1995,7 @@ std::shared_ptr<ShaderModule> Vulkan::createShader(std::string_view data)
 
 void Vulkan::registerDependent(std::shared_ptr<IVulkanDependent> dependent)
 {
-	assert(Graphics.Device);
+	vkAssert(Graphics.Device);
 	dependent->init(this);
 	ROS_Dependents.insert(dependent);
 }
@@ -2151,8 +2154,8 @@ void Vulkan::updateResources()
 Vulkan::vkInstance::vkInstance(Vulkan *handler, std::vector<vkInstanceLayer> layers, std::vector<vkInstanceExtension> extensions)
 	: Handler(handler)
 {
-	assert(handler);
-	//TOS_ASSERT(getShared(), "Должен быть Shared");
+	vkAssert(handler);
+	//TOS_vkAssert(getShared(), "Должен быть Shared");
 
 	size_t glfwExtensions = handler->Graphics.GLFWExtensions.size();
 	std::vector<const char*> rawLayers(layers.size()), rawExtensions(extensions.size()+glfwExtensions);
@@ -2276,7 +2279,7 @@ void DescriptorLayout::init(Vulkan *instance)
 			.pBindings = ShaderLayoutBindings.data()
 		};
 
-		assert(!vkCreateDescriptorSetLayout(instance->Graphics.Device, &descriptor_layout, nullptr, &DescLayout));
+		vkAssert(!vkCreateDescriptorSetLayout(instance->Graphics.Device, &descriptor_layout, nullptr, &DescLayout));
 	}
 
 	if(!Layout)
@@ -2293,7 +2296,7 @@ void DescriptorLayout::init(Vulkan *instance)
 			.pPushConstantRanges = ShaderPushConstants.data()
 		};
 
-		assert(!vkCreatePipelineLayout(instance->Graphics.Device, &pPipelineLayoutCreateInfo, nullptr, &Layout));
+		vkAssert(!vkCreatePipelineLayout(instance->Graphics.Device, &pPipelineLayoutCreateInfo, nullptr, &Layout));
 	}
 }
 
@@ -2320,7 +2323,7 @@ void DescriptorLayout::free(Vulkan *instance)
 
 Pipeline::Pipeline(std::shared_ptr<DescriptorLayout> layout)
 {
-	assert(layout);
+	vkAssert(layout);
 	Settings.ShaderLayoutBindings = layout;
 
 	// Информация о буферах и размере вершины
@@ -2458,8 +2461,8 @@ void Pipeline::free(Vulkan *instance)
 
 void Pipeline::init(Vulkan *instance)
 {
-	assert(instance);
-	assert(Settings.ShaderLayoutBindings && Settings.ShaderLayoutBindings->DescLayout);
+	vkAssert(instance);
+	vkAssert(Settings.ShaderLayoutBindings && Settings.ShaderLayoutBindings->DescLayout);
 
 	// Топология вершин на входе (треугольники, линии, точки)
 	VkPipelineInputAssemblyStateCreateInfo ia =
@@ -2520,7 +2523,7 @@ void Pipeline::init(Vulkan *instance)
 	};
 
 	for(auto &obj : Settings.ShaderStages)
-		assert(obj.module && "Шейдер не назначен");
+		vkAssert(obj.module && "Шейдер не назначен");
 
 	VkGraphicsPipelineCreateInfo pipeline =
 	{
@@ -2549,7 +2552,7 @@ void Pipeline::init(Vulkan *instance)
 	memset(&infoPipelineCache, 0, sizeof(infoPipelineCache));
 	infoPipelineCache.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
 
-	assert(!vkCreateGraphicsPipelines(instance->Graphics.Device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &PipelineObj));
+	vkAssert(!vkCreateGraphicsPipelines(instance->Graphics.Device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &PipelineObj));
 }
 
 
@@ -2591,8 +2594,8 @@ ShaderModule::~ShaderModule() = default;
 Buffer::Buffer(Vulkan *instance, VkDeviceSize bufferSize, VkBufferUsageFlags usage, VkMemoryPropertyFlags flags)
 	: Instance(instance)
 {
-	assert(instance);
-	assert(instance->Graphics.Device);
+	vkAssert(instance);
+	vkAssert(instance->Graphics.Device);
 
 	const VkBufferCreateInfo buf_info =
 	{
@@ -2683,8 +2686,8 @@ void Buffer::unMapMemory() const
 CommandBuffer::CommandBuffer(Vulkan *instance)
 	: Instance(instance)
 {
-	assert(instance);
-	assert(instance->Graphics.Device);
+	vkAssert(instance);
+	vkAssert(instance->Graphics.Device);
 
 	if(!instance->isRenderThread())
 	{
@@ -2697,10 +2700,10 @@ CommandBuffer::CommandBuffer(Vulkan *instance)
 			.queueFamilyIndex = instance->getSettings().QueueGraphics
 		};
 
-		assert(!vkCreateCommandPool(instance->Graphics.Device, &infoCmdPool, nullptr, &OffthreadPool));
+		vkAssert(!vkCreateCommandPool(instance->Graphics.Device, &infoCmdPool, nullptr, &OffthreadPool));
 	}
 
-	assert(instance->Graphics.Pool);
+	vkAssert(instance->Graphics.Pool);
 	const VkCommandBufferAllocateInfo infoCmd =
 	{
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
@@ -2710,7 +2713,7 @@ CommandBuffer::CommandBuffer(Vulkan *instance)
 		.commandBufferCount = 1
 	};
 
-	assert(!vkAllocateCommandBuffers(instance->Graphics.Device, &infoCmd, &Buffer));
+	vkAssert(!vkAllocateCommandBuffers(instance->Graphics.Device, &infoCmd, &Buffer));
 	
 	VkCommandBufferBeginInfo infoCmdBuffer =
 	{
@@ -2720,7 +2723,7 @@ CommandBuffer::CommandBuffer(Vulkan *instance)
 		.pInheritanceInfo = nullptr
 	};
 	
-	assert(!vkBeginCommandBuffer(Buffer, &infoCmdBuffer));
+	vkAssert(!vkBeginCommandBuffer(Buffer, &infoCmdBuffer));
 }
 
 CommandBuffer::~CommandBuffer()
@@ -2729,7 +2732,8 @@ CommandBuffer::~CommandBuffer()
 	{
 		if(Instance->Graphics.DeviceQueueGraphic)
 		{
-			assert(!vkEndCommandBuffer(Buffer));
+			//vkAssert(!vkEndCommandBuffer(Buffer));
+			vkEndCommandBuffer(Buffer);
 			const VkCommandBuffer cmd_bufs[] = { Buffer };
 			VkFence nullFence = { VK_NULL_HANDLE };
 			VkSubmitInfo submit_info =
@@ -2745,8 +2749,10 @@ CommandBuffer::~CommandBuffer()
 				.pSignalSemaphores = nullptr
 			};
 
-			assert(!vkQueueSubmit(Instance->Graphics.DeviceQueueGraphic, 1, &submit_info, nullFence));
-			assert(!vkQueueWaitIdle(Instance->Graphics.DeviceQueueGraphic));
+			//vkAssert(!vkQueueSubmit(Instance->Graphics.DeviceQueueGraphic, 1, &submit_info, nullFence));
+			vkQueueSubmit(Instance->Graphics.DeviceQueueGraphic, 1, &submit_info, nullFence);
+			//vkAssert(!vkQueueWaitIdle(Instance->Graphics.DeviceQueueGraphic));
+			vkQueueWaitIdle(Instance->Graphics.DeviceQueueGraphic);
 			
 			auto toExecute = std::move(AfterExecute);
 			for(auto &iter : toExecute)
@@ -2762,8 +2768,8 @@ CommandBuffer::~CommandBuffer()
 
 void CommandBuffer::execute()
 {
-	assert(Instance->Graphics.DeviceQueueGraphic);
-	assert(!vkEndCommandBuffer(Buffer));
+	vkAssert(Instance->Graphics.DeviceQueueGraphic);
+	vkAssert(!vkEndCommandBuffer(Buffer));
 
 	const VkCommandBuffer cmd_bufs[] = { Buffer };
 	VkFence nullFence = { VK_NULL_HANDLE };
@@ -2780,8 +2786,8 @@ void CommandBuffer::execute()
 		.pSignalSemaphores = nullptr
 	};
 
-	assert(!vkQueueSubmit(Instance->Graphics.DeviceQueueGraphic, 1, &submit_info, nullFence));
-	assert(!vkQueueWaitIdle(Instance->Graphics.DeviceQueueGraphic));
+	vkAssert(!vkQueueSubmit(Instance->Graphics.DeviceQueueGraphic, 1, &submit_info, nullFence));
+	vkAssert(!vkQueueWaitIdle(Instance->Graphics.DeviceQueueGraphic));
 	VkCommandBufferBeginInfo infoCmdBuffer =
 	{
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -2790,7 +2796,7 @@ void CommandBuffer::execute()
 		.pInheritanceInfo = nullptr
 	};
 
-	assert(!vkBeginCommandBuffer(Buffer, &infoCmdBuffer));
+	vkAssert(!vkBeginCommandBuffer(Buffer, &infoCmdBuffer));
 
 	auto toExecute = std::move(AfterExecute);
 	for(auto &iter : toExecute)
@@ -2871,21 +2877,21 @@ void SimpleImage::postInit(const ByteBuffer &pixels, size_t width, size_t height
 	infoImageCreate.tiling = VK_IMAGE_TILING_LINEAR;
 	infoImageCreate.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 	infoImageCreate.initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED;
-	assert(!vkCreateImage(Instance->Graphics.Device, &infoImageCreate, nullptr, &tempImage));
+	vkAssert(!vkCreateImage(Instance->Graphics.Device, &infoImageCreate, nullptr, &tempImage));
 	vkGetImageMemoryRequirements(Instance->Graphics.Device, tempImage, &memoryReqs);
 
 	memoryAlloc.allocationSize = memoryReqs.size;
 	memoryAlloc.memoryTypeIndex = Instance->memoryTypeFromProperties(memoryReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-	assert(!vkAllocateMemory(Instance->Graphics.Device, &memoryAlloc, nullptr, &tempMemory));
-	assert(!vkBindImageMemory(Instance->Graphics.Device, tempImage, tempMemory, 0));
+	vkAssert(!vkAllocateMemory(Instance->Graphics.Device, &memoryAlloc, nullptr, &tempMemory));
+	vkAssert(!vkBindImageMemory(Instance->Graphics.Device, tempImage, tempMemory, 0));
 
 	// Заполняем данными
 	VkSubresourceLayout layout;
 	vkGetImageSubresourceLayout(Instance->Graphics.Device, tempImage, &memorySubres, &layout);
 
 	void *data;
-	assert(!vkMapMemory(Instance->Graphics.Device, tempMemory, 0, memoryAlloc.allocationSize, 0, &data));
+	vkAssert(!vkMapMemory(Instance->Graphics.Device, tempMemory, 0, memoryAlloc.allocationSize, 0, &data));
 
 	for (size_t y = 0; y < Height; y++) {
 		uint32_t *row = (uint32_t*) (((uint8_t*) data) + layout.rowPitch * y);
@@ -2915,19 +2921,19 @@ void SimpleImage::postInit(const ByteBuffer &pixels, size_t width, size_t height
 		infoImageCreate.tiling = VK_IMAGE_TILING_LINEAR;
 	else
 		/* Can't support VK_FORMAT_B8G8R8A8_UNORM */
-		assert(!"No support for B8G8R8A8_UNORM as texture image format");
+		vkAssert(!"No support for B8G8R8A8_UNORM as texture image format");
 
 	/* Создаём конечную картинку */
 	infoImageCreate.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 
-	assert(!vkCreateImage(Instance->Graphics.Device, &infoImageCreate, nullptr, &Image));
+	vkAssert(!vkCreateImage(Instance->Graphics.Device, &infoImageCreate, nullptr, &Image));
 	vkGetImageMemoryRequirements(Instance->Graphics.Device, Image, &memoryReqs);
 
 	memoryAlloc.allocationSize = memoryReqs.size;
 	memoryAlloc.memoryTypeIndex = Instance->memoryTypeFromProperties(memoryReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-	assert(!vkAllocateMemory(Instance->Graphics.Device, &memoryAlloc, nullptr, &Memory));
-	assert(!vkBindImageMemory(Instance->Graphics.Device, Image, Memory, 0));
+	vkAssert(!vkAllocateMemory(Instance->Graphics.Device, &memoryAlloc, nullptr, &Memory));
+	vkAssert(!vkBindImageMemory(Instance->Graphics.Device, Image, Memory, 0));
 
 	// Задаём нужный layout
 	infoImageMemoryBarrier.srcAccessMask = VK_ACCESS_NONE;
@@ -2987,7 +2993,7 @@ void SimpleImage::postInit(const ByteBuffer &pixels, size_t width, size_t height
 			.unnormalizedCoordinates = VK_FALSE
 		};
 
-		assert(!vkCreateSampler(Instance->Graphics.Device, &ciSampler, nullptr, &Sampler));
+		vkAssert(!vkCreateSampler(Instance->Graphics.Device, &ciSampler, nullptr, &Sampler));
 	}
 
 	{
@@ -3010,7 +3016,7 @@ void SimpleImage::postInit(const ByteBuffer &pixels, size_t width, size_t height
 			.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
 		};
 
-		assert(!vkCreateImageView(Instance->Graphics.Device, &ciView, nullptr, &View));
+		vkAssert(!vkCreateImageView(Instance->Graphics.Device, &ciView, nullptr, &View));
 	}
 }
 
@@ -3057,7 +3063,7 @@ SimpleImage::~SimpleImage()
 DynamicImage::DynamicImage(Vulkan *instance, uint32_t width, uint32_t height, const uint32_t *rgba)
 	: Instance(instance)
 {
-	assert(instance);
+	vkAssert(instance);
 
 	ImageLayout = VK_IMAGE_LAYOUT_GENERAL; // То как будем использовать графический буфер, в данном случае как текстура	
 
@@ -3086,7 +3092,7 @@ DynamicImage::DynamicImage(Vulkan *instance, uint32_t width, uint32_t height, co
 	};
 
 	changeSampler(&ciSampler);
-	//TOS_ASSERT(!vkCreateSampler(Instance->Graphics.Device, sampler, nullptr, &Sampler), "vkCreateSampler");
+	//TOS_vkAssert(!vkCreateSampler(Instance->Graphics.Device, sampler, nullptr, &Sampler), "vkCreateSampler");
 	
 	// При создании картинки вне потока графики, нужно дождаться, когда картинка будет создана
 	if(!Instance->isRenderThread() && Instance->isAlive())
@@ -3156,7 +3162,7 @@ void DynamicImage::changeSampler(const VkSamplerCreateInfo *sampler)
 		std::shared_ptr<DynamicImage> obj = shared_from_this();
 
 		if(!IsFirstCreate)
-			assert(obj && "Чтобы изменять картинку во время рендера сцены, она должна быть Shared");
+			vkAssert(obj && "Чтобы изменять картинку во время рендера сцены, она должна быть Shared");
 
 		Instance->beforeDraw([obj, info = *sampler](Vulkan *instance)
 		{
@@ -3167,7 +3173,7 @@ void DynamicImage::changeSampler(const VkSamplerCreateInfo *sampler)
 	}
 
 	auto oldSampler = Sampler;
-	assert(!vkCreateSampler(Instance->Graphics.Device, sampler, nullptr, &Sampler));
+	vkAssert(!vkCreateSampler(Instance->Graphics.Device, sampler, nullptr, &Sampler));
 
 	// Обновляем дескрипторы
 	for(size_t iter = 0; iter < AfterRecreate.size(); iter++)
@@ -3191,7 +3197,7 @@ void DynamicImage::recreateImage(uint16_t width, uint16_t height, const uint32_t
 		std::shared_ptr<DynamicImage> obj = shared_from_this();
 
 		if(!IsFirstCreate)
-			assert(obj && "Чтобы изменять картинку во время рендера сцены, она должна быть Shared");
+			vkAssert(obj && "Чтобы изменять картинку во время рендера сцены, она должна быть Shared");
 
 		ByteBuffer buff(size_t(width)*size_t(height)*4);
 		if(rgba)
@@ -3253,9 +3259,9 @@ void DynamicImage::recreateImage(uint16_t width, uint16_t height, const uint32_t
 		infoImageCreate.tiling = VK_IMAGE_TILING_LINEAR;
 	else
 		/* Can't support VK_FORMAT_B8G8R8A8_UNORM */
-		assert(!"No support for B8G8R8A8_UNORM as texture image format");
+		vkAssert(!"No support for B8G8R8A8_UNORM as texture image format");
 	
-	assert(!vkCreateImage(Instance->Graphics.Device, &infoImageCreate, nullptr, &Image));
+	vkAssert(!vkCreateImage(Instance->Graphics.Device, &infoImageCreate, nullptr, &Image));
 	
 	// Выделяем память
 	VkMemoryRequirements memoryReqs;
@@ -3271,8 +3277,8 @@ void DynamicImage::recreateImage(uint16_t width, uint16_t height, const uint32_t
 		.memoryTypeIndex = Instance->memoryTypeFromProperties(memoryReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
 	};
 
-	assert(!vkAllocateMemory(Instance->Graphics.Device, &memoryAlloc, nullptr, &Memory));
-	assert(!vkBindImageMemory(Instance->Graphics.Device, Image, Memory, 0));
+	vkAssert(!vkAllocateMemory(Instance->Graphics.Device, &memoryAlloc, nullptr, &Memory));
+	vkAssert(!vkBindImageMemory(Instance->Graphics.Device, Image, Memory, 0));
 
 	// Порядок пикселей и привязка к картинке
 	VkImageViewCreateInfo ciView =
@@ -3293,7 +3299,7 @@ void DynamicImage::recreateImage(uint16_t width, uint16_t height, const uint32_t
 		.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
 	};
 
-	assert(!vkCreateImageView(Instance->Graphics.Device, &ciView, nullptr, &View));
+	vkAssert(!vkCreateImageView(Instance->Graphics.Device, &ciView, nullptr, &View));
 
 	// Обновляем дескрипторы
 	for(size_t iter = 0; iter < AfterRecreate.size(); iter++)
@@ -3325,7 +3331,7 @@ void DynamicImage::changeData(const uint32_t *rgba)
 
 void DynamicImage::changeData(int32_t x, int32_t y, uint16_t width, uint16_t height, const uint32_t *rgba)
 {
-	assert(width <= Width && height <= Height && "Превышен размер обновляемых данных width <= Width && height <= Height");
+	vkAssert(width <= Width && height <= Height && "Превышен размер обновляемых данных width <= Width && height <= Height");
 
 	if(IsFirstCreate)
 	{
@@ -3355,7 +3361,7 @@ void DynamicImage::changeData(int32_t x, int32_t y, uint16_t width, uint16_t hei
 	{
 		// Нельзя обновить картинку сейчас
 		std::shared_ptr<DynamicImage> obj = shared_from_this();
-		assert(obj && "Чтобы изменять картинку во время рендера сцены, она должна быть Shared");
+		vkAssert(obj && "Чтобы изменять картинку во время рендера сцены, она должна быть Shared");
 
 		ByteBuffer buff(size_t(width)*size_t(height)*4, (const uint8_t*) rgba);
 
@@ -3410,7 +3416,7 @@ void DynamicImage::changeData(int32_t x, int32_t y, uint16_t width, uint16_t hei
 	};
 
 	VkMemoryRequirements memoryReqs;
-	assert(!vkCreateImage(Instance->Graphics.Device, &infoImageCreate, nullptr, &tempImage));
+	vkAssert(!vkCreateImage(Instance->Graphics.Device, &infoImageCreate, nullptr, &tempImage));
 	vkGetImageMemoryRequirements(Instance->Graphics.Device, tempImage, &memoryReqs);
 
 	VkMemoryAllocateInfo memoryAlloc =
@@ -3421,15 +3427,15 @@ void DynamicImage::changeData(int32_t x, int32_t y, uint16_t width, uint16_t hei
 		.memoryTypeIndex = Instance->memoryTypeFromProperties(memoryReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
 	};
 	
-	assert(!vkAllocateMemory(Instance->Graphics.Device, &memoryAlloc, nullptr, &tempMemory));
-	assert(!vkBindImageMemory(Instance->Graphics.Device, tempImage, tempMemory, 0));
+	vkAssert(!vkAllocateMemory(Instance->Graphics.Device, &memoryAlloc, nullptr, &tempMemory));
+	vkAssert(!vkBindImageMemory(Instance->Graphics.Device, tempImage, tempMemory, 0));
 
 	// Заполняем данными
 	VkSubresourceLayout layout;
 	vkGetImageSubresourceLayout(Instance->Graphics.Device, tempImage, &memorySubres, &layout);
 
 	void *data;
-	assert(!vkMapMemory(Instance->Graphics.Device, tempMemory, 0, memoryAlloc.allocationSize, 0, &data));
+	vkAssert(!vkMapMemory(Instance->Graphics.Device, tempMemory, 0, memoryAlloc.allocationSize, 0, &data));
 
 	if(rgba)
 	{
@@ -3542,7 +3548,7 @@ void DynamicImage::readData(int32_t x, int32_t y, uint16_t width, uint16_t heigh
 	};
 
 	VkMemoryRequirements memoryReqs;
-	assert(!vkCreateImage(Instance->Graphics.Device, &infoImageCreate, nullptr, &tempImage));
+	vkAssert(!vkCreateImage(Instance->Graphics.Device, &infoImageCreate, nullptr, &tempImage));
 	vkGetImageMemoryRequirements(Instance->Graphics.Device, tempImage, &memoryReqs);
 
 	VkMemoryAllocateInfo memoryAlloc =
@@ -3553,8 +3559,8 @@ void DynamicImage::readData(int32_t x, int32_t y, uint16_t width, uint16_t heigh
 		.memoryTypeIndex = Instance->memoryTypeFromProperties(memoryReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
 	};
 	
-	assert(!vkAllocateMemory(Instance->Graphics.Device, &memoryAlloc, nullptr, &tempMemory));
-	assert(!vkBindImageMemory(Instance->Graphics.Device, tempImage, tempMemory, 0));
+	vkAssert(!vkAllocateMemory(Instance->Graphics.Device, &memoryAlloc, nullptr, &tempMemory));
+	vkAssert(!vkBindImageMemory(Instance->Graphics.Device, tempImage, tempMemory, 0));
 
 	// Подготавливаем изображение к приёму данных
 	infoImageMemoryBarrier.srcAccessMask = VK_ACCESS_NONE;
@@ -3600,7 +3606,7 @@ void DynamicImage::readData(int32_t x, int32_t y, uint16_t width, uint16_t heigh
 	vkGetImageSubresourceLayout(Instance->Graphics.Device, tempImage, &memorySubres, &layout);
 
 	void *data;
-	assert(!vkMapMemory(Instance->Graphics.Device, tempMemory, 0, memoryAlloc.allocationSize, 0, &data));
+	vkAssert(!vkMapMemory(Instance->Graphics.Device, tempMemory, 0, memoryAlloc.allocationSize, 0, &data));
 
 	for (size_t y = 0; y < height; y++)
 	{
@@ -3865,7 +3871,7 @@ void AtlasImage::atlasAddCallbackOnUniformChange(std::function<bool()> &&callbac
 
 void AtlasImage::atlasUpdateDynamicData()
 {
-	assert(Instance->isRenderThread() && "Обновление должно вызываться в потоке рендера");
+	vkAssert(Instance->isRenderThread() && "Обновление должно вызываться в потоке рендера");
 
 	std::lock_guard lock(Changes);
 
@@ -4039,7 +4045,7 @@ void AtlasImage::atlasUpdateDynamicData()
 
 		// for(auto &iter : SubTextures)
 		// {
-		// 	TOS_ASSERT(iter.first < count, "Ключи таблицы отсортированы не верно");
+		// 	TOS_vkAssert(iter.first < count, "Ключи таблицы отсортированы не верно");
 
 		// 	subs[iter.first] = iter.second;
 		// 	subs[iter.first].isExist = 1;
@@ -4187,15 +4193,15 @@ ArrayImage::ArrayImage(Vulkan *instance, std::filesystem::path directory)
 	infoImageCreate.tiling = VK_IMAGE_TILING_LINEAR;
 	infoImageCreate.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 	infoImageCreate.initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED;
-	infoImageCreate.arrayLayers = 1,
-	assert(!vkCreateImage(Instance->Graphics.Device, &infoImageCreate, nullptr, &tempImage));
+	infoImageCreate.arrayLayers = 1;
+	vkAssert(!vkCreateImage(Instance->Graphics.Device, &infoImageCreate, nullptr, &tempImage));
 	vkGetImageMemoryRequirements(Instance->Graphics.Device, tempImage, &memoryReqsTemp);
 
 	memoryAlloc.allocationSize = memoryReqsTemp.size;
 	memoryAlloc.memoryTypeIndex = Instance->memoryTypeFromProperties(memoryReqsTemp.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-	assert(!vkAllocateMemory(Instance->Graphics.Device, &memoryAlloc, nullptr, &tempMemory));
-	assert(!vkBindImageMemory(Instance->Graphics.Device, tempImage, tempMemory, 0));
+	vkAssert(!vkAllocateMemory(Instance->Graphics.Device, &memoryAlloc, nullptr, &tempMemory));
+	vkAssert(!vkBindImageMemory(Instance->Graphics.Device, tempImage, tempMemory, 0));
 
 	// Создаём конечную картинку
 	if (props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)
@@ -4205,15 +4211,15 @@ ArrayImage::ArrayImage(Vulkan *instance, std::filesystem::path directory)
 
 	infoImageCreate.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 	infoImageCreate.initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED;
-	infoImageCreate.arrayLayers = uint32_t(images.size()),
-	assert(!vkCreateImage(Instance->Graphics.Device, &infoImageCreate, nullptr, &Image));
+	infoImageCreate.arrayLayers = uint32_t(images.size());
+	vkAssert(!vkCreateImage(Instance->Graphics.Device, &infoImageCreate, nullptr, &Image));
 	vkGetImageMemoryRequirements(Instance->Graphics.Device, Image, &memoryReqs);
 
 	memoryAlloc.allocationSize = memoryReqs.size;
 	memoryAlloc.memoryTypeIndex = Instance->memoryTypeFromProperties(memoryReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-	assert(!vkAllocateMemory(Instance->Graphics.Device, &memoryAlloc, nullptr, &Memory));
-	assert(!vkBindImageMemory(Instance->Graphics.Device, Image, Memory, 0));
+	vkAssert(!vkAllocateMemory(Instance->Graphics.Device, &memoryAlloc, nullptr, &Memory));
+	vkAssert(!vkBindImageMemory(Instance->Graphics.Device, Image, Memory, 0));
 
 	// Задаём нужный layout
 	infoImageMemoryBarrier.srcAccessMask = VK_ACCESS_NONE;
@@ -4234,7 +4240,7 @@ ArrayImage::ArrayImage(Vulkan *instance, std::filesystem::path directory)
 	{
 		// Загружаем по одной картинке
 		void *data;
-		assert(!vkMapMemory(Instance->Graphics.Device, tempMemory, 0, memoryReqsTemp.size, 0, &data));
+		vkAssert(!vkMapMemory(Instance->Graphics.Device, tempMemory, 0, memoryReqsTemp.size, 0, &data));
 
 		for (int32_t y = 0; y < Width; y++) 
 		{
@@ -4331,7 +4337,7 @@ ArrayImage::ArrayImage(Vulkan *instance, std::filesystem::path directory)
 			.unnormalizedCoordinates = VK_FALSE
 		};
 
-		assert(!vkCreateSampler(Instance->Graphics.Device, &ciSampler, nullptr, &Sampler));
+		vkAssert(!vkCreateSampler(Instance->Graphics.Device, &ciSampler, nullptr, &Sampler));
 	}
 
 	{
@@ -4354,7 +4360,7 @@ ArrayImage::ArrayImage(Vulkan *instance, std::filesystem::path directory)
 			.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, uint32_t(images.size()) }
 		};
 
-		assert(!vkCreateImageView(Instance->Graphics.Device, &ciView, nullptr, &View));
+		vkAssert(!vkCreateImageView(Instance->Graphics.Device, &ciView, nullptr, &View));
 	}
 }
 

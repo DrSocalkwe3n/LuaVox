@@ -663,88 +663,21 @@ void GameServer::stepWorlds() {
 
             }
 
+            if(++region.CEC_NextChunkAndEntityesViewCheck >= region.CECs.size())
+                region.CEC_NextChunkAndEntityesViewCheck = 0;
+
             // Пробегаемся по всем наблюдателям
-            for(ContentEventController *cec : region.CECs) {
-                // То, что уже отслеживает наблюдатель
-                const auto &subs = cec->getSubscribed();
-                
-                auto cvc = cec->ContentViewCircles.find(pWorld.first);
-                if(cvc == cec->ContentViewCircles.end())
-                    // Ничего не должно отслеживаться
-                    continue;
+            {
+                size_t cecIndex = 0;
+                for(ContentEventController *cec : region.CECs) {
+                    cecIndex++;
 
-                // Проверка отслеживания чанков
-                {
-                    // Чанки, которые игрок уже не видит и которые только что увидел
-                    
-                    std::vector<Pos::Local16_u> lostChunks, newChunks;
-                    
-                    // Проверим чанки которые наблюдатель может наблюдать
-                    for(int z = 0; z < 16; z++)
-                        for(int y = 0; y < 16; y++)
-                            for(int x = 0; x < 16; x++) {
-                                Pos::GlobalChunk gcPos((pRegion.first.X << 4) | x,
-                                    (pRegion.first.Y << 4) | y,
-                                    (pRegion.first.Z << 4) | z);
+                    auto cvc = cec->ContentViewCircles.find(pWorld.first);
+                    if(cvc == cec->ContentViewCircles.end())
+                        // Ничего не должно отслеживаться
+                        continue;
 
-                                for(const ContentViewCircle &circle : cvc->second) {
-                                    if(circle.isIn(gcPos))
-                                        newChunks.push_back(Pos::Local16_u(x, y, z));
-                                }
-                            }
-
-                    std::unordered_set<Pos::Local16_u> newChunksSet(newChunks.begin(), newChunks.end());
-
-                    {
-                        auto iterR_W = subs.Chunks.find(pWorld.first);
-                        if(iterR_W == subs.Chunks.end())
-                            // Если мир не отслеживается наблюдателем
-                            goto doesNotObserve;
-
-                        auto iterR_W_R = iterR_W->second.find(pRegion.first);
-                        if(iterR_W_R == iterR_W->second.end())
-                            // Если регион не отслеживается наблюдателем
-                            goto doesNotObserve;
-
-                        // Подходят ли уже наблюдаемые чанки под наблюдательные области
-                        for(Pos::Local16_u cPos : iterR_W_R->second) {
-                            Pos::GlobalChunk gcPos((pRegion.first.X << 4) | cPos.X,
-                                (pRegion.first.Y << 4) | cPos.Y,
-                                (pRegion.first.Z << 4) | cPos.Z);
-
-                            for(const ContentViewCircle &circle : cvc->second) {
-                                if(!circle.isIn(gcPos))
-                                    lostChunks.push_back(cPos);
-                            }
-                        }
-
-                        // Удалим чанки которые наблюдатель уже видит
-                        for(Pos::Local16_u cPos : iterR_W_R->second)
-                            newChunksSet.erase(cPos);
-                    }
-
-                    doesNotObserve:
-
-                    if(!newChunksSet.empty() || !lostChunks.empty())
-                        cec->onChunksEnterLost(pWorld.first, pWorld.second.get(), pRegion.first, newChunksSet, std::unordered_set<Pos::Local16_u>(lostChunks.begin(), lostChunks.end()));
-
-                    // Нужно отправить полную информацию о новых наблюдаемых чанках наблюдателю
-                    if(!newChunksSet.empty()) {
-                        std::unordered_map<Pos::Local16_u, const LightPrism*> newLightPrism;
-                        std::unordered_map<Pos::Local16_u, const std::vector<VoxelCube>*> newVoxels;
-                        std::unordered_map<Pos::Local16_u, const std::unordered_map<Pos::Local16_u, Node>*> newNodes;
-
-                        for(Pos::Local16_u cPos : newChunksSet) {
-                            newLightPrism[cPos] = &region.Lights[0][0][cPos.X][cPos.Y][cPos.Z];
-                            newVoxels[cPos] = &region.Voxels[cPos.X][cPos.Y][cPos.Z];
-                            newNodes[cPos] = &region.Nodes[cPos.X][cPos.Y][cPos.Z];
-                        }
-
-                        cec->onChunksUpdate_LightPrism(pWorld.first, pRegion.first, newLightPrism);
-                        cec->onChunksUpdate_Voxels(pWorld.first, pRegion.first, newVoxels);
-                        cec->onChunksUpdate_Nodes(pWorld.first, pRegion.first, newNodes);
-                    }
-
+                    // Пересылка изменений в мире
                     if(!ChangedLightPrism.empty())
                         cec->onChunksUpdate_LightPrism(pWorld.first, pRegion.first, ChangedLightPrism);
 
@@ -753,78 +686,155 @@ void GameServer::stepWorlds() {
 
                     if(!ChangedNodes.empty())
                         cec->onChunksUpdate_Nodes(pWorld.first, pRegion.first, ChangedNodes);
-                }
 
-                // Проверка отслеживания сущностей
-                {
-                    std::vector<LocalEntityId_t> newEntityes, lostEntityes;
-                    for(size_t iter = 0; iter < region.Entityes.size(); iter++) {
-                        Entity &entity = region.Entityes[iter];
+                    // То, что уже отслеживает наблюдатель
+                    const auto &subs = cec->getSubscribed();
 
-                        if(entity.IsRemoved)
-                            continue;
+                    // Проверка отслеживания чанков
+                    if(cecIndex-1 == region.CEC_NextChunkAndEntityesViewCheck) {
+                        // Чанки, которые игрок уже не видит и которые только что увидел
+                        
+                        std::vector<Pos::Local16_u> lostChunks, newChunks;
+                        
+                        // Проверим чанки которые наблюдатель может наблюдать
+                        // TODO: Есть что оптимальнее? LV::Server::ContentViewCircle::isIn() x 77754347
+                        for(int z = 0; z < 16; z++)
+                            for(int y = 0; y < 16; y++)
+                                for(int x = 0; x < 16; x++) {
+                                    Pos::GlobalChunk gcPos((pRegion.first.X << 4) | x,
+                                        (pRegion.first.Y << 4) | y,
+                                        (pRegion.first.Z << 4) | z);
 
-                        for(const ContentViewCircle &circle : cvc->second) {
-                            int x = entity.ABBOX.x >> 17;
-                            int y = entity.ABBOX.y >> 17;
-                            int z = entity.ABBOX.z >> 17;
+                                    for(const ContentViewCircle &circle : cvc->second) {
+                                        if(circle.isIn(gcPos))
+                                            newChunks.push_back(Pos::Local16_u(x, y, z));
+                                    }
+                                }
 
-                            uint32_t size = 0;
-                            if(circle.isIn(entity.Pos, x*x+y*y+z*z))
-                                newEntityes.push_back(iter);
+                        std::unordered_set<Pos::Local16_u> newChunksSet(newChunks.begin(), newChunks.end());
+
+                        {
+                            auto iterR_W = subs.Chunks.find(pWorld.first);
+                            if(iterR_W == subs.Chunks.end())
+                                // Если мир не отслеживается наблюдателем
+                                goto doesNotObserve;
+
+                            auto iterR_W_R = iterR_W->second.find(pRegion.first);
+                            if(iterR_W_R == iterR_W->second.end())
+                                // Если регион не отслеживается наблюдателем
+                                goto doesNotObserve;
+
+                            // Подходят ли уже наблюдаемые чанки под наблюдательные области
+                            for(Pos::Local16_u cPos : iterR_W_R->second) {
+                                Pos::GlobalChunk gcPos((pRegion.first.X << 4) | cPos.X,
+                                    (pRegion.first.Y << 4) | cPos.Y,
+                                    (pRegion.first.Z << 4) | cPos.Z);
+
+                                for(const ContentViewCircle &circle : cvc->second) {
+                                    if(!circle.isIn(gcPos))
+                                        lostChunks.push_back(cPos);
+                                }
+                            }
+
+                            // Удалим чанки которые наблюдатель уже видит
+                            for(Pos::Local16_u cPos : iterR_W_R->second)
+                                newChunksSet.erase(cPos);
+                        }
+
+                        doesNotObserve:
+
+                        if(!newChunksSet.empty() || !lostChunks.empty())
+                            cec->onChunksEnterLost(pWorld.first, pWorld.second.get(), pRegion.first, newChunksSet, std::unordered_set<Pos::Local16_u>(lostChunks.begin(), lostChunks.end()));
+
+                        // Нужно отправить полную информацию о новых наблюдаемых чанках наблюдателю
+                        if(!newChunksSet.empty()) {
+                            std::unordered_map<Pos::Local16_u, const LightPrism*> newLightPrism;
+                            std::unordered_map<Pos::Local16_u, const std::vector<VoxelCube>*> newVoxels;
+                            std::unordered_map<Pos::Local16_u, const std::unordered_map<Pos::Local16_u, Node>*> newNodes;
+
+                            for(Pos::Local16_u cPos : newChunksSet) {
+                                newLightPrism[cPos] = &region.Lights[0][0][cPos.X][cPos.Y][cPos.Z];
+                                newVoxels[cPos] = &region.Voxels[cPos.X][cPos.Y][cPos.Z];
+                                newNodes[cPos] = &region.Nodes[cPos.X][cPos.Y][cPos.Z];
+                            }
+
+                            cec->onChunksUpdate_LightPrism(pWorld.first, pRegion.first, newLightPrism);
+                            cec->onChunksUpdate_Voxels(pWorld.first, pRegion.first, newVoxels);
+                            cec->onChunksUpdate_Nodes(pWorld.first, pRegion.first, newNodes);
                         }
                     }
 
-                    std::unordered_set<LocalEntityId_t> newEntityesSet(newEntityes.begin(), newEntityes.end());
+                    // Проверка отслеживания сущностей
+                    if(cecIndex-1 == region.CEC_NextChunkAndEntityesViewCheck) {
+                        std::vector<LocalEntityId_t> newEntityes, lostEntityes;
+                        for(size_t iter = 0; iter < region.Entityes.size(); iter++) {
+                            Entity &entity = region.Entityes[iter];
 
-                    {
-                        auto iterR_W = subs.Entities.find(pWorld.first);
-                        if(iterR_W == subs.Entities.end())
-                            // Если мир не отслеживается наблюдателем
-                            goto doesNotObserveEntityes;
-
-                        auto iterR_W_R = iterR_W->second.find(pRegion.first);
-                        if(iterR_W_R == iterR_W->second.end())
-                            // Если регион не отслеживается наблюдателем
-                            goto doesNotObserveEntityes;
-
-                        // Подходят ли уже наблюдаемые сущности под наблюдательные области
-                        for(LocalEntityId_t eId : iterR_W_R->second) {
-                            if(eId >= region.Entityes.size()) {
-                                lostEntityes.push_back(eId);
-                                break;
-                            }
-
-                            Entity &entity = region.Entityes[eId];
-
-                            if(entity.IsRemoved) {
-                                lostEntityes.push_back(eId);
-                                break;
-                            }
-
-                            int x = entity.ABBOX.x >> 17;
-                            int y = entity.ABBOX.y >> 17;
-                            int z = entity.ABBOX.z >> 17;
+                            if(entity.IsRemoved)
+                                continue;
 
                             for(const ContentViewCircle &circle : cvc->second) {
-                                if(!circle.isIn(entity.Pos, x*x+y*y+z*z))
-                                    lostEntityes.push_back(eId);
+                                int x = entity.ABBOX.x >> 17;
+                                int y = entity.ABBOX.y >> 17;
+                                int z = entity.ABBOX.z >> 17;
+
+                                uint32_t size = 0;
+                                if(circle.isIn(entity.Pos, x*x+y*y+z*z))
+                                    newEntityes.push_back(iter);
                             }
                         }
 
-                        // Удалим чанки которые наблюдатель уже видит
-                        for(LocalEntityId_t eId : iterR_W_R->second)
-                            newEntityesSet.erase(eId);
+                        std::unordered_set<LocalEntityId_t> newEntityesSet(newEntityes.begin(), newEntityes.end());
+
+                        {
+                            auto iterR_W = subs.Entities.find(pWorld.first);
+                            if(iterR_W == subs.Entities.end())
+                                // Если мир не отслеживается наблюдателем
+                                goto doesNotObserveEntityes;
+
+                            auto iterR_W_R = iterR_W->second.find(pRegion.first);
+                            if(iterR_W_R == iterR_W->second.end())
+                                // Если регион не отслеживается наблюдателем
+                                goto doesNotObserveEntityes;
+
+                            // Подходят ли уже наблюдаемые сущности под наблюдательные области
+                            for(LocalEntityId_t eId : iterR_W_R->second) {
+                                if(eId >= region.Entityes.size()) {
+                                    lostEntityes.push_back(eId);
+                                    break;
+                                }
+
+                                Entity &entity = region.Entityes[eId];
+
+                                if(entity.IsRemoved) {
+                                    lostEntityes.push_back(eId);
+                                    break;
+                                }
+
+                                int x = entity.ABBOX.x >> 17;
+                                int y = entity.ABBOX.y >> 17;
+                                int z = entity.ABBOX.z >> 17;
+
+                                for(const ContentViewCircle &circle : cvc->second) {
+                                    if(!circle.isIn(entity.Pos, x*x+y*y+z*z))
+                                        lostEntityes.push_back(eId);
+                                }
+                            }
+
+                            // Удалим чанки которые наблюдатель уже видит
+                            for(LocalEntityId_t eId : iterR_W_R->second)
+                                newEntityesSet.erase(eId);
+                        }
+
+                        doesNotObserveEntityes:
+
+                        cec->onEntityEnterLost(pWorld.first, pRegion.first, newEntityesSet, std::unordered_set<LocalEntityId_t>(lostEntityes.begin(), lostEntityes.end()));
+                        // Отправить полную информацию о новых наблюдаемых сущностях наблюдателю
                     }
 
-                    doesNotObserveEntityes:
-
-                    cec->onEntityEnterLost(pWorld.first, pRegion.first, newEntityesSet, std::unordered_set<LocalEntityId_t>(lostEntityes.begin(), lostEntityes.end()));
-                    // Отправить полную информацию о новых наблюдаемых сущностях наблюдателю
+                    if(!region.Entityes.empty())
+                        cec->onEntityUpdates(pWorld.first, pRegion.first, region.Entityes);
                 }
-
-                if(!region.Entityes.empty())
-                    cec->onEntityUpdates(pWorld.first, pRegion.first, region.Entityes);
             }
 
 

@@ -64,6 +64,8 @@ class ShaderModule;
 class IVulkanDependent;
 class Buffer;
 
+#define vkAssert(err) if(!bool(err)) { MAKE_ERROR(__FILE__ << ": " << __LINE__ << "//" << __func__); }
+
 /*
 	Vulkan.getSettingsNext() = Vulkan.getBestSettings();
 	Vulkan.reInit();
@@ -845,7 +847,7 @@ public:
 			size_t freeCount = Buffers[bufferIndex].getSize()/sizeof(Vertex)-mainOffset;
 
 			// Место кончилось
-			assert(freeCount && "Место всегда должно быть");
+			vkAssert(freeCount && "Место всегда должно быть");
 			// if(!freeCount)
 			// {
 			// 	if(LastData)

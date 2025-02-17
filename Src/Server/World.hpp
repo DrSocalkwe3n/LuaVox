@@ -26,6 +26,9 @@ public:
 
     std::vector<Entity> Entityes;
     std::vector<ContentEventController*> CECs;
+    // Используется для прорежения количества проверок на наблюдаемые чанки и сущности
+    // В одно обновление региона - проверка одного наблюдателя
+    uint16_t CEC_NextChunkAndEntityesViewCheck = 0;
 
     bool IsLoaded = false;
     float LastSaveTime = 0;

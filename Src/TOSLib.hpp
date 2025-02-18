@@ -588,4 +588,4 @@ public:
 
 }
 
-#define MAKE_ERROR(arg) throw std::runtime_error((std::stringstream() << arg).str())
+#define MAKE_ERROR(arg) throw std::runtime_error((std::ostringstream() << arg).str())

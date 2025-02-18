@@ -75,7 +75,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC "${PROJECT_SOURCE_DIR}/Libs/pn
 
 # GLFW3
 if(BUILD_CLIENT)
-  find_package(glfw3 3.4)
+  find_package(glfw3 3)
 
   if(TARGET glfw)
       target_include_directories(${PROJECT_NAME} PUBLIC ${GLFW_INCLUDE_DIRS})

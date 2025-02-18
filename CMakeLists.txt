@@ -60,6 +60,14 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(glm)
 target_link_libraries(${PROJECT_NAME} PUBLIC glm)
 
+find_package(ICU REQUIRED COMPONENTS i18n uc)
+target_include_directories(${PROJECT_NAME} PUBLIC ${ICU_INCLUDE_DIR})
+target_link_libraries(${PROJECT_NAME} PUBLIC ${ICU_LIBRARIES})
+
+find_package(OpenSSL REQUIRED)
+target_include_directories(${PROJECT_NAME} PUBLIC ${OPENSSL_INCLUDE_DIR})
+target_link_libraries(${PROJECT_NAME} PUBLIC ${OPENSSL_LIBRARIES})
+
 # JPEG
 find_package(JPEG REQUIRED)
 target_include_directories(${PROJECT_NAME} PUBLIC ${JPEG_INCLUDE_DIRS})
@@ -105,11 +113,6 @@ target_link_libraries(${PROJECT_NAME} PUBLIC Freetype::Freetype)
 file(GLOB SOURCES "${PROJECT_SOURCE_DIR}/Libs/imgui/*.cpp")
 target_sources(${PROJECT_NAME} PRIVATE ${SOURCES} "${PROJECT_SOURCE_DIR}/Libs/imgui/backends/imgui_impl_glfw.cpp" "${PROJECT_SOURCE_DIR}/Libs/imgui/backends/imgui_impl_vulkan.cpp")
 target_include_directories(${PROJECT_NAME} PUBLIC "${PROJECT_SOURCE_DIR}/Libs/imgui/")
-
-# TOS Lib
-add_subdirectory("${PROJECT_SOURCE_DIR}/Libs/TOS Lib")
-target_link_libraries(${PROJECT_NAME} PUBLIC TOS_Lib)
-
 
 # Static Assets
 file(GLOB_RECURSE ASSETS RELATIVE "${PROJECT_SOURCE_DIR}/assets" "assets/*.*")

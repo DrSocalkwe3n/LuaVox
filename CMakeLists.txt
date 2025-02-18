@@ -1,4 +1,8 @@
 cmake_minimum_required(VERSION 3.13)
+
+option(BUILD_CLIENT "Build the client" TRUE)
+
+
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fdata-sections -ffunction-sections -DGLM_FORCE_DEPTH_ZERO_TO_ONE")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--gc-sections") # -rdynamic
 
@@ -70,16 +74,21 @@ target_link_libraries(${PROJECT_NAME} PUBLIC PNG::PNG)
 target_include_directories(${PROJECT_NAME} PUBLIC "${PROJECT_SOURCE_DIR}/Libs/png++")
 
 # GLFW3
-# find_package(glfw3 REQUIRED)
-# target_include_directories(${PROJECT_NAME} PUBLIC ${GLFW_INCLUDE_DIRS})
+if(BUILD_CLIENT)
+  find_package(glfw3 3.4)
 
-FetchContent_Declare(
-    glfw
-    GIT_REPOSITORY https://github.com/glfw/glfw.git
-    GIT_TAG 3.4
-)
-FetchContent_MakeAvailable(glfw)
-target_link_libraries(${PROJECT_NAME} PUBLIC glfw)
+  if(TARGET glfw)
+      target_include_directories(${PROJECT_NAME} PUBLIC ${GLFW_INCLUDE_DIRS})
+  else()
+    FetchContent_Declare(
+        glfw
+        GIT_REPOSITORY https://github.com/glfw/glfw.git
+        GIT_TAG 3.4
+    )
+    FetchContent_MakeAvailable(glfw)
+  endif()
+  target_link_libraries(${PROJECT_NAME} PUBLIC glfw)
+endif()
 
 # FreeType
 find_package(Freetype REQUIRED)

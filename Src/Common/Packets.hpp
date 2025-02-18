@@ -65,7 +65,8 @@ enum struct L1 : uint8_t {
 // Второй уровень
 enum struct L2System : uint8_t {
     InitEnd,
-    Disconnect
+    Disconnect,
+    Test_CAM_PYR_POS
 };
 
 }

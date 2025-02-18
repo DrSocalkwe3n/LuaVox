@@ -408,6 +408,9 @@ void GameServer::stepPlayers() {
 
                 wIter->second->onCEC_RegionsLost(cec.get(), wPair.second);
             }
+
+            std::string username = cec->Remote->Username;
+            External.ConnectedPlayersSet.lock_write()->erase(username);
             
             cec.reset();
         }
@@ -913,6 +916,7 @@ void GameServer::stepViewContent() {
         cvc.WorldId = oPos.WorldId;
         cvc.Pos = {oPos.ObjectPos.x >> (Pos::Object_t::BS_Bit+4), oPos.ObjectPos.y >> (Pos::Object_t::BS_Bit+4), oPos.ObjectPos.z >> (Pos::Object_t::BS_Bit+4)};
         cvc.Range = cec.getViewRange();
+        cvc.Range *= cvc.Range;
 
         cec.ContentViewCircles = Expanse.calcAndRemapCVC(cvc);
     }
@@ -926,34 +930,7 @@ void GameServer::stepViewContent() {
         ServerObjectPos oLPos = cec.getLastPos(), oPos = cec.getPos();
 
         std::vector<Pos::GlobalRegion> lost;
-
-        // Снимаем подписки с регионов
-        for(auto &pairSR : cec.SubscribedRegions) {
-            auto CVCs = cec.ContentViewCircles.find(pairSR.first);
-
-            if(CVCs == cec.ContentViewCircles.end()) {
-                lost = pairSR.second;
-            } else {
-                for(Pos::GlobalRegion &region : pairSR.second) {
-                    for(ContentViewCircle &circle : CVCs->second) {
-                        if(!circle.isIn(region)) {
-                            lost.push_back(region);
-                            break;
-                        }
-                    }
-                }
-            }
-            
-            cec.onRegionsLost(pairSR.first, lost);
-
-            auto world = Expanse.Worlds.find(pairSR.first);
-            if(world != Expanse.Worlds.end())
-                world->second->onCEC_RegionsLost(&cec, lost);
-
-            lost.clear();
-        }
         
-
         // Проверяем отслеживаемые регионы
         std::vector<Pos::GlobalRegion> regionsResult;
         for(auto &pair : cec.ContentViewCircles) {
@@ -991,6 +968,36 @@ void GameServer::stepViewContent() {
                 world->second->onCEC_RegionsEnter(&cec, regionsResult);
                 regionsResult.clear();
             }
+        }
+
+        // Снимаем подписки с регионов
+        for(auto &pairSR : cec.SubscribedRegions) {
+            auto CVCs = cec.ContentViewCircles.find(pairSR.first);
+
+            if(CVCs == cec.ContentViewCircles.end()) {
+                lost = pairSR.second;
+            } else {
+                for(Pos::GlobalRegion &region : pairSR.second) {
+                    bool inView = false;
+                    for(ContentViewCircle &circle : CVCs->second) {
+                        if(circle.isIn(region)) {
+                            inView = true;
+                            break;
+                        }
+                    }
+
+                    if(!inView)
+                        lost.push_back(region);
+                }
+            }
+            
+            cec.onRegionsLost(pairSR.first, lost);
+
+            auto world = Expanse.Worlds.find(pairSR.first);
+            if(world != Expanse.Worlds.end())
+                world->second->onCEC_RegionsLost(&cec, lost);
+
+            lost.clear();
         }
     }
 }

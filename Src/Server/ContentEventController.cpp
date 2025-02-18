@@ -13,15 +13,15 @@ ContentEventController::ContentEventController(std::unique_ptr<RemoteClient> &&r
 }
 
 uint8_t ContentEventController::getViewRange() const {
-    return 3;
+    return 16;
 }
 
 ServerObjectPos ContentEventController::getLastPos() const {
-    return {0, {0, 0, 0}};
+    return {0, Remote->CameraPos};
 }
 
 ServerObjectPos ContentEventController::getPos() const {
-    return {0, {0, 0, 0}};
+    return {0, Remote->CameraPos};
 }
 
 void ContentEventController::onRegionsLost(WorldId_t worldId, const std::vector<Pos::GlobalRegion> &lost) {

@@ -2129,6 +2129,10 @@ void Vulkan::gui_ConnectedToServer() {
 		Game.RSession = nullptr;
 		Game.Session = nullptr;
 		Game.ImGuiInterfaces.pop_back();
+
+		int mode = glfwGetInputMode(Graphics.Window, GLFW_CURSOR);
+		if(mode == GLFW_CURSOR_DISABLED)
+			glfwSetInputMode(Graphics.Window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 	}
 }
 

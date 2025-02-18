@@ -3,7 +3,9 @@
 #include "Client/Vulkan/Vulkan.hpp"
 #include "Common/Abstract.hpp"
 #include "assets.hpp"
+#include "glm/ext/matrix_transform.hpp"
 #include "glm/trigonometric.hpp"
+#include <cstddef>
 #include <memory>
 #include <vector>
 #include <vulkan/vulkan_core.h>
@@ -630,31 +632,41 @@ void VulkanRenderSession::onDefEntityUpdates(const std::vector<DefEntityId_c> &u
 }
 
 void VulkanRenderSession::onChunksChange(WorldId_c worldId, const std::unordered_set<Pos::GlobalChunk> &changeOrAddList, const std::unordered_set<Pos::GlobalChunk> &remove) {
+    auto &table = External.ChunkVoxelMesh[worldId];
+
     for(Pos::GlobalChunk pos : changeOrAddList) {
         Pos::GlobalRegion rPos(pos.X >> 4, pos.Y >> 4, pos.Z >> 4);
         Pos::Local16_u cPos(pos.X & 0xf, pos.Y & 0xf, pos.Z & 0xf);
 
         const auto &voxels = ServerSession->External.Worlds[worldId].Regions[rPos].Chunks[cPos].Voxels;
-        auto &table = External.ChunkVoxelMesh[worldId];
 
         if(voxels.empty()) {
             auto iter = table.find(pos);
             if(iter != table.end())
                 table.erase(iter);
-
-            if(table.empty())
-                External.ChunkVoxelMesh.erase(External.ChunkVoxelMesh.find(worldId));
         } else {
-            auto &buffer = table[pos] = std::make_unique<Buffer>(VkInst, voxels.size()*6*6*sizeof(NodeVertexStatic));
-            NodeVertexStatic *vertex = (NodeVertexStatic*) buffer->mapMemory();
+            std::vector<VoxelVertexPoint> vertexs = generateMeshForVoxelChunks(voxels);
 
-            for(const VoxelCube &cube : voxels) {
-                
+            if(!vertexs.empty()) {
+                auto &buffer = table[pos] = std::make_unique<Buffer>(VkInst, vertexs.size()*sizeof(VoxelVertexPoint));
+                std::copy(vertexs.data(), vertexs.data()+vertexs.size(), (VoxelVertexPoint*) buffer->mapMemory());
+                buffer->unMapMemory();
+            } else {
+                auto iter = table.find(pos);
+                if(iter != table.end())
+                    table.erase(iter);
             }
-
-            buffer->unMapMemory();
         }
     }
+
+    for(Pos::GlobalChunk pos : remove) {
+        auto iter = table.find(pos);
+        if(iter != table.end())
+            table.erase(iter);
+    }
+
+    if(table.empty())
+        External.ChunkVoxelMesh.erase( External.ChunkVoxelMesh.find(worldId));
 }
 
 void VulkanRenderSession::setCameraPos(WorldId_c worldId, Pos::Object pos, glm::quat quat) {
@@ -718,6 +730,26 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
         vkBuffer = *VKCTX->TestVoxel;
         vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
         vkCmdDraw(drawCmd, VKCTX->TestVoxel->getSize() / sizeof(VoxelVertexPoint), 1, 0, 0);
+    }
+
+    {
+        auto iterWorld = External.ChunkVoxelMesh.find(WorldId);
+        if(iterWorld != External.ChunkVoxelMesh.end()) {
+            glm::mat4 orig = PCO.Model;
+
+            for(auto &pair : iterWorld->second) {
+                glm::vec3 cpos(pair.first.X, pair.first.Y, pair.first.Z);
+                PCO.Model = glm::translate(orig, cpos*16.f);
+                vkBuffer = *pair.second;
+
+                vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
+                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, offsetof(WorldPCO, Model), sizeof(WorldPCO::Model), &PCO.Model);
+                vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
+                vkCmdDraw(drawCmd, pair.second->getSize() / sizeof(VoxelVertexPoint), 1, 0, 0);
+            }
+
+            PCO.Model = orig;
+        }
     }
 }
 

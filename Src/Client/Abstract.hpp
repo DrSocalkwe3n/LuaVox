@@ -11,7 +11,7 @@
 namespace LV::Client {
 
 struct GlobalTime {
-	uint32_t Seconds : 22, Sub : 10;
+	uint32_t Seconds : 22 = 0, Sub : 10 = 0;
 
     GlobalTime() = default;
     GlobalTime(double gTime) {

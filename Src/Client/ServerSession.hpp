@@ -51,6 +51,8 @@ class ServerSession : public AsyncObject, public IServerSession, public ISurface
     } Keys;
     Pos::Object Pos = Pos::Object(0), Speed = Pos::Object(0);
 
+    GlobalTime LastSendPYR_POS;
+
 public:
     // Нужен сокет, на котором только что был согласован игровой протокол (asyncInitGameProtocol)
     ServerSession(asio::io_context &ioc, std::unique_ptr<Net::AsyncSocket> &&socket, IRenderSession *rs = nullptr)

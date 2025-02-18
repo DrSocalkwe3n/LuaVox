@@ -28,6 +28,15 @@ struct PP_Content_ChunkVoxels : public ParsedPacket {
     {}
 };
 
+struct PP_Content_ChunkRemove : public ParsedPacket {
+    WorldId_c Id;
+    Pos::GlobalChunk Pos;
+
+    PP_Content_ChunkRemove(ToClient::L1 l1, uint8_t l2, WorldId_c id, Pos::GlobalChunk pos)
+        : ParsedPacket(l1, l2), Id(id), Pos(pos)
+    {}
+};
+
 using namespace TOS;
 
 ServerSession::~ServerSession() {
@@ -246,14 +255,30 @@ void ServerSession::atFreeDrawTime(GlobalTime gTime, float dTime) {
         // Пакеты
         ParsedPacket *pack;
         while(NetInputPackets.pop(pack)) {
-            if(pack->Level1 == ToClient::L1::Content && ToClient::L2Content(pack->Level2) == ToClient::L2Content::ChunkVoxels) {
-                PP_Content_ChunkVoxels &p = *dynamic_cast<PP_Content_ChunkVoxels*>(pack);
-                Pos::GlobalRegion rPos(p.Pos.X >> 4, p.Pos.Y >> 4, p.Pos.Z >> 4);
-                Pos::Local16_u cPos(p.Pos.X & 0xf, p.Pos.Y & 0xf, p.Pos.Z & 0xf);
-                External.Worlds[p.Id].Regions[rPos].Chunks[cPos].Voxels = std::move(p.Cubes);
+            if(pack->Level1 == ToClient::L1::Content) {
+                ToClient::L2Content l2 = ToClient::L2Content(pack->Level2);
+                if(l2 == ToClient::L2Content::ChunkVoxels) {
+                    PP_Content_ChunkVoxels &p = *dynamic_cast<PP_Content_ChunkVoxels*>(pack);
+                    Pos::GlobalRegion rPos(p.Pos.X >> 4, p.Pos.Y >> 4, p.Pos.Z >> 4);
+                    Pos::Local16_u cPos(p.Pos.X & 0xf, p.Pos.Y & 0xf, p.Pos.Z & 0xf);
 
-                auto &pair = changeOrAddList_removeList[p.Id];
-                std::get<0>(pair).insert(p.Pos);
+                    External.Worlds[p.Id].Regions[rPos].Chunks[cPos].Voxels = std::move(p.Cubes);
+
+                    auto &pair = changeOrAddList_removeList[p.Id];
+                    std::get<0>(pair).insert(p.Pos);
+                } else if(l2 == ToClient::L2Content::RemoveChunk) {
+                    PP_Content_ChunkRemove &p = *dynamic_cast<PP_Content_ChunkRemove*>(pack);
+
+                    Pos::GlobalRegion rPos(p.Pos.X >> 4, p.Pos.Y >> 4, p.Pos.Z >> 4);
+                    Pos::Local16_u cPos(p.Pos.X & 0xf, p.Pos.Y & 0xf, p.Pos.Z & 0xf);
+                    auto &obj = External.Worlds[p.Id].Regions[rPos].Chunks;
+                    auto iter = obj.find(cPos);
+                    if(iter != obj.end())
+                        obj.erase(iter);
+
+                    auto &pair = changeOrAddList_removeList[p.Id];
+                    std::get<1>(pair).insert(p.Pos);
+                }
             }
 
             delete pack;
@@ -261,13 +286,14 @@ void ServerSession::atFreeDrawTime(GlobalTime gTime, float dTime) {
 
         if(RS && !changeOrAddList_removeList.empty()) {
             for(auto &pair : changeOrAddList_removeList) {
+                // Если случится что чанк был изменён и удалён, то исключаем его обновления
+                for(Pos::GlobalChunk removed : std::get<1>(pair.second))
+                    std::get<0>(pair.second).erase(removed);
+
                 RS->onChunksChange(pair.first, std::get<0>(pair.second), std::get<1>(pair.second));
             }
         }
     }
-
-    if(!RS)
-        return;
 
     // Расчёт камеры
     {
@@ -277,7 +303,27 @@ void ServerSession::atFreeDrawTime(GlobalTime gTime, float dTime) {
             glm::angleAxis(PYR.x-deltaTime*PYR_Offset.x, glm::vec3(1.f, 0.f, 0.f))
             *   glm::angleAxis(PYR.y-deltaTime*PYR_Offset.y, glm::vec3(0.f, -1.f, 0.f));
 
-        RS->setCameraPos(0, Pos, quat);
+        if(RS)
+            RS->setCameraPos(0, Pos, quat);
+
+
+        // Отправка текущей позиции камеры
+        if(gTime-LastSendPYR_POS > 1/20.f)
+        {
+            LastSendPYR_POS = gTime;
+            Net::Packet packet;
+            ToServer::PacketQuat q;
+            q.fromQuat(quat);
+
+            packet << (uint8_t) ToServer::L1::System
+                << (uint8_t) ToServer::L2System::Test_CAM_PYR_POS
+                << Pos.x << Pos.y << Pos.z;
+
+            for(int iter = 0; iter < 5; iter++)
+                packet << q.Data[iter];
+
+            Socket->pushPacket(std::move(packet));
+        }
     }
 }
 
@@ -492,9 +538,22 @@ coro<> ServerSession::rP_Content(Net::AsyncSocket &sock) {
     case ToClient::L2Content::ChunkLightPrism:
 
         co_return;
-    case ToClient::L2Content::RemoveChunk:
-    
+    case ToClient::L2Content::RemoveChunk: {
+        WorldId_c wcId = co_await sock.read<uint8_t>();
+        Pos::GlobalChunk::Key posKey = co_await sock.read<Pos::GlobalChunk::Key>();
+        Pos::GlobalChunk pos = *(Pos::GlobalChunk*) &posKey;
+
+        PP_Content_ChunkRemove *packet = new PP_Content_ChunkRemove(
+            ToClient::L1::Content,
+            (uint8_t) ToClient::L2Content::RemoveChunk,
+            wcId,
+            pos
+        );
+
+        while(!NetInputPackets.push(packet));
+
         co_return;
+    }
     default:
         protocolError();
     }

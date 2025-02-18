@@ -266,6 +266,8 @@ class RemoteClient {
 
 public:
     const std::string Username;
+    Pos::Object CameraPos = {0, 0, 0};
+    ToServer::PacketQuat CameraQuat = {0};
 
 public:
     RemoteClient(asio::io_context &ioc, tcp::socket socket, const std::string username)
@@ -331,6 +333,7 @@ public:
     void informateDefPortals(const std::unordered_map<DefPortalId_t, void*> &portals);
 
 private:
+    void checkPacketBorder(uint16_t size);
     void protocolError();
     coro<> readPacket(Net::AsyncSocket &sock);
     coro<> rP_System(Net::AsyncSocket &sock);

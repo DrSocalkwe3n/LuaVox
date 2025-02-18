@@ -124,6 +124,8 @@ void RemoteClient::prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk
 
     LOG.debug() << "Воксели чанка: " << worldId << " / " << chunkPos.X << ":" << chunkPos.Y << ":" << chunkPos.Z;
 
+    checkPacketBorder(voxels.size()*(2+6)+16);
+
     NextPacket << (uint8_t) ToClient::L1::Content
         << (uint8_t) ToClient::L2Content::ChunkVoxels << wcId 
         << Pos::GlobalChunk::Key(chunkPos);
@@ -164,7 +166,9 @@ void RemoteClient::prepareChunkRemove(WorldId_t worldId, Pos::GlobalChunk chunkP
     }
 
     LOG.debug() << "Чанк потерян: " << worldId << " / " << chunkPos.X << ":" << chunkPos.Y << ":" << chunkPos.Z;
-    WorldId_c cwId = ResRemap.Worlds.toClient(worldId);
+    WorldId_c cwId = worldId ? ResRemap.Worlds.toClient(worldId) : worldId;
+
+    checkPacketBorder(16);
     NextPacket << (uint8_t) ToClient::L1::Content
         << (uint8_t) ToClient::L2Content::RemoveChunk
         << cwId << Pos::GlobalChunk::Key(chunkPos);
@@ -189,6 +193,8 @@ void RemoteClient::prepareWorldNew(WorldId_t worldId, World* world)
 
     WorldId_c cId = ResRemap.Worlds.toClient(worldId);
     LOG.debug() << "Новый мир: " << worldId << " -> " << int(cId);
+
+    checkPacketBorder(16);
     NextPacket << (uint8_t) ToClient::L1::Content
         << (uint8_t) ToClient::L2Content::World
         << cId;
@@ -231,7 +237,7 @@ void RemoteClient::prepareWorldUpdate(WorldId_t worldId, World* world)
     decrementBinary(lostTextures, lostSounds, lostModels);
     decrementBinary(newTextures, newSounds, newModels);
 
-    WorldId_c cId = ResRemap.Worlds.toClient(worldId);
+    WorldId_c cId = worldId ? ResRemap.Worlds.toClient(worldId) : worldId;
     // TODO: отправить пакет об изменении мира
     LOG.debug() << "Изменение мира: " << worldId << " -> " << cId;
 }
@@ -242,7 +248,7 @@ void RemoteClient::prepareWorldRemove(WorldId_t worldId)
     // Понизим зависимости ресурсов
     ResUsesObj::WorldResourceUse &res = ResUses.Worlds[worldId];
 
-    WorldId_c cWorld = ResUses.Worlds.erase(worldId);
+    WorldId_c cWorld = worldId ? ResUses.Worlds.erase(worldId) : worldId;
     LOG.debug() << "Мир потерян: " << worldId << " -> " << cWorld;
 
     NextPacket << (uint8_t) ToClient::L1::Content
@@ -323,6 +329,7 @@ void RemoteClient::prepareEntityRemove(GlobalEntityId_t entityId)
 
     LOG.debug() << "Сущность потеряна: " << cId;
 
+    checkPacketBorder(16);
     NextPacket << (uint8_t) ToClient::L1::Content
         << (uint8_t) ToClient::L2Content::RemoveEntity
         << cId;
@@ -357,6 +364,7 @@ void RemoteClient::informateDefTexture(const std::unordered_map<BinTextureId_t, 
 
         TextureId_c cId = ResRemap.BinTextures.toClient(sId);
 
+        checkPacketBorder(0);
         NextPacket << (uint8_t) ToClient::L1::Resource    // Оповещение
            << (uint8_t) ToClient::L2Resource::Texture << cId;
         for(auto part : pair.second->Hash)
@@ -373,18 +381,12 @@ void RemoteClient::informateDefTexture(const std::unordered_map<BinTextureId_t, 
 
         size_t pos = 0;
         while(pos < pair.second->Data.size()) {
-            if(NextPacket.size() > 64000) {
-                SimplePackets.push_back(std::move(NextPacket));
-            }
-
+            checkPacketBorder(0);
             size_t need = std::min(pair.second->Data.size()-pos, std::min<size_t>(NextPacket.size(), 64000));
             NextPacket.write(pair.second->Data.data()+pos, need);
             pos += need;
         }
     }
-
-    if(NextPacket.size())
-        SimplePackets.push_back(std::move(NextPacket));
 }
 
 void RemoteClient::informateDefSound(const std::unordered_map<BinSoundId_t, std::shared_ptr<ResourceFile>> &sounds)
@@ -396,6 +398,7 @@ void RemoteClient::informateDefSound(const std::unordered_map<BinSoundId_t, std:
 
         SoundId_c cId = ResRemap.BinSounds.toClient(sId);
 
+        checkPacketBorder(0);
         NextPacket << (uint8_t) ToClient::L1::Resource    // Оповещение
            << (uint8_t) ToClient::L2Resource::Sound << cId;
         for(auto part : pair.second->Hash)
@@ -534,6 +537,12 @@ void RemoteClient::informateDefPortals(const std::unordered_map<DefPortalId_t, v
     }
 }
 
+void RemoteClient::checkPacketBorder(uint16_t size) {
+    if(64000-NextPacket.size() < size || (NextPacket.size() != 0 && size == 0)) {
+        SimplePackets.push_back(std::move(NextPacket));
+    }
+}
+
 void RemoteClient::protocolError() {
     shutdown(EnumDisconnect::ProtocolError, "Ошибка протокола");
 }
@@ -567,6 +576,17 @@ coro<> RemoteClient::rP_System(Net::AsyncSocket &sock) {
 
         LOG.info() << "Игрок '" << Username << "' отключился" << reason;
         
+        co_return;
+    }
+    case ToServer::L2System::Test_CAM_PYR_POS:
+    {
+        CameraPos.x = co_await sock.read<decltype(CameraPos.x)>();
+        CameraPos.y = co_await sock.read<decltype(CameraPos.x)>();
+        CameraPos.z = co_await sock.read<decltype(CameraPos.x)>();
+
+        for(int iter = 0; iter < 5; iter++)
+            CameraQuat.Data[iter] = co_await sock.read<uint8_t>();
+
         co_return;
     }
     default:

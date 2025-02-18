@@ -5,11 +5,12 @@ layout (triangle_strip, max_vertices = 4) out;
 
 layout(location = 0) in highp uvec3 Geometry[];
 
-layout(location = 0) out Fragment {
+layout(location = 0) out FragmentObj {
     vec3 GeoPos;    // Реальная позиция в мире
-    uint VoxMTL;    // Материал вокселя
+    flat uint VoxMTL;    // Материал вокселя
     vec2 LUV;
-} fragment;
+    flat uint Place;
+} Fragment;
 
 layout(push_constant) uniform UniformBufferObject {
     mat4 projview;
@@ -43,195 +44,214 @@ void main() {
 
     uint voxMTL = ((Geometry[0].y >> 16) & 0xffff);
     vec2 luv = vec2(float(Geometry[0].z & 0x3fff)+0.5f, float((Geometry[0].z >> 14) & 0x3fff)+0.5f);
+    int place = int(Geometry[0].x >> 27) & 0x7;
 
     // Стартовая вершина
     vec4 tempVec = baseVec;
     tempVec = ubo.model*tempVec;
-    fragment.GeoPos = vec3(tempVec);
-    fragment.VoxMTL = voxMTL;
-    fragment.LUV = luv;
+    Fragment.GeoPos = vec3(tempVec);
+    Fragment.VoxMTL = voxMTL;
+    Fragment.LUV = luv;
+    Fragment.Place = place;
     gl_Position = ubo.projview*tempVec;
     EmitVertex();
     
 
-    int place = int(Geometry[0].x >> 27) & 0x3;
     switch(place) {
     case 0: // xz
         tempVec = baseVec;
-        tempVec.x += size.x;
+        tempVec.z += size.y / 16.f;
         tempVec = ubo.model*tempVec;
-        fragment.GeoPos = vec3(tempVec);
-        fragment.VoxMTL = voxMTL;
-        fragment.LUV = luv+vec2(size.x, 0);
+        Fragment.GeoPos = tempVec.xyz;
+        Fragment.VoxMTL = voxMTL;
+        Fragment.LUV = luv+vec2(0, size.y);
+        Fragment.Place = place;
         gl_Position = ubo.projview*tempVec;
         EmitVertex();
 
         tempVec = baseVec;
-        tempVec.z += size.y;
+        tempVec.x += size.x / 16.f;
         tempVec = ubo.model*tempVec;
-        fragment.GeoPos = vec3(tempVec);
-        fragment.VoxMTL = voxMTL;
-        fragment.LUV = luv+vec2(0, size.y);
+        Fragment.GeoPos = tempVec.xyz;
+        Fragment.VoxMTL = voxMTL;
+        Fragment.LUV = luv+vec2(size.x, 0);
+        Fragment.Place = place;
         gl_Position = ubo.projview*tempVec;
         EmitVertex();
 
         tempVec = baseVec;
-        tempVec.x += size.x;
-        tempVec.z += size.y;
+        tempVec.x += size.x / 16.f;
+        tempVec.z += size.y / 16.f;
         tempVec = ubo.model*tempVec;
-        fragment.GeoPos = vec3(tempVec);
-        fragment.VoxMTL = voxMTL;
-        fragment.LUV = luv+vec2(size.x, size.y);
+        Fragment.GeoPos = tempVec.xyz;
+        Fragment.VoxMTL = voxMTL;
+        Fragment.LUV = luv+vec2(size.x, size.y);
+        Fragment.Place = place;
         gl_Position = ubo.projview*tempVec;
         EmitVertex();
 
         break;
     case 1: // xy
         tempVec = baseVec;
-        tempVec.x += size.x;
+        tempVec.x += size.x / 16.f;
         tempVec = ubo.model*tempVec;
-        fragment.GeoPos = vec3(tempVec);
-        fragment.VoxMTL = voxMTL;
-        fragment.LUV = luv+vec2(size.x, 0);
+        Fragment.GeoPos = tempVec.xyz;
+        Fragment.VoxMTL = voxMTL;
+        Fragment.LUV = luv+vec2(size.x, 0);
+        Fragment.Place = place;
         gl_Position = ubo.projview*tempVec;
         EmitVertex();
 
         tempVec = baseVec;
-        tempVec.y += size.y;
+        tempVec.y += size.y / 16.f;
         tempVec = ubo.model*tempVec;
-        fragment.GeoPos = vec3(tempVec);
-        fragment.VoxMTL = voxMTL;
-        fragment.LUV = luv+vec2(0, size.y);
+        Fragment.GeoPos = tempVec.xyz;
+        Fragment.VoxMTL = voxMTL;
+        Fragment.LUV = luv+vec2(0, size.y);
+        Fragment.Place = place;
         gl_Position = ubo.projview*tempVec;
         EmitVertex();
 
         tempVec = baseVec;
-        tempVec.x += size.x;
-        tempVec.y += size.y;
+        tempVec.x += size.x / 16.f;
+        tempVec.y += size.y / 16.f;
         tempVec = ubo.model*tempVec;
-        fragment.GeoPos = vec3(tempVec);
-        fragment.VoxMTL = voxMTL;
-        fragment.LUV = luv+vec2(size.x, size.y);
+        Fragment.GeoPos = tempVec.xyz;
+        Fragment.VoxMTL = voxMTL;
+        Fragment.LUV = luv+vec2(size.x, size.y);
+        Fragment.Place = place;
         gl_Position = ubo.projview*tempVec;
         EmitVertex();
 
         break;
     case 2: // zy
         tempVec = baseVec;
-        tempVec.z += size.x;
+        tempVec.y += size.y / 16.f;
         tempVec = ubo.model*tempVec;
-        fragment.GeoPos = vec3(tempVec);
-        fragment.VoxMTL = voxMTL;
-        fragment.LUV = luv+vec2(size.x, 0);
+        Fragment.GeoPos = tempVec.xyz;
+        Fragment.VoxMTL = voxMTL;
+        Fragment.LUV = luv+vec2(0, size.y);
+        Fragment.Place = place;
         gl_Position = ubo.projview*tempVec;
         EmitVertex();
 
         tempVec = baseVec;
-        tempVec.y += size.y;
+        tempVec.z += size.x / 16.f;
         tempVec = ubo.model*tempVec;
-        fragment.GeoPos = vec3(tempVec);
-        fragment.VoxMTL = voxMTL;
-        fragment.LUV = luv+vec2(0, size.y);
+        Fragment.GeoPos = tempVec.xyz;
+        Fragment.VoxMTL = voxMTL;
+        Fragment.LUV = luv+vec2(size.x, 0);
+        Fragment.Place = place;
         gl_Position = ubo.projview*tempVec;
         EmitVertex();
 
         tempVec = baseVec;
-        tempVec.z += size.x;
-        tempVec.y += size.y;
+        tempVec.z += size.x / 16.f;
+        tempVec.y += size.y / 16.f;
         tempVec = ubo.model*tempVec;
-        fragment.GeoPos = vec3(tempVec);
-        fragment.VoxMTL = voxMTL;
-        fragment.LUV = luv+vec2(size.x, size.y);
+        Fragment.GeoPos = tempVec.xyz;
+        Fragment.VoxMTL = voxMTL;
+        Fragment.LUV = luv+vec2(size.x, size.y);
+        Fragment.Place = place;
         gl_Position = ubo.projview*tempVec;
         EmitVertex();
 
         break;
     case 3: // xz inv
         tempVec = baseVec;
-        tempVec.z += size.y;
+        tempVec.x += size.x / 16.f;
         tempVec = ubo.model*tempVec;
-        fragment.GeoPos = vec3(tempVec);
-        fragment.VoxMTL = voxMTL;
-        fragment.LUV = luv+vec2(size.x, 0);
+        Fragment.GeoPos = tempVec.xyz;
+        Fragment.VoxMTL = voxMTL;
+        Fragment.LUV = luv+vec2(size.x, 0);
+        Fragment.Place = place;
         gl_Position = ubo.projview*tempVec;
         EmitVertex();
 
         tempVec = baseVec;
-        tempVec.x += size.x;
+        tempVec.z += size.y / 16.f;
         tempVec = ubo.model*tempVec;
-        fragment.GeoPos = vec3(tempVec);
-        fragment.VoxMTL = voxMTL;
-        fragment.LUV = luv+vec2(0, size.y);
+        Fragment.GeoPos = tempVec.xyz;
+        Fragment.VoxMTL = voxMTL;
+        Fragment.LUV = luv+vec2(0, size.y);
+        Fragment.Place = place;
         gl_Position = ubo.projview*tempVec;
         EmitVertex();
 
         tempVec = baseVec;
-        tempVec.x += size.x;
-        tempVec.z += size.y;
+        tempVec.x += size.x / 16.f;
+        tempVec.z += size.y / 16.f;
         tempVec = ubo.model*tempVec;
-        fragment.GeoPos = vec3(tempVec);
-        fragment.VoxMTL = voxMTL;
-        fragment.LUV = luv+vec2(size.x, size.y);
+        Fragment.GeoPos = tempVec.xyz;
+        Fragment.VoxMTL = voxMTL;
+        Fragment.LUV = luv+vec2(size.x, size.y);
+        Fragment.Place = place;
         gl_Position = ubo.projview*tempVec;
         EmitVertex();
 
         break;
     case 4: // xy inv
         tempVec = baseVec;
-        tempVec.y += size.y;
+        tempVec.y += size.y / 16.f;
         tempVec = ubo.model*tempVec;
-        fragment.GeoPos = vec3(tempVec);
-        fragment.VoxMTL = voxMTL;
-        fragment.LUV = luv+vec2(size.x, 0);
+        Fragment.GeoPos = tempVec.xyz;
+        Fragment.VoxMTL = voxMTL;
+        Fragment.LUV = luv+vec2(0, size.y);
+        Fragment.Place = place;
         gl_Position = ubo.projview*tempVec;
         EmitVertex();
 
         tempVec = baseVec;
-        tempVec.x += size.x;
+        tempVec.x += size.x / 16.f;
         tempVec = ubo.model*tempVec;
-        fragment.GeoPos = vec3(tempVec);
-        fragment.VoxMTL = voxMTL;
-        fragment.LUV = luv+vec2(0, size.y);
+        Fragment.GeoPos = tempVec.xyz;
+        Fragment.VoxMTL = voxMTL;
+        Fragment.LUV = luv+vec2(size.x, 0);
+        Fragment.Place = place;
         gl_Position = ubo.projview*tempVec;
         EmitVertex();
 
         tempVec = baseVec;
-        tempVec.x += size.x;
-        tempVec.y += size.y;
+        tempVec.x += size.x / 16.f;
+        tempVec.y += size.y / 16.f;
         tempVec = ubo.model*tempVec;
-        fragment.GeoPos = vec3(tempVec);
-        fragment.VoxMTL = voxMTL;
-        fragment.LUV = luv+vec2(size.x, size.y);
+        Fragment.GeoPos = tempVec.xyz;
+        Fragment.VoxMTL = voxMTL;
+        Fragment.LUV = luv+vec2(size.x, size.y);
+        Fragment.Place = place;
         gl_Position = ubo.projview*tempVec;
         EmitVertex();
 
         break;
     case 5: // zy inv
         tempVec = baseVec;
-        tempVec.y += size.y;
+        tempVec.z += size.x / 16.f;
         tempVec = ubo.model*tempVec;
-        fragment.GeoPos = vec3(tempVec);
-        fragment.VoxMTL = voxMTL;
-        fragment.LUV = luv+vec2(size.x, 0);
+        Fragment.GeoPos = tempVec.xyz;
+        Fragment.VoxMTL = voxMTL;
+        Fragment.LUV = luv+vec2(size.x, 0);
+        Fragment.Place = place;
         gl_Position = ubo.projview*tempVec;
         EmitVertex();
 
         tempVec = baseVec;
-        tempVec.z += size.x;
+        tempVec.y += size.y / 16.f;
         tempVec = ubo.model*tempVec;
-        fragment.GeoPos = vec3(tempVec);
-        fragment.VoxMTL = voxMTL;
-        fragment.LUV = luv+vec2(0, size.y);
+        Fragment.GeoPos = tempVec.xyz;
+        Fragment.VoxMTL = voxMTL;
+        Fragment.LUV = luv+vec2(0, size.y);
+        Fragment.Place = place;
         gl_Position = ubo.projview*tempVec;
         EmitVertex();
 
         tempVec = baseVec;
-        tempVec.z += size.x;
-        tempVec.y += size.y;
+        tempVec.z += size.x / 16.f;
+        tempVec.y += size.y / 16.f;
         tempVec = ubo.model*tempVec;
-        fragment.GeoPos = vec3(tempVec);
-        fragment.VoxMTL = voxMTL;
-        fragment.LUV = luv+vec2(size.x, size.y);
+        Fragment.GeoPos = tempVec.xyz;
+        Fragment.VoxMTL = voxMTL;
+        Fragment.LUV = luv+vec2(size.x, size.y);
+        Fragment.Place = place;
         gl_Position = ubo.projview*tempVec;
         EmitVertex();
 

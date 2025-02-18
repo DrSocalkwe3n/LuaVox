@@ -4,6 +4,7 @@ layout(location = 0) in Fragment {
     vec3 GeoPos;    // Реальная позиция в мире
     uint VoxMTL;    // Материал вокселя
     vec2 LUV;
+    uint Place;
 } fragment;
 
 layout(location = 0) out vec4 Frame;

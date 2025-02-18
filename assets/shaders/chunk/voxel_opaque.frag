@@ -2,8 +2,9 @@
 
 layout(location = 0) in FragmentObj {
     vec3 GeoPos;    // Реальная позиция в мире
-    uint VoxMTL;    // Материал вокселя
+    flat uint VoxMTL;    // Материал вокселя
     vec2 LUV;
+    flat uint Place;
 } Fragment;
 
 layout(location = 0) out vec4 Frame;
@@ -73,5 +74,24 @@ vec4 atlasColor(uint texId, vec2 uv)
 }
 
 void main() {
-    Frame = atlasColor(0, Fragment.GeoPos.xy);
+    vec2 uv;
+
+    switch(Fragment.Place) {
+    case 0:
+        uv = Fragment.GeoPos.xz; break;
+    case 1:
+        uv = Fragment.GeoPos.xy; break;
+    case 2:
+        uv = Fragment.GeoPos.zy; break;
+    case 3:
+        uv = Fragment.GeoPos.xz*vec2(-1, -1); break;
+    case 4:
+        uv = Fragment.GeoPos.xy*vec2(-1, 1); break;
+    case 5:
+        uv = Fragment.GeoPos.zy*vec2(-1, 1); break;
+    default:
+        uv = vec2(0);
+    }
+
+    Frame = atlasColor(Fragment.VoxMTL, uv);
 }

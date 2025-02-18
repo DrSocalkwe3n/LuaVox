@@ -157,7 +157,8 @@ void ServerSession::onResize(uint32_t width, uint32_t height) {
 }
 
 void ServerSession::onChangeFocusState(bool isFocused) {
-
+    if(!isFocused)
+        CursorMode = EnumCursorMoveMode::Default;
 }
 
 void ServerSession::onCursorPosChange(int32_t width, int32_t height) {
@@ -273,7 +274,7 @@ void ServerSession::atFreeDrawTime(GlobalTime gTime, float dTime) {
         float deltaTime = 1-std::min<float>(gTime-PYR_At, 1/PYR_TIME_DELTA)*PYR_TIME_DELTA;
 
         glm::quat quat =
-            glm::angleAxis(PYR.x-deltaTime*PYR_Offset.x, glm::vec3(-1.f, 0.f, 0.f))
+            glm::angleAxis(PYR.x-deltaTime*PYR_Offset.x, glm::vec3(1.f, 0.f, 0.f))
             *   glm::angleAxis(PYR.y-deltaTime*PYR_Offset.y, glm::vec3(0.f, -1.f, 0.f));
 
         RS->setCameraPos(0, Pos, quat);
@@ -465,9 +466,9 @@ coro<> ServerSession::rP_Content(Net::AsyncSocket &sock) {
             cube.Left.X = co_await sock.read<uint8_t>();
             cube.Left.Y = co_await sock.read<uint8_t>();
             cube.Left.Z = co_await sock.read<uint8_t>();
-            cube.Right.X = co_await sock.read<uint8_t>();
-            cube.Right.Y = co_await sock.read<uint8_t>();
-            cube.Right.Z = co_await sock.read<uint8_t>();
+            cube.Size.X = co_await sock.read<uint8_t>();
+            cube.Size.Y = co_await sock.read<uint8_t>();
+            cube.Size.Z = co_await sock.read<uint8_t>();
         }
 
         PP_Content_ChunkVoxels *packet = new PP_Content_ChunkVoxels(

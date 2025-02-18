@@ -3,6 +3,7 @@
 #include "Client/Vulkan/Vulkan.hpp"
 #include "Common/Abstract.hpp"
 #include "assets.hpp"
+#include "glm/trigonometric.hpp"
 #include <memory>
 #include <vector>
 #include <vulkan/vulkan_core.h>
@@ -194,9 +195,17 @@ void VulkanRenderSession::init(Vulkan *instance) {
 
         int width, height;
         bool hasAlpha;
-        ByteBuffer image = VK::loadPNG(std::ifstream("/home/mr_s/Workspace/Alpha/LuaVox/assets/grass.png"), width, height, hasAlpha);
-        uint16_t texId = VKCTX->MainTest.atlasAddTexture(width, height);
-        VKCTX->MainTest.atlasChangeTextureData(texId, (const uint32_t*) image.data());
+        for(const char *path : {
+                "grass.png", 
+                "tropical_rainforest_wood.png", 
+                "willow_wood.png", 
+                "xnether_blue_wood.png",
+                "xnether_purple_wood.png"
+        }) {
+            ByteBuffer image = VK::loadPNG(getResource(std::string("textures/") + path)->makeStream().Stream, width, height, hasAlpha);
+            uint16_t texId = VKCTX->MainTest.atlasAddTexture(width, height);
+            VKCTX->MainTest.atlasChangeTextureData(texId, (const uint32_t*) image.data());
+        }
 
         /*
         x left -1 ~ right 1
@@ -221,15 +230,22 @@ void VulkanRenderSession::init(Vulkan *instance) {
         {
             std::vector<VoxelCube> cubes;
 
-            cubes.emplace_back(0, Pos::Local256_u{0, 0, 0}, Pos::Local256_u{1, 1, 1});
+            cubes.emplace_back(0, Pos::Local256_u{0, 0, 0}, Pos::Local256_u{0, 0, 0});
+            cubes.emplace_back(1, Pos::Local256_u{255, 0, 0}, Pos::Local256_u{0, 0, 0});
+            cubes.emplace_back(1, Pos::Local256_u{0, 255, 0}, Pos::Local256_u{0, 0, 0});
+            cubes.emplace_back(1, Pos::Local256_u{0, 0, 255}, Pos::Local256_u{0, 0, 0});
+            cubes.emplace_back(2, Pos::Local256_u{255, 255, 0}, Pos::Local256_u{0, 0, 0});
+            cubes.emplace_back(2, Pos::Local256_u{0, 255, 255}, Pos::Local256_u{0, 0, 0});
+            cubes.emplace_back(2, Pos::Local256_u{255, 0, 255}, Pos::Local256_u{0, 0, 0});
+            cubes.emplace_back(3, Pos::Local256_u{255, 255, 255}, Pos::Local256_u{0, 0, 0});
+
+            cubes.emplace_back(4, Pos::Local256_u{64, 64, 64}, Pos::Local256_u{127, 127, 127});
 
             std::vector<VoxelVertexPoint> vertexs = generateMeshForVoxelChunks(cubes);
 
             if(!vertexs.empty()) {
                 VKCTX->TestVoxel.emplace(VkInst, vertexs.size()*sizeof(VoxelVertexPoint));
-                VoxelVertexPoint *result = (VoxelVertexPoint*) VKCTX->TestVoxel->mapMemory();
-                std::copy(vertexs.data(), vertexs.data()+vertexs.size(), result);
-                TOS::Logger("Test").debug() << result[0].FX << " " << result[0].FY << " " << result[0].FZ;
+                std::copy(vertexs.data(), vertexs.data()+vertexs.size(), (VoxelVertexPoint*) VKCTX->TestVoxel->mapMemory());
                 VKCTX->TestVoxel->unMapMemory();
             }
         }
@@ -655,11 +671,19 @@ void VulkanRenderSession::beforeDraw() {
 }
 
 void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuffer drawCmd) {
-    glm::mat4 proj = glm::perspective<float>(75, float(VkInst->Screen.Width)/float(VkInst->Screen.Height), 0.5, std::pow(2, 17));
-    // Сместить в координаты игрока, повернуть относительно взгляда, ещё поворот на 180 и проецировать на экран
+    glm::mat4 proj = glm::perspective<float>(glm::radians(75.f), float(VkInst->Screen.Width)/float(VkInst->Screen.Height), 0.5, std::pow(2, 17));
+    
+    for(int i = 0; i < 4; i++) {
+        proj[1][i] *= -1;
+        proj[2][i] *= -1;
+    }
+    
+    
+    // Сместить в координаты игрока, повернуть относительно взгляда проецировать на экран
+    // Изначально взгляд в z-1
     PCO.ProjView = glm::mat4(1);
     PCO.ProjView = glm::translate(PCO.ProjView, -glm::vec3(Pos)/float(Pos::Object_t::BS));
-    PCO.ProjView = proj*glm::mat4(Quat)*glm::rotate(glm::mat4(1), glm::pi<float>(), glm::vec3(0, 1, 0))*PCO.ProjView;
+    PCO.ProjView = proj*glm::mat4(Quat)*PCO.ProjView;
     PCO.Model = glm::mat4(1);
 
     vkCmdBindPipeline(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, NodeStaticOpaquePipeline);
@@ -692,6 +716,7 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
 
     if(VKCTX->TestVoxel) {
         vkBuffer = *VKCTX->TestVoxel;
+        vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
         vkCmdDraw(drawCmd, VKCTX->TestVoxel->getSize() / sizeof(VoxelVertexPoint), 1, 0, 0);
     }
 }
@@ -706,9 +731,74 @@ std::vector<VoxelVertexPoint> VulkanRenderSession::generateMeshForVoxelChunks(co
             cube.Left.Y,
             cube.Left.Z,
             0,
-            0,
-            cube.Right.X-cube.Left.X,
-            cube.Right.Z-cube.Left.Z,
+            0, 0,
+            cube.Size.X,
+            cube.Size.Z,
+            cube.VoxelId,
+            0, 0,
+            0
+        );
+
+        out.emplace_back(
+            cube.Left.X,
+            cube.Left.Y,
+            cube.Left.Z,
+            1,
+            0, 0,
+            cube.Size.X,
+            cube.Size.Y,
+            cube.VoxelId,
+            0, 0,
+            0
+        );
+
+        out.emplace_back(
+            cube.Left.X,
+            cube.Left.Y,
+            cube.Left.Z,
+            2,
+            0, 0,
+            cube.Size.Z,
+            cube.Size.Y,
+            cube.VoxelId,
+            0, 0,
+            0
+        );
+
+        out.emplace_back(
+            cube.Left.X,
+            cube.Left.Y+cube.Size.Y+1,
+            cube.Left.Z,
+            3,
+            0, 0,
+            cube.Size.X,
+            cube.Size.Z,
+            cube.VoxelId,
+            0, 0,
+            0
+        );
+
+        out.emplace_back(
+            cube.Left.X,
+            cube.Left.Y,
+            cube.Left.Z+cube.Size.Z+1,
+            4,
+            0, 0,
+            cube.Size.X,
+            cube.Size.Y,
+            cube.VoxelId,
+            0, 0,
+            0
+        );
+
+        out.emplace_back(
+            cube.Left.X+cube.Size.X+1,
+            cube.Left.Y,
+            cube.Left.Z,
+            5,
+            0, 0,
+            cube.Size.Z,
+            cube.Size.Y,
             cube.VoxelId,
             0, 0,
             0

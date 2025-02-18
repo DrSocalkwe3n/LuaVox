@@ -5,7 +5,7 @@
 #include <cstring>
 #include <filesystem>
 #include <string>
-#include <string>
+#include <sstream>
 #include <thread>
 
 #define _USE_MATH_DEFINES

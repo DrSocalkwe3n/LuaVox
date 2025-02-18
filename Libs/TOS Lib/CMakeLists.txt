@@ -23,10 +23,10 @@ find_package(OpenSSL REQUIRED)
 target_include_directories(${PROJECT_NAME} PUBLIC ${OPENSSL_INCLUDE_DIR})
 target_link_libraries(${PROJECT_NAME} PUBLIC ${OPENSSL_LIBRARIES})
 
-set(Boost_USE_STATIC_LIBS ON)
-find_package(Boost REQUIRED COMPONENTS timer)
-target_include_directories(${PROJECT_NAME} PUBLIC ${Boost_INCLUDE_DIR})
-target_link_libraries(${PROJECT_NAME} PUBLIC ${Boost_LIBRARIES})
+# set(Boost_USE_STATIC_LIBS ON)
+# find_package(Boost REQUIRED COMPONENTS timer)
+# target_include_directories(${PROJECT_NAME} PUBLIC ${Boost_INCLUDE_DIR})
+# target_link_libraries(${PROJECT_NAME} PUBLIC ${Boost_LIBRARIES})
 
 
 file(GLOB_RECURSE SOURCES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} "Src/*.cpp")

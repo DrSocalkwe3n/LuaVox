@@ -527,8 +527,6 @@ coro<> ServerSession::rP_Content(Net::AsyncSocket &sock) {
 
         while(!NetInputPackets.push(packet));
 
-        LOG.info() << "Приняты воксели чанка " << int(wcId) << " / " << pos.X << ":" << pos.Y << ":" << pos.Z << " Вокселей " << debugCubesCount;
-
         co_return;
     }
 

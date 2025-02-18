@@ -122,8 +122,6 @@ void RemoteClient::prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk
         prevSet = std::move(nextSet);
     }
 
-    LOG.debug() << "Воксели чанка: " << worldId << " / " << chunkPos.X << ":" << chunkPos.Y << ":" << chunkPos.Z;
-
     checkPacketBorder(voxels.size()*(2+6)+16);
 
     NextPacket << (uint8_t) ToClient::L1::Content
@@ -165,7 +163,6 @@ void RemoteClient::prepareChunkRemove(WorldId_t worldId, Pos::GlobalChunk chunkP
         }
     }
 
-    LOG.debug() << "Чанк потерян: " << worldId << " / " << chunkPos.X << ":" << chunkPos.Y << ":" << chunkPos.Z;
     WorldId_c cwId = worldId ? ResRemap.Worlds.toClient(worldId) : worldId;
 
     checkPacketBorder(16);

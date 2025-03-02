@@ -418,13 +418,13 @@ namespace Enc {
 
 std::string toHex(const uint8_t *begin, size_t size)
 {
-	std::string out(size, ' ');
+	std::string out(size*2, ' ');
 	char *data = out.data();
 
 	for(const uint8_t *end = begin + size; begin != end; begin++)
 	{
-		*(data++) = "0123456789abcdf"[*begin & 0xf];
 		*(data++) = "0123456789abcdf"[(*begin >> 4) & 0xf];
+		*(data++) = "0123456789abcdf"[*begin & 0xf];
 	}
 
 	return out;
@@ -586,8 +586,10 @@ std::string makeStacktrace(int stack_up)
 
 		if(Str::contains(line.str(), "boost::asio::asio_handler_invoke"))
 			break;
-		else
+		else {
 		 	out += line.str();
+			out += '\n';
+		}
 	}
 
 	return out;

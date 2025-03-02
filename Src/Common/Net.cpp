@@ -31,14 +31,15 @@ AsyncSocket::~AsyncSocket() {
     if(SendPackets.Context)
         SendPackets.Context->NeedShutdown = true;
 
-    boost::lock_guard lock(SendPackets.Mtx);
+    {
+        boost::lock_guard lock(SendPackets.Mtx);
+
+        SendPackets.SenderGuard.cancel();
+        WorkDeadline.cancel();
+    }
 
     if(Socket.is_open())
         try { Socket.close(); } catch(...) {}
-
-
-    SendPackets.SenderGuard.cancel();
-    WorkDeadline.cancel();
 }
 
 void AsyncSocket::pushPackets(std::vector<Packet> *simplePackets, std::vector<SmartPacket> *smartPackets) {
@@ -49,6 +50,7 @@ void AsyncSocket::pushPackets(std::vector<Packet> *simplePackets, std::vector<Sm
             || SendPackets.SmartBuffer.size() + (smartPackets ? smartPackets->size() : 0) >= MAX_SMART_PACKETS
             || SendPackets.SizeInQueue >= MAX_PACKETS_SIZE_IN_WAIT)) 
     {
+        lock.unlock();
         try { Socket.close(); } catch(...) {}
         // TODO: std::cout << "Передоз пакетами, сокет закрыт" << std::endl;
     }
@@ -175,13 +177,13 @@ coro<> AsyncSocket::runSender(std::shared_ptr<AsyncContext> context) {
                             while(!SendPackets.SmartBuffer.empty()) {
                                 SmartPacket &packet = SendPackets.SmartBuffer.front();
 
-                                if(SendSize+packet.size() >= SendBuffer.size())
-                                    break;
-
-                                if(packet.IsStillRelevant && !packet.IsStillRelevant()) {
+                                if(packet.IsStillRelevant && !packet.IsStillRelevant (/* */)) {
                                     SendPackets.SmartBuffer.pop_front();
                                     continue;
                                 }
+
+                                if(SendSize+packet.size() >= SendBuffer.size())
+                                    break;
 
                                 size_t packetSize = packet.size();
                                 for(const auto &page : packet.getPages()) {

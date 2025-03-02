@@ -470,7 +470,7 @@ inline double genRand(double min = 1, double max = 0)
 	return res*(max-min)+min;
 }
 
-std::string makeStackTrace(int stack_up = 1);
+std::string makeStacktrace(int stack_up = 1);
 
 struct Timer
 {

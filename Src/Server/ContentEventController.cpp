@@ -12,8 +12,12 @@ ContentEventController::ContentEventController(std::unique_ptr<RemoteClient> &&r
 {
 }
 
-uint8_t ContentEventController::getViewRange() const {
+uint16_t ContentEventController::getViewRangeActive() const {
     return 16;
+}
+
+uint16_t ContentEventController::getViewRangeBackground() const {
+    return 0;
 }
 
 ServerObjectPos ContentEventController::getLastPos() const {
@@ -24,82 +28,54 @@ ServerObjectPos ContentEventController::getPos() const {
     return {0, Remote->CameraPos};
 }
 
-void ContentEventController::onRegionsLost(WorldId_t worldId, const std::vector<Pos::GlobalRegion> &lost) {
-    auto pWorld = Subscribed.Chunks.find(worldId);
-    if(pWorld == Subscribed.Chunks.end())
-        return;
-
-    for(Pos::GlobalRegion rPos : lost) {
-        auto pRegion = pWorld->second.find(rPos);
-        if(pRegion != pWorld->second.end()) {
-            for(Pos::Local16_u lChunkPos : pRegion->second) {
-                Pos::GlobalChunk gChunkPos(
-                    (pRegion->first.X << 4) | lChunkPos.X,
-                    (pRegion->first.Y << 4) | lChunkPos.Y,
-                    (pRegion->first.Z << 4) | lChunkPos.Z
-                );
-
-                Remote->prepareChunkRemove(worldId, gChunkPos);
+void ContentEventController::checkContentViewChanges() {
+    // Очистка уже не наблюдаемых чанков
+    for(const auto &[worldId, regions] : ContentView_LostView.View) {
+        for(const auto &[regionPos, chunks] : regions) {
+            size_t bitPos = chunks._Find_first();
+            while(bitPos != chunks.size()) {
+                Pos::Local16_u chunkPosLocal;
+                chunkPosLocal = bitPos;
+                Pos::GlobalChunk chunkPos = regionPos.toChunk(chunkPosLocal);
+                Remote->prepareChunkRemove(worldId, chunkPos);
+                bitPos = chunks._Find_next(bitPos);
             }
-
-            pWorld->second.erase(pRegion);
         }
     }
 
-    if(pWorld->second.empty()) {
-        Subscribed.Chunks.erase(pWorld);
+    // Очистка миров
+    for(WorldId_t worldId : ContentView_LostView.Worlds) {
         Remote->prepareWorldRemove(worldId);
     }
 }
 
-void ContentEventController::onChunksEnterLost(WorldId_t worldId, World *worldObj, Pos::GlobalRegion regionPos, const std::unordered_set<Pos::Local16_u> &enter, const std::unordered_set<Pos::Local16_u> &lost) {    
-    if(!Subscribed.Chunks.contains(worldId)) {
-        Remote->prepareWorldNew(worldId, worldObj);
-    }
-    
-    std::unordered_set<Pos::Local16_u> &chunks = Subscribed.Chunks[worldId][regionPos];
-    
-    chunks.insert(enter.begin(), enter.end());
+void ContentEventController::onWorldUpdate(WorldId_t worldId, World *worldObj)
+{
+    auto pWorld = ContentViewState.find(worldId);
+    if(pWorld == ContentViewState.end())
+        return;
 
-    for(Pos::Local16_u cPos : lost) {
-        chunks.erase(cPos);
-
-        Pos::GlobalChunk chunkPos(
-            (regionPos.X << 4) | cPos.X,
-            (regionPos.Y << 4) | cPos.Y,
-            (regionPos.Z << 4) | cPos.Z
-        );
-
-        Remote->prepareChunkRemove(worldId, chunkPos);
-    }
-
-    if(Subscribed.Chunks[worldId].empty()) {
-        Subscribed.Chunks.erase(Subscribed.Chunks.find(worldId));
-        Remote->prepareWorldRemove(worldId);
-    }
+    Remote->prepareWorldUpdate(worldId, worldObj);
 }
 
 void ContentEventController::onChunksUpdate_Voxels(WorldId_t worldId, Pos::GlobalRegion regionPos, 
     const std::unordered_map<Pos::Local16_u, const std::vector<VoxelCube>*> &chunks)
 {
-    auto pWorld = Subscribed.Chunks.find(worldId);
-    if(pWorld == Subscribed.Chunks.end())
+    auto pWorld = ContentViewState.find(worldId);
+    if(pWorld == ContentViewState.end())
         return;
 
     auto pRegion = pWorld->second.find(regionPos);
     if(pRegion == pWorld->second.end())
         return;
 
+    const std::bitset<4096> &chunkBitset = pRegion->second;
+
     for(auto pChunk : chunks) {
-        if(!pRegion->second.contains(pChunk.first))
+        if(!chunkBitset.test(pChunk.first))
             continue;
 
-        Pos::GlobalChunk chunkPos(
-            (regionPos.X << 4) | pChunk.first.X,
-            (regionPos.Y << 4) | pChunk.first.Y,
-            (regionPos.Z << 4) | pChunk.first.Z
-        );
-
+        Pos::GlobalChunk chunkPos = regionPos.toChunk(pChunk.first);
         Remote->prepareChunkUpdate_Voxels(worldId, chunkPos, *pChunk.second);
     }
 }
@@ -107,24 +83,21 @@ void ContentEventController::onChunksUpdate_Voxels(WorldId_t worldId, Pos::Globa
 void ContentEventController::onChunksUpdate_Nodes(WorldId_t worldId, Pos::GlobalRegion regionPos, 
     const std::unordered_map<Pos::Local16_u, const std::unordered_map<Pos::Local16_u, Node>*> &chunks)
 {
-    auto pWorld = Subscribed.Chunks.find(worldId);
-    if(pWorld == Subscribed.Chunks.end())
+    auto pWorld = ContentViewState.find(worldId);
+    if(pWorld == ContentViewState.end())
         return;
 
     auto pRegion = pWorld->second.find(regionPos);
     if(pRegion == pWorld->second.end())
         return;
 
+    const std::bitset<4096> &chunkBitset = pRegion->second;
+
     for(auto pChunk : chunks) {
-        if(!pRegion->second.contains(pChunk.first))
+        if(!chunkBitset.test(pChunk.first))
             continue;
 
-        Pos::GlobalChunk chunkPos(
-            (regionPos.X << 4) | pChunk.first.X,
-            (regionPos.Y << 4) | pChunk.first.Y,
-            (regionPos.Z << 4) | pChunk.first.Z
-        );
-
+        Pos::GlobalChunk chunkPos = regionPos.toChunk(pChunk.first);
         Remote->prepareChunkUpdate_Nodes(worldId, chunkPos, *pChunk.second);
     }
 }
@@ -132,24 +105,21 @@ void ContentEventController::onChunksUpdate_Nodes(WorldId_t worldId, Pos::Global
 void ContentEventController::onChunksUpdate_LightPrism(WorldId_t worldId, Pos::GlobalRegion regionPos, 
     const std::unordered_map<Pos::Local16_u, const LightPrism*> &chunks)
 {
-    auto pWorld = Subscribed.Chunks.find(worldId);
-    if(pWorld == Subscribed.Chunks.end())
+    auto pWorld = ContentViewState.find(worldId);
+    if(pWorld == ContentViewState.end())
         return;
 
     auto pRegion = pWorld->second.find(regionPos);
     if(pRegion == pWorld->second.end())
         return;
 
+    const std::bitset<4096> &chunkBitset = pRegion->second;
+
     for(auto pChunk : chunks) {
-        if(!pRegion->second.contains(pChunk.first))
+        if(!chunkBitset.test(pChunk.first))
             continue;
 
-        Pos::GlobalChunk chunkPos(
-            (regionPos.X << 4) | pChunk.first.X,
-            (regionPos.Y << 4) | pChunk.first.Y,
-            (regionPos.Z << 4) | pChunk.first.Z
-        );
-
+        Pos::GlobalChunk chunkPos = regionPos.toChunk(pChunk.first);
         Remote->prepareChunkUpdate_LightPrism(worldId, chunkPos, pChunk.second);
     }
 }

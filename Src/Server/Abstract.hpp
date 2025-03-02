@@ -65,8 +65,8 @@ struct ServerTime {
 };
 
 struct VoxelCube {
-    Pos::Local256_u Left, Right;
     DefVoxelId_t VoxelId;
+    Pos::Local256_u Left, Right;
 
     auto operator<=>(const VoxelCube&) const = default;
 };
@@ -333,7 +333,7 @@ inline void convertRegionVoxelsToChunks(const std::vector<VoxelCube_Region>& reg
                     };
 
                     int chunkIndex = z * 16 * 16 + y * 16 + x;
-                    chunks[chunkIndex].emplace_back(left, right, region.VoxelId);
+                    chunks[chunkIndex].emplace_back(region.VoxelId, left, right);
                 }
             }
         }

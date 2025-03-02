@@ -2,6 +2,7 @@
 
 #include "MemoryPool.hpp"
 #include "Async.hpp"
+#include "TOSLib.hpp"
 
 #include <atomic>
 #include <boost/asio.hpp>
@@ -97,6 +98,7 @@ protected:
                 uint16_t needWrite = std::min<uint16_t>(Pages.size()*NetPool::PageSize-Size, size);
                 std::byte *ptr = &Pages.back().front() + (Size % NetPool::PageSize);
                 std::copy(data, data+needWrite, ptr);
+                data += needWrite;
                 Size += needWrite;
                 size -= needWrite;
             }
@@ -177,7 +179,7 @@ protected:
     };
 
     class AsyncSocket : public AsyncObject {
-        NetPool::Array<32> RecvBuffer, SendBuffer;
+        NetPool::Array<16> RecvBuffer, SendBuffer;
         size_t RecvPos = 0, RecvSize = 0, SendSize = 0;
         bool ReadShutdowned = false;
         tcp::socket Socket;

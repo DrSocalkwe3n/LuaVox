@@ -23,6 +23,13 @@ struct Local16_u {
         return Key(X) | (Key(Y) << 4) | (Key(Z) << 8);
     };
 
+    Local16_u& operator=(const Key &key) {
+        X = key & 0xf;
+        Y = (key >> 4) & 0xf;
+        Z = (key >> 8) & 0xf;
+        return *this;
+    }
+
     Local4_u left() const { return Local4_u{uint8_t(uint16_t(X) >> 2), uint8_t(uint16_t(Y) >> 2), uint8_t(uint16_t(Z) >> 2)}; }
     Local4_u right() const { return Local4_u{uint8_t(uint16_t(X) & 0b11), uint8_t(uint16_t(Y) & 0b11), uint8_t(uint16_t(Z) & 0b11)}; }
 };
@@ -88,7 +95,15 @@ struct GlobalChunk {
         return Key(uint16_t(X)) | (Key(uint16_t(Y)) << 16) | (Key(uint16_t(Z)) << 32);
     };
 
+    operator glm::i16vec3() const {
+        return {X, Y, Z};
+    }
+
     auto operator<=>(const GlobalChunk&) const = default;
+
+    Local16_u toLocal() const {
+        return Local16_u(X & 0xf, Y & 0xf, Z & 0xf);
+    }
 };
 
 struct GlobalRegion {
@@ -100,6 +115,24 @@ struct GlobalRegion {
     };
 
     auto operator<=>(const GlobalRegion&) const = default;
+
+    void fromChunk(const GlobalChunk &posChunk) {
+        X = posChunk.X >> 4;
+        Y = posChunk.Y >> 4;
+        Z = posChunk.Z >> 4;
+    }
+
+    GlobalChunk toChunk() const {
+        return GlobalChunk(uint16_t(X) << 4, uint16_t(Y) << 4, uint16_t(Z) << 4);
+    }
+
+    GlobalChunk toChunk(const Pos::Local16_u &posLocal) const {
+        return GlobalChunk(
+            (uint16_t(X) << 4) | posLocal.X,
+            (uint16_t(Y) << 4) | posLocal.Y,
+            (uint16_t(Z) << 4) | posLocal.Z
+        );
+    }
 };
 
 using Object = glm::i32vec3;
@@ -110,6 +143,8 @@ struct Object_t {
 
     static glm::vec3 asFloatVec(Object &obj) { return glm::vec3(float(obj.x)/float(BS), float(obj.y)/float(BS), float(obj.z)/float(BS)); }
     static GlobalNode asNodePos(Object &obj) { return GlobalNode(obj.x >> BS_Bit, obj.y >> BS_Bit, obj.z >> BS_Bit); }
+    static GlobalChunk asChunkPos(Object &obj) { return GlobalChunk(obj.x >> BS_Bit >> 4, obj.y >> BS_Bit >> 4, obj.z >> BS_Bit >> 4); }
+    static GlobalChunk asRegionsPos(Object &obj) { return GlobalChunk(obj.x >> BS_Bit >> 8, obj.y >> BS_Bit >> 8, obj.z >> BS_Bit >> 8); }
 };
 
 }

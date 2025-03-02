@@ -2,6 +2,7 @@
 #include "Client/Abstract.hpp"
 #include "Common/Abstract.hpp"
 #include "Common/Net.hpp"
+#include "TOSLib.hpp"
 #include <GLFW/glfw3.h>
 #include <boost/asio/deadline_timer.hpp>
 #include <boost/asio/this_coro.hpp>
@@ -440,18 +441,26 @@ coro<> ServerSession::rP_Definition(Net::AsyncSocket &sock) {
     uint8_t second = co_await sock.read<uint8_t>();
 
     switch((ToClient::L2Definition) second) {
-    case ToClient::L2Definition::World:
+    case ToClient::L2Definition::World: {
+        DefWorldId_c cdId = co_await sock.read<DefWorldId_c>();
 
         co_return;
-    case ToClient::L2Definition::FreeWorld:
+    }
+    case ToClient::L2Definition::FreeWorld: {
+        DefWorldId_c cdId = co_await sock.read<DefWorldId_c>();
 
         co_return;
-    case ToClient::L2Definition::Voxel:
+    }
+    case ToClient::L2Definition::Voxel: {
+        DefVoxelId_c cdId = co_await sock.read<DefVoxelId_c>();
 
         co_return;
-    case ToClient::L2Definition::FreeVoxel:
+    }
+    case ToClient::L2Definition::FreeVoxel: {
+        DefVoxelId_c cdId = co_await sock.read<DefVoxelId_c>();
     
         co_return;
+    }
     case ToClient::L2Definition::Node:
 
         co_return;
@@ -499,12 +508,16 @@ coro<> ServerSession::rP_Content(Net::AsyncSocket &sock) {
         co_return;
     case ToClient::L2Content::ChunkVoxels:
     {
-        WorldId_c wcId = co_await sock.read<uint8_t>();
+        WorldId_c wcId = co_await sock.read<WorldId_c>();
         Pos::GlobalChunk::Key posKey = co_await sock.read<Pos::GlobalChunk::Key>();
         Pos::GlobalChunk pos = *(Pos::GlobalChunk*) &posKey;
 
         std::vector<VoxelCube> cubes(co_await sock.read<uint16_t>());
         uint16_t debugCubesCount = cubes.size();
+        if(debugCubesCount > 1) {
+            int g = 0;
+            g++;
+        }
 
         for(size_t iter = 0; iter < cubes.size(); iter++) {
             VoxelCube &cube = cubes[iter];

@@ -302,11 +302,9 @@ public:
     void prepareEntityUpdate(GlobalEntityId_t entityId, const Entity *entity);
     void prepareEntityRemove(GlobalEntityId_t entityId);
 
-    void prepareWorldNew(WorldId_t worldId, World* world);
     void prepareWorldUpdate(WorldId_t worldId, World* world);
     void prepareWorldRemove(WorldId_t worldId);
 
-    void preparePortalNew(PortalId_t portalId, void* portal);
     void preparePortalUpdate(PortalId_t portalId, void* portal);
     void preparePortalRemove(PortalId_t portalId);
 

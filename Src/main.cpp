@@ -22,6 +22,7 @@ int main() {
 
 int main() {
     TOS::Logger::addLogOutput(".*", TOS::EnumLogType::All);
+	TOS::Logger::addLogFile(".*", TOS::EnumLogType::All, "log.raw");
 	
 	std::cout << "Hello world!" << std::endl;
 	return LV::main();

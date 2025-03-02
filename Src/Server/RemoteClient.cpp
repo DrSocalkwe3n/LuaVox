@@ -127,6 +127,7 @@ void RemoteClient::prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk
     NextPacket << (uint8_t) ToClient::L1::Content
         << (uint8_t) ToClient::L2Content::ChunkVoxels << wcId 
         << Pos::GlobalChunk::Key(chunkPos);
+        
     NextPacket << uint16_t(voxels.size());
     // TODO: 
     for(const VoxelCube &cube : voxels) {
@@ -134,6 +135,7 @@ void RemoteClient::prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk
             << cube.Left.X << cube.Left.Y << cube.Left.Z
             << cube.Right.X << cube.Right.Y << cube.Right.Z;
     }
+    
 }
 
 void RemoteClient::prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, 
@@ -171,72 +173,73 @@ void RemoteClient::prepareChunkRemove(WorldId_t worldId, Pos::GlobalChunk chunkP
         << cwId << Pos::GlobalChunk::Key(chunkPos);
 }
 
-void RemoteClient::prepareWorldNew(WorldId_t worldId, World* world)
-{
-    ResUsesObj::WorldResourceUse &res = ResUses.Worlds[worldId];
-    res.DefId = world->getDefId();
-    if(++ResUses.DefWorld[res.DefId] == 1) {
-        // Новое определение мира
-        DefWorldId_c cdId = ResRemap.DefWorlds.toClient(res.DefId);
-        NextRequest.NewWorlds.push_back(res.DefId);
-
-        LOG.debug() << "Новое определение мира: " << res.DefId << " -> " << int(cdId);
-        NextPacket << (uint8_t) ToClient::L1::Definition
-            << (uint8_t) ToClient::L2Definition::World
-            << cdId;
-    }
-
-    incrementBinary(res.Textures, res.Sounds, res.Models);
-
-    WorldId_c cId = ResRemap.Worlds.toClient(worldId);
-    LOG.debug() << "Новый мир: " << worldId << " -> " << int(cId);
-
-    checkPacketBorder(16);
-    NextPacket << (uint8_t) ToClient::L1::Content
-        << (uint8_t) ToClient::L2Content::World
-        << cId;
-}
-
 void RemoteClient::prepareWorldUpdate(WorldId_t worldId, World* world)
 {
     ResUsesObj::WorldResourceUse &res = ResUses.Worlds[worldId];
 
-    if(res.DefId != world->getDefId()) {
-        DefWorldId_t newDef = world->getDefId();
+    auto iter = ResUses.Worlds.find(worldId);
+    if(iter == ResUses.Worlds.end()) {
+        // Новый мир
+        WorldId_c cwId = ResRemap.Worlds.toClient(worldId);
 
-        if(--ResUses.DefWorld[res.DefId] == 0) {
-            // Определение больше не используется
-            ResUses.DefWorld.erase(ResUses.DefWorld.find(res.DefId));
-            DefWorldId_c cdId = ResRemap.DefWorlds.erase(res.DefId);
+        ResUsesObj::WorldResourceUse &res = iter->second;
+        res.DefId = world->getDefId();
 
-            // TODO: отправить пакет потери идентификатора
-            LOG.debug() << "Определение мира потеряно: " << res.DefId << " -> " << cdId;
-        }
-        
-        if(++ResUses.DefWorld[newDef] == 1) {
-            // Новое определение мира
-            DefWorldId_c cdId = ResRemap.DefWorlds.toClient(newDef);
-            NextRequest.NewWorlds.push_back(newDef);
+        if(++ResUses.DefWorld[res.DefId] == 1) {
+            // Новое определение
+            NextRequest.NewWorlds.push_back(res.DefId);
+            DefWorldId_c cdId = ResRemap.DefWorlds.toClient(res.DefId);
+
+            LOG.debug() << "Новое определение мира: " << res.DefId << " -> " << int(cdId);
+            NextPacket << (uint8_t) ToClient::L1::Definition
+                << (uint8_t) ToClient::L2Definition::World
+                << cdId;
 
             // incrementBinary(Textures, Sounds, Models);
-            // TODO: отправить пакет о новом определении мира
-            LOG.debug() << "Новое определение мира: " << newDef << " -> " << cdId;
         }
 
-        res.DefId = newDef;
+        incrementBinary(res.Textures, res.Sounds, res.Models);
+
+        LOG.debug() << "Новый мир: " << worldId << " -> " << int(cwId);
+
+    } else {
+        if(res.DefId != world->getDefId()) {
+            DefWorldId_t newDef = world->getDefId();
+
+            if(--ResUses.DefWorld[res.DefId] == 0) {
+                // Определение больше не используется
+                ResUses.DefWorld.erase(ResUses.DefWorld.find(res.DefId));
+                DefWorldId_c cdId = ResRemap.DefWorlds.erase(res.DefId);
+
+                // TODO: отправить пакет потери идентификатора
+                LOG.debug() << "Определение мира потеряно: " << res.DefId << " -> " << cdId;
+            }
+            
+            if(++ResUses.DefWorld[newDef] == 1) {
+                // Новое определение мира
+                DefWorldId_c cdId = ResRemap.DefWorlds.toClient(newDef);
+                NextRequest.NewWorlds.push_back(newDef);
+
+                // incrementBinary(Textures, Sounds, Models);
+                // TODO: отправить пакет о новом определении мира
+                LOG.debug() << "Новое определение мира: " << newDef << " -> " << cdId;
+            }
+
+            res.DefId = newDef;
+        }
+
+        // TODO: определить различия между переопределением поверх определений
+        std::unordered_set<BinTextureId_t> lostTextures, newTextures;
+        std::unordered_set<BinSoundId_t> lostSounds, newSounds;
+        std::unordered_set<BinModelId_t> lostModels, newModels;
+
+        decrementBinary(lostTextures, lostSounds, lostModels);
+        decrementBinary(newTextures, newSounds, newModels);
+
+        WorldId_c cId = worldId ? ResRemap.Worlds.toClient(worldId) : worldId;
+        // TODO: отправить пакет об изменении мира
+        LOG.debug() << "Изменение мира: " << worldId << " -> " << cId;
     }
-
-    // TODO: определить различия между переопределением поверх определений
-    std::unordered_set<BinTextureId_t> lostTextures, newTextures;
-    std::unordered_set<BinSoundId_t> lostSounds, newSounds;
-    std::unordered_set<BinModelId_t> lostModels, newModels;
-
-    decrementBinary(lostTextures, lostSounds, lostModels);
-    decrementBinary(newTextures, newSounds, newModels);
-
-    WorldId_c cId = worldId ? ResRemap.Worlds.toClient(worldId) : worldId;
-    // TODO: отправить пакет об изменении мира
-    LOG.debug() << "Изменение мира: " << worldId << " -> " << cId;
 }
 
 void RemoteClient::prepareWorldRemove(WorldId_t worldId)
@@ -332,7 +335,6 @@ void RemoteClient::prepareEntityRemove(GlobalEntityId_t entityId)
         << cId;
 }
 
-void RemoteClient::preparePortalNew(PortalId_t portalId, void* portal) {}
 void RemoteClient::preparePortalUpdate(PortalId_t portalId, void* portal) {}
 void RemoteClient::preparePortalRemove(PortalId_t portalId) {}
 

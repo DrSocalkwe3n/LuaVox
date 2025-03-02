@@ -75,14 +75,21 @@ class GameServer : public AsyncObject {
 
     } Game;
 
-    struct WorldObj {
+    struct Expanse_t {
         std::unordered_map<ContentBridgeId_t, ContentBridge> ContentBridges;
 
-        std::vector<ContentViewCircle> calcCVCs(ContentViewCircle circle, int depth = 2);
-        std::unordered_map<WorldId_t, std::vector<ContentViewCircle>> remapCVCsByWorld(const std::vector<ContentViewCircle> &list);
-        std::unordered_map<WorldId_t, std::vector<ContentViewCircle>> calcAndRemapCVC(ContentViewCircle circle, int depth = 2) {
-            return remapCVCsByWorld(calcCVCs(circle, depth));
+        // Вычисляет окружности обозримой области
+        // depth ограничивает глубину входа в ContentBridges
+        std::vector<ContentViewCircle> accumulateContentViewCircles(ContentViewCircle circle, int depth = 2);
+        static ContentViewGlobal makeContentViewGlobal(const std::vector<ContentViewCircle> &views);
+        ContentViewGlobal makeContentViewGlobal(ContentViewCircle circle, int depth = 2) {
+            return makeContentViewGlobal(accumulateContentViewCircles(circle, depth));
         }
+
+        // std::unordered_map<WorldId_t, std::vector<ContentViewCircle>> remapCVCsByWorld(const std::vector<ContentViewCircle> &list);
+        // std::unordered_map<WorldId_t, std::vector<ContentViewCircle>> calcAndRemapCVC(ContentViewCircle circle, int depth = 2) {
+        //     return remapCVCsByWorld(calcCVCs(circle, depth));
+        // }
 
         std::unordered_map<WorldId_t, std::unique_ptr<World>> Worlds;
 
@@ -92,7 +99,7 @@ class GameServer : public AsyncObject {
         */
 
         private:
-            void _calcContentViewCircles(ContentViewCircle circle, int depth);
+            void _accumulateContentViewCircles(ContentViewCircle circle, int depth);
     } Expanse;
 
     struct {
@@ -143,8 +150,22 @@ private:
     void run();
 
     void stepContent();
+    /*
+        Дождаться и получить необходимые данные с бд или диска
+        Получить несрочные данные
+    */
+    void stepSyncWithAsync();
     void stepPlayers();
     void stepWorlds();
+    /*
+        Пересмотр наблюдаемых зон (чанки, регионы, миры)
+        Добавить требуемые регионы в список на предзагрузку с приоритетом
+        TODO: нужен механизм асинхронной загрузки регионов с бд
+
+        В начале следующего такта обязательное дожидание прогрузки активной зоны
+        и 
+        оповещение миров об изменениях в наблюдаемых регионах 
+    */
     void stepViewContent();
     void stepSendPlayersPackets();
     void stepLoadRegions();

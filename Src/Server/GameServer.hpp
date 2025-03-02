@@ -81,6 +81,7 @@ class GameServer : public AsyncObject {
         // Вычисляет окружности обозримой области
         // depth ограничивает глубину входа в ContentBridges
         std::vector<ContentViewCircle> accumulateContentViewCircles(ContentViewCircle circle, int depth = 2);
+        // Вынести в отдельный поток
         static ContentViewGlobal makeContentViewGlobal(const std::vector<ContentViewCircle> &views);
         ContentViewGlobal makeContentViewGlobal(ContentViewCircle circle, int depth = 2) {
             return makeContentViewGlobal(accumulateContentViewCircles(circle, depth));

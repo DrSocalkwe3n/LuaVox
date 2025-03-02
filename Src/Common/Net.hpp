@@ -179,7 +179,7 @@ protected:
     };
 
     class AsyncSocket : public AsyncObject {
-        NetPool::Array<16> RecvBuffer, SendBuffer;
+        NetPool::Array<32> RecvBuffer, SendBuffer;
         size_t RecvPos = 0, RecvSize = 0, SendSize = 0;
         bool ReadShutdowned = false;
         tcp::socket Socket;

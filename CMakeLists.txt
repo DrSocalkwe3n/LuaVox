@@ -1,9 +1,10 @@
 cmake_minimum_required(VERSION 3.13)
 
-option(BUILD_CLIENT "Build the client" TRUE)
+option(BUILD_CLIENT "Build the client" ON)
+option(USE_LIBURING "Build with liburing support" ON)
 
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -16,20 +17,35 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pg")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pg")
 
 # sanitizer
-# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address")
-# set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address")
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
 
 # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=undefined -fno-sanitize-recover=all -fsanitize=float-divide-by-zero -fsanitize=float-cast-overflow -fno-sanitize=null -fno-sanitize=alignment") 
 
-project (LuaVox VERSION 0.0 DESCRIPTION "LuaVox Description")
+project(LuaVox VERSION 0.0 DESCRIPTION "LuaVox Description")
 
 add_library(luavox_common INTERFACE)
-target_compile_features(luavox_common INTERFACE cxx_std_20)
+target_compile_features(luavox_common INTERFACE cxx_std_23)
 
 if ("${CMAKE_CXX_COMPILER_ID}" MATCHES "GNU")
   target_compile_options(luavox_common INTERFACE -fcoroutines)
 elseif ("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang")
   target_compile_options(luavox_common INTERFACE -fcoroutine)
+endif()
+
+if(USE_LIBURING)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(LIBURING liburing>=2.0 IMPORTED_TARGET)
+
+    if(LIBURING_FOUND)
+        message(STATUS "liburing found, enabling io_uring support")
+        target_compile_definitions(luavox_common INTERFACE LUAVOX_HAVE_LIBURING)
+        target_link_libraries(luavox_common INTERFACE PkgConfig::LIBURING)
+    else()
+        message(FATAL_ERROR "liburing >= 2.0 not found but USE_LIBURING is ON")
+    endif()
+else()
+    message(STATUS "liburing support is disabled")
 endif()
 
 include(FetchContent)
@@ -105,9 +121,6 @@ set_source_files_properties(assets.o PROPERTIES EXTERNAL_OBJECT true GENERATED t
 add_library(assets STATIC resources.cpp assets.o)
 set_target_properties(assets PROPERTIES LINKER_LANGUAGE C)
 target_link_libraries(luavox_common INTERFACE assets)
-
-# uring
-target_link_libraries(luavox_common INTERFACE uring)
 
 if(BUILD_CLIENT)
   add_executable(luavox_client)

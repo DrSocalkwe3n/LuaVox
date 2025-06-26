@@ -4,6 +4,8 @@
 #include <chrono>
 #include <cstring>
 #include <filesystem>
+#include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <sstream>
 #include <thread>
@@ -14,6 +16,131 @@
 
 namespace TOS {
 
+
+template<typename T>
+class MutexObject {
+public:
+    template<typename... Args>
+    explicit MutexObject(Args&&... args)
+        : value(std::forward<Args>(args)...) {}
+
+    class SharedLock {
+    public:
+        SharedLock(MutexObject* obj, std::shared_lock<std::shared_mutex> lock)
+            : obj(obj), lock(std::move(lock)) {}
+        
+        const T& get() const { return obj->value; }
+		const T& operator*() const { return obj->value; }
+		const T* operator->() const { return &obj->value; }
+
+        void unlock() { lock.unlock(); }
+
+		operator bool() const {
+			return lock.owns_lock();
+		}
+
+    private:
+        MutexObject* obj;
+        std::shared_lock<std::shared_mutex> lock;
+    };
+
+    class ExclusiveLock {
+    public:
+        ExclusiveLock(MutexObject* obj, std::unique_lock<std::shared_mutex> lock)
+            : obj(obj), lock(std::move(lock)) {}
+        
+        T& get() const { return obj->value; }
+		T& operator*() const { return obj->value; }
+		T* operator->() const { return &obj->value; }
+
+        void unlock() { lock.unlock(); }
+
+		operator bool() const {
+			return lock.owns_lock();
+		}
+
+    private:
+        MutexObject* obj;
+        std::unique_lock<std::shared_mutex> lock;
+    };
+
+    SharedLock shared_lock() {
+        return SharedLock(this, std::shared_lock(mutex));
+    }
+
+    SharedLock shared_lock(const std::try_to_lock_t& tag) {
+        return SharedLock(this, std::shared_lock(mutex, tag));
+    }
+
+    SharedLock shared_lock(const std::adopt_lock_t& tag) {
+        return SharedLock(this, std::shared_lock(mutex, tag));
+    }
+
+    SharedLock shared_lock(const std::defer_lock_t& tag) {
+        return SharedLock(this, std::shared_lock(mutex, tag));
+    }
+
+    ExclusiveLock exclusive_lock() {
+        return ExclusiveLock(this, std::unique_lock(mutex));
+    }
+
+    ExclusiveLock exclusive_lock(const std::try_to_lock_t& tag) {
+        return ExclusiveLock(this, std::unique_lock(mutex, tag));
+    }
+
+    ExclusiveLock exclusive_lock(const std::adopt_lock_t& tag) {
+        return ExclusiveLock(this, std::unique_lock(mutex, tag));
+    }
+
+    ExclusiveLock exclusive_lock(const std::defer_lock_t& tag) {
+        return ExclusiveLock(this, std::unique_lock(mutex, tag));
+    }
+
+private:
+    T value;
+    mutable std::shared_mutex mutex;
+};
+
+template<typename T>
+class SpinlockObject {
+public:
+    template<typename... Args>
+    explicit SpinlockObject(Args&&... args)
+        : value(std::forward<Args>(args)...) {}
+
+    class Lock {
+    public:
+        Lock(SpinlockObject* obj, std::atomic_flag& lock)
+            : obj(obj), lock(lock) {
+            while (lock.test_and_set(std::memory_order_acquire));
+        }
+
+        ~Lock() {
+			if(obj)
+            	lock.clear(std::memory_order_release);
+        }
+
+        T& get() const { assert(obj); return obj->value; }
+		T* operator->() const { assert(obj); return &obj->value; }
+		T& operator*() const { assert(obj); return obj->value; }
+
+		void unlock() { obj = nullptr; lock.clear(std::memory_order_release);}
+
+    private:
+        SpinlockObject* obj;
+        std::atomic_flag& lock;
+    };
+
+    Lock lock() {
+        return Lock(this, mutex);
+    }
+
+	const T& get_read() { return value; }
+
+private:
+    T value;
+    std::atomic_flag mutex = ATOMIC_FLAG_INIT;
+};
 
 #if __BYTE_ORDER == __LITTLE_ENDIAN
 	template <typename T>

@@ -20,7 +20,10 @@ int main() {
 	// LuaVox
 	asio::io_context ioc;
 
-	LV::Client::VK::Vulkan vkInst(ioc);
+	{
+		LV::Client::CacheHandlerBasic::Ptr handler = LV::Client::CacheHandlerBasic::Create(ioc, "cache");
+	}
+	//LV::Client::VK::Vulkan vkInst(ioc);
 	ioc.run();
 
 	return 0;
@@ -34,9 +37,7 @@ int main() {
 	TOS::Logger::addLogFile(".*", TOS::EnumLogType::All, "log.raw");
 	
 	std::cout << "Hello world!" << std::endl;
-	//return LV::main();
-
-	LV::Client::ResourceCacheHandler handler("cache");
+	return LV::main();
 
 	return 0;
 }

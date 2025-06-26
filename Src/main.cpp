@@ -2,7 +2,16 @@
 #include <boost/asio.hpp>
 #include <Client/Vulkan/Vulkan.hpp>
 
+#include <Client/ResourceCache.hpp>
+
 namespace LV {
+
+/*
+	База ресурсов на стороне клиента
+	Протокол получения ресурсов, удаления, потом -> регулировки размера
+
+*/
+
 
 using namespace TOS;
 
@@ -25,5 +34,9 @@ int main() {
 	TOS::Logger::addLogFile(".*", TOS::EnumLogType::All, "log.raw");
 	
 	std::cout << "Hello world!" << std::endl;
-	return LV::main();
+	//return LV::main();
+
+	LV::Client::ResourceCacheHandler handler("cache");
+
+	return 0;
 }

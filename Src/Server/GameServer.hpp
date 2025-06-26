@@ -19,6 +19,7 @@
 #include "World.hpp"
 
 #include "SaveBackend.hpp"
+#include "boost/asio/ip/address.hpp"
 
 
 namespace LV::Server {

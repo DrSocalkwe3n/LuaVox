@@ -10,6 +10,9 @@
 
 namespace LV::Client {
 
+using EntityId_t = uint16_t;
+using FuncEntityId_t = uint16_t;
+
 struct GlobalTime {
 	uint32_t Seconds : 22 = 0, Sub : 10 = 0;
 
@@ -31,12 +34,12 @@ struct GlobalTime {
 };
 
 struct VoxelCube {
-    DefVoxelId_c VoxelId;
-    Pos::Local256_u Left, Size;
+    DefVoxelId_t VoxelId;
+    Pos::bvec256u Left, Size;
 };
 
 struct Node {
-    DefNodeId_c NodeId;
+    DefNodeId_t NodeId;
     uint8_t Rotate : 6;
 };
 
@@ -46,16 +49,16 @@ struct Chunk {
     // Кубы вокселей в чанке
     std::vector<VoxelCube> Voxels;
     // Ноды
-    std::unordered_map<Pos::Local16_u, Node> Nodes;
+    std::unordered_map<Pos::bvec16u, Node> Nodes;
     // Ограничения прохождения света, идущего от солнца (от верха карты до верхней плоскости чанка)
-    LightPrism Lights[16][16];
+    // LightPrism Lights[16][16];
 };
 
 class Entity {
 public:
     // PosQuat
-    DefWorldId_c WorldId;
-    DefPortalId_c LastUsedPortal;
+    WorldId_t WorldId;
+    PortalId_t LastUsedPortal;
     Pos::Object Pos;
     glm::quat Quat;
     static constexpr uint16_t HP_BS = 4096, HP_BS_Bit = 12;
@@ -70,10 +73,17 @@ public:
 /* Интерфейс рендера текущего подключения к серверу */
 class IRenderSession {
 public:
-    virtual void onDefTexture(TextureId_c id, std::vector<std::byte> &&info) = 0;
-    virtual void onDefTextureLost(const std::vector<TextureId_c> &&lost) = 0;
-    virtual void onDefModel(ModelId_c id, std::vector<std::byte> &&info) = 0;
-    virtual void onDefModelLost(const std::vector<ModelId_c> &&lost) = 0;
+    // Подгрузка двоичных ресурсов
+    virtual void onBinaryResourceAdd(std::unordered_map<EnumBinResource, std::unordered_map<ResourceId_t, BinaryResource>>) = 0;
+    virtual void onBinaryResourceLost(std::unordered_map<EnumBinResource, std::vector<ResourceId_t>>) = 0;
+
+    // Профили использования двоичных ресурсов
+    // В этом месте нужно зарание распарсить
+    virtual void onBinaryProfileAdd(std::unordered_map<EnumBinResource, std::unordered_map<ResourceId_t, std::u8string>>) = 0;
+    virtual void onBinaryProfileLost(std::unordered_map<EnumBinResource, std::vector<ResourceId_t>>) = 0;
+
+    virtual void onContentDefines(std::unordered_map<EnumDefContent, std::unordered_map<>>);
+    EnumDefContent
 
     virtual void onDefWorldUpdates(const std::vector<DefWorldId_c> &updates) = 0;
     virtual void onDefVoxelUpdates(const std::vector<DefVoxelId_c> &updates) = 0;

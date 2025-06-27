@@ -8,40 +8,19 @@
 
 namespace LV::Server {
 
-using ResourceId_t = uint32_t;
-
-// Двоичные данные
-using BinTextureId_t = ResourceId_t;
-using BinSoundId_t = ResourceId_t;
-using BinModelId_t = ResourceId_t;
-
-// Игровые определения
-using DefWorldId_t = ResourceId_t;
-using DefVoxelId_t = ResourceId_t;
-using DefNodeId_t = ResourceId_t;
-using DefPortalId_t = ResourceId_t;
-using DefEntityId_t = ResourceId_t;
-
-
-// Контент, основанный на игровых определениях
-using WorldId_t = ResourceId_t;
-
 // В одном регионе может быть максимум 2^16 сущностей. Клиенту адресуются сущности в формате <мир>+<позиция региона>+<uint16_t>
 // И если сущность перешла из одного региона в другой, идентификатор сущности на стороне клиента сохраняется
-using LocalEntityId_t = uint16_t;
-using GlobalEntityId_t = std::tuple<WorldId_t, Pos::GlobalRegion, LocalEntityId_t>;
-using PortalId_t = uint16_t;
-
-
+using EntityId_t = uint16_t;
+using FuncEntityId_t = uint16_t;
+using ClientEntityId_t = std::tuple<WorldId_t, Pos::GlobalRegion, EntityId_t>;
 
 using MediaStreamId_t = uint16_t;
-using ContentBridgeId_t = uint16_t;
-using PlayerId_t = uint32_t;
+using ContentBridgeId_t = ResourceId_t;
+using PlayerId_t = ResourceId_t;
 
 
 /*
     Сервер загружает информацию о локальных текстурах
-    Синхронизация часто используемых текстур?
     Пересмотр списка текстур?
     Динамичные текстуры?
 
@@ -66,13 +45,13 @@ struct ServerTime {
 
 struct VoxelCube {
     DefVoxelId_t VoxelId;
-    Pos::Local256_u Left, Right;
+    Pos::bvec256u Left, Right;
 
     auto operator<=>(const VoxelCube&) const = default;
 };
 
 struct VoxelCube_Region {
-    Pos::Local4096_u Left, Right;
+    Pos::bvec4096u Left, Right;
     DefVoxelId_t VoxelId;
 
     auto operator<=>(const VoxelCube_Region&) const = default;
@@ -88,13 +67,13 @@ struct AABB {
     Pos::Object VecMin, VecMax;
 
     void sortMinMax() {
-        Pos::Object::value_type left, right;
+        Pos::Object::Type left, right;
 
         for(int iter = 0; iter < 3; iter++) {
             left = std::min(VecMin[iter], VecMax[iter]);
             right = std::max(VecMin[iter], VecMax[iter]);
-            VecMin[iter] = left;
-            VecMax[iter] = right;
+            VecMin.set(iter, left);
+            VecMax.set(iter, right);
         }
     }
 
@@ -122,15 +101,19 @@ struct CollisionAABB : public AABB {
 
     union {
         struct {
-            LocalEntityId_t Index;
+            EntityId_t Index;
         } Entity;
 
         struct {
-            Pos::Local16_u Pos;
+            FuncEntityId_t Index;
+        } FuncEntity;
+
+        struct {
+            Pos::bvec16u Pos;
         } Node;
 
         struct {
-            Pos::Local16_u Chunk;
+            Pos::bvec16u Chunk;
             uint32_t Index;
             DefVoxelId_t Id;
         } Voxel;
@@ -197,9 +180,9 @@ struct VoxelCuboidsFuncs {
         if (a.VoxelId != b.VoxelId) return false;
 
         // Проверяем, что кубы смежны по одной из осей
-        bool xAdjacent = (a.Right.X == b.Left.X) && (a.Left.Y == b.Left.Y) && (a.Right.Y == b.Right.Y) && (a.Left.Z == b.Left.Z) && (a.Right.Z == b.Right.Z);
-        bool yAdjacent = (a.Right.Y == b.Left.Y) && (a.Left.X == b.Left.X) && (a.Right.X == b.Right.X) && (a.Left.Z == b.Left.Z) && (a.Right.Z == b.Right.Z);
-        bool zAdjacent = (a.Right.Z == b.Left.Z) && (a.Left.X == b.Left.X) && (a.Right.X == b.Right.X) && (a.Left.Y == b.Left.Y) && (a.Right.Y == b.Right.Y);
+        bool xAdjacent = (a.Right.x == b.Left.x) && (a.Left.y == b.Left.y) && (a.Right.z == b.Right.z) && (a.Left.z == b.Left.z) && (a.Right.z == b.Right.z);
+        bool yAdjacent = (a.Right.y == b.Left.y) && (a.Left.x == b.Left.x) && (a.Right.x == b.Right.x) && (a.Left.z == b.Left.z) && (a.Right.z == b.Right.z);
+        bool zAdjacent = (a.Right.z == b.Left.z) && (a.Left.x == b.Left.x) && (a.Right.x == b.Right.x) && (a.Left.y == b.Left.y) && (a.Right.y == b.Right.y);
 
         return xAdjacent || yAdjacent || zAdjacent;
     }
@@ -209,13 +192,13 @@ struct VoxelCuboidsFuncs {
         merged.VoxelId = a.VoxelId;
 
         // Объединяем кубы по минимальным и максимальным координатам
-        merged.Left.X = std::min(a.Left.X, b.Left.X);
-        merged.Left.Y = std::min(a.Left.Y, b.Left.Y);
-        merged.Left.Z = std::min(a.Left.Z, b.Left.Z);
+        merged.Left.x = std::min(a.Left.x, b.Left.x);
+        merged.Left.y = std::min(a.Left.y, b.Left.y);
+        merged.Left.z = std::min(a.Left.z, b.Left.z);
 
-        merged.Right.X = std::max(a.Right.X, b.Right.X);
-        merged.Right.Y = std::max(a.Right.Y, b.Right.Y);
-        merged.Right.Z = std::max(a.Right.Z, b.Right.Z);
+        merged.Right.x = std::max(a.Right.x, b.Right.x);
+        merged.Right.y = std::max(a.Right.y, b.Right.y);
+        merged.Right.z = std::max(a.Right.z, b.Right.z);
 
         return merged;
     }
@@ -311,25 +294,25 @@ struct VoxelCuboidsFuncs {
 
 inline void convertRegionVoxelsToChunks(const std::vector<VoxelCube_Region>& regions, std::vector<VoxelCube> *chunks) {
     for (const auto& region : regions) {
-        int minX = region.Left.X >> 8;
-        int minY = region.Left.Y >> 8;
-        int minZ = region.Left.Z >> 8;
-        int maxX = region.Right.X >> 8;
-        int maxY = region.Right.Y >> 8;
-        int maxZ = region.Right.Z >> 8;
+        int minX = region.Left.x >> 8;
+        int minY = region.Left.y >> 8;
+        int minZ = region.Left.z >> 8;
+        int maxX = region.Right.x >> 8;
+        int maxY = region.Right.y >> 8;
+        int maxZ = region.Right.z >> 8;
 
         for (int x = minX; x <= maxX; ++x) {
             for (int y = minY; y <= maxY; ++y) {
                 for (int z = minZ; z <= maxZ; ++z) {
-                    Pos::Local256_u left {
-                        static_cast<uint8_t>(std::max<uint16_t>((x << 8), region.Left.X) - (x << 8)),
-                        static_cast<uint8_t>(std::max<uint16_t>((y << 8), region.Left.Y) - (y << 8)),
-                        static_cast<uint8_t>(std::max<uint16_t>((z << 8), region.Left.Z) - (z << 8))
+                    Pos::bvec256u left {
+                        static_cast<uint8_t>(std::max<uint16_t>((x << 8), region.Left.x) - (x << 8)),
+                        static_cast<uint8_t>(std::max<uint16_t>((y << 8), region.Left.y) - (y << 8)),
+                        static_cast<uint8_t>(std::max<uint16_t>((z << 8), region.Left.z) - (z << 8))
                     };
-                    Pos::Local256_u right {
-                        static_cast<uint8_t>(std::min<uint16_t>(((x+1) << 8)-1, region.Right.X) - (x << 8)),
-                        static_cast<uint8_t>(std::min<uint16_t>(((y+1) << 8)-1, region.Right.Y) - (y << 8)),
-                        static_cast<uint8_t>(std::min<uint16_t>(((z+1) << 8)-1, region.Right.Z) - (z << 8))
+                    Pos::bvec256u right {
+                        static_cast<uint8_t>(std::min<uint16_t>(((x+1) << 8)-1, region.Right.x) - (x << 8)),
+                        static_cast<uint8_t>(std::min<uint16_t>(((y+1) << 8)-1, region.Right.y) - (y << 8)),
+                        static_cast<uint8_t>(std::min<uint16_t>(((z+1) << 8)-1, region.Right.z) - (z << 8))
                     };
 
                     int chunkIndex = z * 16 * 16 + y * 16 + x;
@@ -346,12 +329,12 @@ inline void convertChunkVoxelsToRegion(const std::vector<VoxelCube> *chunks, std
             for (int z = 0; z < 16; ++z) {
                 int chunkIndex = z * 16 * 16 + y * 16 + x;
 
-                Pos::Local4096_u left(x << 8, y << 8, z << 8);
+                Pos::bvec4096u left(x << 8, y << 8, z << 8);
                 
                 for (const auto& cube : chunks[chunkIndex]) {
                     regions.emplace_back(
-                        Pos::Local4096_u(left.X+cube.Left.X, left.Y+cube.Left.Y, left.Z+cube.Left.Z),
-                        Pos::Local4096_u(left.X+cube.Right.X, left.Y+cube.Right.Y, left.Z+cube.Right.Z), 
+                        Pos::bvec4096u(left.x+cube.Left.x, left.y+cube.Left.y, left.z+cube.Left.z),
+                        Pos::bvec4096u(left.x+cube.Right.x, left.y+cube.Right.y, left.z+cube.Right.z), 
                         cube.VoxelId
                     );
                 }

@@ -8,7 +8,7 @@ bool calcBoxToBoxCollide(const VecType vec1_min, const VecType vec1_max,
     const VecType vec2_min, const VecType vec2_max, bool axis[VecType::length()] = nullptr
 ) {
 
-    using ValType = VecType::value_type;
+    using ValType = VecType::Type;
 
     ValType max_delta = 0;
     ValType result = 0;

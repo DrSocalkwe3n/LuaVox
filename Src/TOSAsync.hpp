@@ -154,7 +154,7 @@ public:
             assert(AUC);
 
             if(--AUC->Uses == 0 && AUC->OnNoUse) {
-                AUC->OnNoUse();
+                asio::post(AUC->IOC, std::move(AUC->OnNoUse));
             }
 
             AUC = nullptr;
@@ -162,10 +162,17 @@ public:
     };
 
 private:
+    asio::io_context &IOC;
     std::move_only_function<void()> OnNoUse;
     std::atomic_int Uses = 0;
 
 public:
+    AsyncUseControl(asio::io_context &ioc)
+        : IOC(ioc)
+    {
+
+    }
+
     template<BOOST_ASIO_COMPLETION_TOKEN_FOR(void()) Token = asio::default_completion_token_t<asio::io_context>>
     auto wait(Token&& token = asio::default_completion_token_t<asio::io_context>()) {
         auto initiation = [this](auto&& token) {
@@ -211,7 +218,7 @@ protected:
 
 public:
     IAsyncDestructible(asio::io_context &ioc)
-        : IOC(ioc)
+        : IOC(ioc), AUC(ioc)
     {}
 
     virtual ~IAsyncDestructible() {}

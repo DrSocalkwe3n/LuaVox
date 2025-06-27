@@ -1179,7 +1179,11 @@ void Vulkan::checkLibrary()
 			uint32_t count = -1;
 			VkResult res;
 
-			vkAssert(!vkEnumeratePhysicalDevices(localInstance.getInstance(), &count, nullptr));
+			VkResult errc = vkEnumeratePhysicalDevices(localInstance.getInstance(), &count, nullptr);
+			if(errc != VK_SUCCESS && errc != VK_INCOMPLETE) {
+				error << "vkEnumeratePhysicalDevices не смог обработать запрос (ошибка драйвера?)\n";
+				goto onError;
+			}
 
 			if(!count)
 			{

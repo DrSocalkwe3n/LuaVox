@@ -1,3 +1,4 @@
+#include <filesystem>
 #include <iostream>
 #include <boost/asio.hpp>
 #include <Client/Vulkan/Vulkan.hpp>
@@ -20,10 +21,8 @@ int main() {
 	// LuaVox
 	asio::io_context ioc;
 
-	{
-		LV::Client::CacheHandlerBasic::Ptr handler = LV::Client::CacheHandlerBasic::Create(ioc, "cache");
-	}
-	//LV::Client::VK::Vulkan vkInst(ioc);
+	LV::Client::VK::Vulkan vkInst(ioc);
+	
 	ioc.run();
 
 	return 0;

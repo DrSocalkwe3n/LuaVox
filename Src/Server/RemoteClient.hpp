@@ -15,6 +15,7 @@
 #include <unordered_set>
 
 namespace LV::Server {
+using HASH = std::array<uint8_t, 32>;
 
 template<typename ServerKey, typename ClientKey, std::enable_if_t<sizeof(ServerKey) >= sizeof(ClientKey), int> = 0>
 class CSChunkedMapper {
@@ -185,6 +186,7 @@ class RemoteClient {
     DestroyLock UseLock;
     Net::AsyncSocket Socket;
     bool IsConnected = true, IsGoingShutdown = false;
+    std::vector<HASH> ClientCache;
 
     struct ResUsesObj {
         // Счётчики использования базовых ресурсов высшими объектами
@@ -270,8 +272,8 @@ public:
     ToServer::PacketQuat CameraQuat = {0};
 
 public:
-    RemoteClient(asio::io_context &ioc, tcp::socket socket, const std::string username)
-        : LOG("RemoteClient " + username), Socket(ioc, std::move(socket)), Username(username)
+    RemoteClient(asio::io_context &ioc, tcp::socket socket, const std::string username, std::vector<HASH> &&client_cache)
+        : LOG("RemoteClient " + username), Socket(ioc, std::move(socket)), Username(username), ClientCache(std::move(client_cache))
     {
     }
 

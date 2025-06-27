@@ -53,7 +53,9 @@ struct PacketQuat {
 /*
     uint8_t+uint8_t
     0 - Системное
-        0 - Новая позиция камеры WorldId_c+ObjectPos+PacketQuat
+        0 -
+        1 -
+        2 - Новая позиция камеры WorldId_c+ObjectPos+PacketQuat
 
 */
 

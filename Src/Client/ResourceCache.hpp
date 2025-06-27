@@ -1,3 +1,5 @@
+#pragma once
+
 #include <array>
 #include <cassert>
 #include <memory>
@@ -90,9 +92,15 @@ class CacheHandler : public IAsyncDestructible {
 protected:
     const fs::path Path;
     CacheDatabase DB;
+    size_t MaxCacheDirectorySize;
+    size_t MaxLifeTime;
+
+public:
+    using Ptr = std::shared_ptr<CacheHandler>;
 
 protected:
-    CacheHandler(boost::asio::io_context &ioc, const fs::path &cachePath);
+    CacheHandler(boost::asio::io_context &ioc, const fs::path &cachePath,
+        size_t maxCacheDirectorySize, size_t maxLifeTime);
 
 public:
     virtual ~CacheHandler();
@@ -108,6 +116,12 @@ public:
 
     // Получить список доступных ресурсов
     std::pair<std::string, size_t> getAll();
+
+    // Размер всего хранимого кеша
+    size_t getCacheSize();
+
+    // Обновить параметры хранилища
+    virtual void updateParams(size_t maxLifeTime, size_t maxCacheDirectorySize) = 0;
 };
 
 class CacheHandlerBasic : public CacheHandler {
@@ -129,8 +143,6 @@ class CacheHandlerBasic : public CacheHandler {
     // Список полностью считанных файлов
     SpinlockObject<std::vector<DataTask>> ReadedQueue;
     bool NeedShutdown = false;
-    size_t MaxCacheDirectorySize = 8*1024*1024*1024ULL;
-    size_t MaxLifeTime = 7*24*60*60;
 
 public:
     using Ptr = std::shared_ptr<CacheHandlerBasic>;
@@ -143,18 +155,21 @@ private:
     void readWriteThread(AsyncUseControl::Lock lock);
 
 protected:
-    CacheHandlerBasic(boost::asio::io_context &ioc, const fs::path& cachePath);
+    CacheHandlerBasic(boost::asio::io_context &ioc, const fs::path& cachePath,
+        size_t maxCacheDirectorySize, size_t maxLifeTime);
 
 public:
     virtual ~CacheHandlerBasic();
 
-    static std::shared_ptr<CacheHandlerBasic> Create(asio::io_context &ioc, const fs::path& cachePath) {
-        return createShared(ioc, new CacheHandlerBasic(ioc, cachePath));
+    static std::shared_ptr<CacheHandlerBasic> Create(asio::io_context &ioc, const fs::path& cachePath,
+            size_t maxCacheDirectorySize = 8*1024*1024*1024ULL, size_t maxLifeTime = 7*24*60*60) {
+        return createShared(ioc, new CacheHandlerBasic(ioc, cachePath, maxCacheDirectorySize, maxLifeTime));
     }
 
     virtual void pushWrite(std::string &&data, CacheDatabase::HASH hash) override;
     virtual void pushRead(CacheDatabase::HASH hash) override;
     virtual std::vector<std::pair<CacheDatabase::HASH, std::string>> pullReads() override;
+    virtual void updateParams(size_t maxLifeTime, size_t maxCacheDirectorySize) override;
 };
 
 #ifdef LUAVOX_HAVE_LIBURING

@@ -10,6 +10,7 @@
 #include <boost/asio/io_context.hpp>
 #include <memory>
 #include <boost/lockfree/spsc_queue.hpp>
+#include <Client/ResourceCache.hpp>
 
 
 namespace LV::Client {
@@ -27,6 +28,10 @@ struct ParsedPacket {
 class ServerSession : public AsyncObject, public IServerSession, public ISurfaceEventListener {
     std::unique_ptr<Net::AsyncSocket> Socket;
     IRenderSession *RS = nullptr;
+
+    // Обработчик кеша ресурсов сервера
+    CacheHandler::Ptr CHDB;
+
     DestroyLock UseLock;
     bool IsConnected = true, IsGoingShutdown = false;
 
@@ -59,6 +64,21 @@ public:
         : AsyncObject(ioc), Socket(std::move(socket)), RS(rs), NetInputPackets(1024)
     {
         assert(Socket.get());
+
+        try {
+            CHDB = CacheHandlerBasic::Create(ioc, "Cache");
+
+            // Отправка информации о загруженном кеше
+            // TODO: добавить оптимизацию для подключения клиента к внутреннему серверу
+            auto [data, count] = CHDB->getAll();
+            Net::Packet packet;
+            packet << uint32_t(count);
+            packet.write((const std::byte*) data.data(), data.size());
+            Socket->pushPacket(std::move(packet));
+        } catch(const std::exception &exc) {
+            MAKE_ERROR("Ошибка инициализации обработчика кеша ресурсов сервера:\n" << exc.what());
+        }
+
         co_spawn(run());
     }
 

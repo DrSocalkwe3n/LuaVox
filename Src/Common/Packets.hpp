@@ -138,10 +138,14 @@ enum struct L2System : uint8_t {
 enum struct L2Resource : uint8_t {
     Texture,
     FreeTexture,
+    Animation,
+    FreeAnimation,
     Sound,
     FreeSound,
     Model,
     FreeModel,
+    Font,
+    FreeFont,
     InitResSend = 253,
     ChunkSend,
     SendCanceled
@@ -157,7 +161,11 @@ enum struct L2Definition : uint8_t {
     Portal,
     FreePortal,
     Entity,
-    FreeEntity
+    FreeEntity,
+    FuncEntity,
+    FreeFuncEntity,
+    Item,
+    FreeItem
 };
 
 enum struct L2Content : uint8_t {

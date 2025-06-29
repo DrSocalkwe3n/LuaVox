@@ -5,7 +5,6 @@
 #include <bitset>
 #include <map>
 #include <memory>
-#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -35,22 +34,22 @@ struct ContentViewCircle {
     int32_t Range;
 
     inline int32_t sqrDistance(Pos::GlobalRegion regionPos) const {
-        glm::i32vec3 vec = {Pos.x-((regionPos.X << 4) | 0b1000), Pos.y-((regionPos.Y << 4) | 0b1000), Pos.z-((regionPos.Z << 4) | 0b1000)};
+        glm::i32vec3 vec = Pos-(glm::i16vec3) ((Pos::GlobalChunk(regionPos) << 2) | 0b10);
         return vec.x*vec.x+vec.y*vec.y+vec.z*vec.z;
     };
 
     inline int32_t sqrDistance(Pos::GlobalChunk chunkPos) const {
-        glm::i32vec3 vec = {Pos.x-chunkPos.X, Pos.y-chunkPos.Y, Pos.z-chunkPos.Z};
+        glm::i32vec3 vec = Pos-(glm::i16vec3) chunkPos;
         return vec.x*vec.x+vec.y*vec.y+vec.z*vec.z;
     };
 
     inline int64_t sqrDistance(Pos::Object objectPos) const {
-        glm::i32vec3 vec = {Pos.x-(objectPos.x >> 20), Pos.y-(objectPos.y >> 20), Pos.z-(objectPos.z >> 20)};
+        glm::i32vec3 vec = Pos-(glm::i16vec3) (objectPos >> 12 >> 4);
         return vec.x*vec.x+vec.y*vec.y+vec.z*vec.z;
     };
 
     bool isIn(Pos::GlobalRegion regionPos) const {
-        return sqrDistance(regionPos) < Range+192; // (8×sqrt(3))^2
+        return sqrDistance(regionPos) < Range+12; // (2×sqrt(3))^2
     }
 
     bool isIn(Pos::GlobalChunk chunkPos) const {
@@ -62,8 +61,8 @@ struct ContentViewCircle {
     }
 };
 
-// Регион -> чанки попавшие под обозрение Pos::Local16_u
-using ContentViewWorld = std::map<Pos::GlobalRegion, std::bitset<4096>>; // 1 - чанк виден, 0 - не виден
+// Регион -> чанки попавшие под обозрение Pos::bvec4u
+using ContentViewWorld = std::map<Pos::GlobalRegion, std::bitset<64>>; // 1 - чанк виден, 0 - не виден
 
 struct ContentViewGlobal_DiffInfo;
 
@@ -99,9 +98,9 @@ inline ContentViewGlobal_DiffInfo ContentViewGlobal::calcDiffWith(const ContentV
             for(const auto &[regionPos, _] : newWorldView)
                 newRegions.push_back(regionPos);
         } else {
-            const std::map<Pos::GlobalRegion, std::bitset<4096>> &newRegions = newWorldView;
-            const std::map<Pos::GlobalRegion, std::bitset<4096>> &oldRegions = oldWorldIter->second;
-            std::map<Pos::GlobalRegion, std::bitset<4096>> *diffRegions = nullptr;
+            const std::map<Pos::GlobalRegion, std::bitset<64>> &newRegions = newWorldView;
+            const std::map<Pos::GlobalRegion, std::bitset<64>> &oldRegions = oldWorldIter->second;
+            std::map<Pos::GlobalRegion, std::bitset<64>> *diffRegions = nullptr;
 
             // Рассматриваем разницу меж регионами
             for(const auto &[newRegionPos, newRegionBitField] : newRegions) {
@@ -113,8 +112,8 @@ inline ContentViewGlobal_DiffInfo ContentViewGlobal::calcDiffWith(const ContentV
                     (*diffRegions)[newRegionPos] = newRegionBitField;
                     newView.Regions[newWorldId].push_back(newRegionPos);
                 } else {
-                    const std::bitset<4096> &oldChunks = oldRegionIter->second;
-                    std::bitset<4096> chunks = (~oldChunks) & newRegionBitField; // Останется поле с новыми чанками
+                    const std::bitset<64> &oldChunks = oldRegionIter->second;
+                    std::bitset<64> chunks = (~oldChunks) & newRegionBitField; // Останется поле с новыми чанками
                     if(chunks._Find_first() != chunks.size()) {
                         // Есть новые чанки
                         if(!diffRegions)
@@ -157,7 +156,8 @@ private:
     struct SubscribedObj {
         // Используется регионами
         std::vector<PortalId_t> Portals;
-        std::unordered_map<WorldId_t, std::unordered_map<Pos::GlobalRegion, std::unordered_set<LocalEntityId_t>>> Entities;
+        std::unordered_map<WorldId_t, std::unordered_map<Pos::GlobalRegion, std::unordered_set<RegionEntityId_t>>> Entities;
+        std::unordered_map<WorldId_t, std::unordered_map<Pos::GlobalRegion, std::unordered_set<RegionEntityId_t>>> FuncEntities;
     } Subscribed;
 
 public:
@@ -168,6 +168,8 @@ public:
     // Объявленная в чанках территория точно отслеживается (активная зона)
     ContentViewGlobal ContentViewState;
     ContentViewGlobal_DiffInfo ContentView_NewView, ContentView_LostView;
+    // Миры добавленные в наблюдение в текущем такте
+    std::vector<WorldId_t> NewWorlds;
 
     // size_t CVCHash = 0; // Хэш для std::vector<ContentViewCircle>
     // std::unordered_map<WorldId_t, std::vector<Pos::GlobalRegion>> SubscribedRegions;
@@ -190,13 +192,17 @@ public:
     void onWorldUpdate(WorldId_t worldId, World *worldObj);
 
     // Нужно фильтровать неотслеживаемые чанки
-    void onChunksUpdate_Voxels(WorldId_t worldId, Pos::GlobalRegion regionPos, const std::unordered_map<Pos::Local16_u, const std::vector<VoxelCube>*> &chunks);
-    void onChunksUpdate_Nodes(WorldId_t worldId, Pos::GlobalRegion regionPos, const std::unordered_map<Pos::Local16_u, const std::unordered_map<Pos::Local16_u, Node>*> &chunks);
-    void onChunksUpdate_LightPrism(WorldId_t worldId, Pos::GlobalRegion regionPos, const std::unordered_map<Pos::Local16_u, const LightPrism*> &chunks);
+    void onChunksUpdate_Voxels(WorldId_t worldId, Pos::GlobalRegion regionPos, const std::unordered_map<Pos::bvec4u, const std::vector<VoxelCube>*> &chunks);
+    void onChunksUpdate_Nodes(WorldId_t worldId, Pos::GlobalRegion regionPos, const std::unordered_map<Pos::bvec4u, const Node*> &chunks);
+    //void onChunksUpdate_LightPrism(WorldId_t worldId, Pos::GlobalRegion regionPos, const std::unordered_map<Pos::bvec4u, const LightPrism*> &chunks);
 
-    void onEntityEnterLost(WorldId_t worldId, Pos::GlobalRegion regionPos, const std::unordered_set<LocalEntityId_t> &enter, const std::unordered_set<LocalEntityId_t> &lost);
-    void onEntitySwap(WorldId_t lastWorldId, Pos::GlobalRegion lastRegionPos, LocalEntityId_t lastId, WorldId_t newWorldId, Pos::GlobalRegion newRegionPos, LocalEntityId_t newId);
+    void onEntityEnterLost(WorldId_t worldId, Pos::GlobalRegion regionPos, const std::unordered_set<RegionEntityId_t> &enter, const std::unordered_set<RegionEntityId_t> &lost);
+    void onEntitySwap(WorldId_t lastWorldId, Pos::GlobalRegion lastRegionPos, RegionEntityId_t lastId, WorldId_t newWorldId, Pos::GlobalRegion newRegionPos, RegionEntityId_t newId);
     void onEntityUpdates(WorldId_t worldId, Pos::GlobalRegion regionPos, const std::vector<Entity> &entities);
+
+    void onFuncEntityEnterLost(WorldId_t worldId, Pos::GlobalRegion regionPos, const std::unordered_set<RegionEntityId_t> &enter, const std::unordered_set<RegionEntityId_t> &lost);
+    void onFuncEntitySwap(WorldId_t lastWorldId, Pos::GlobalRegion lastRegionPos, RegionEntityId_t lastId, WorldId_t newWorldId, Pos::GlobalRegion newRegionPos, RegionEntityId_t newId);
+    void onFuncEntityUpdates(WorldId_t worldId, Pos::GlobalRegion regionPos, const std::vector<Entity> &entities);
 
     void onPortalEnterLost(const std::vector<void*> &enter, const std::vector<void*> &lost);
     void onPortalUpdates(const std::vector<void*> &portals);

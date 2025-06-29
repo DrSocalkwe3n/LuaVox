@@ -4,7 +4,6 @@
 #include <glm/ext.hpp>
 #include <memory>
 #include <type_traits>
-#include <vector>
 
 
 namespace LV {
@@ -42,10 +41,13 @@ public:
     BitVec3() = default;
     BitVec3(T value)
         : x(value), y(value), z(value)
-    {
-    }
+    {}
     BitVec3(const T x, const T y, const T z)
         : x(x), y(y), z(z)
+    {}
+	template<typename vT, glm::qualifier vQ>
+    BitVec3(const glm::vec<3, vT, vQ> vec)
+        : x(vec.x), y(vec.y), z(vec.z)
     {}
     BitVec3(const BitVec3&) = default;
     BitVec3(BitVec3&&) = default;
@@ -94,7 +96,7 @@ public:
         using U = std::make_unsigned_t<T>;
 
         for(size_t iter = 0; iter < N; iter++) {
-            get(iter) = U((pack >> BitsPerComponent*iter) & ((Pack(1) << BitsPerComponent)-1));
+            set(iter, U((pack >> BitsPerComponent*iter) & ((Pack(1) << BitsPerComponent)-1)));
         }
     }
 
@@ -102,7 +104,7 @@ public:
 
     template<typename T2, size_t BitsPerComponent2>
     operator BitVec3<T2, BitsPerComponent2>() const {
-        BitVec3<T, BitsPerComponent2> out;
+        BitVec3<T2, BitsPerComponent2> out;
         for(size_t iter = 0; iter < N; iter++) {
             out.set(iter, T2(std::make_unsigned_t<T2>(std::make_unsigned_t<T>(get(iter)))));
         }
@@ -110,18 +112,24 @@ public:
         return out;
     }
 
+
+	template<typename vT, glm::qualifier vQ>
+    operator glm::vec<3, vT, vQ>() const {
+        return {x, y, z};
+    }
+
     BitVec3 operator+(const BitVec3 &other) const {
         BitVec3 out;
 
         for(size_t iter = 0; iter < N; iter++)
-            out[iter] = get(iter) + other[iter];
+            out.set(iter, get(iter) + other[iter]);
 
         return out;
     }
 
     BitVec3& operator+=(const BitVec3 &other) {
         for(size_t iter = 0; iter < N; iter++)
-            get(iter) += other[iter];
+            set(iter, get(iter) + other[iter]);
 
         return *this;
     }
@@ -130,14 +138,14 @@ public:
         BitVec3 out;
 
         for(size_t iter = 0; iter < N; iter++)
-            out[iter] = get(iter) + value;
+            out.set(iter, get(iter) + value);
 
         return out;
     }
 
     BitVec3& operator+=(const T value) {
         for(size_t iter = 0; iter < N; iter++)
-            get(iter) += value;
+            set(iter, get(iter) + value);
 
         return *this;
     }
@@ -146,14 +154,14 @@ public:
         BitVec3 out;
 
         for(size_t iter = 0; iter < N; iter++)
-            out[iter] = get(iter) - other[iter];
+            out.set(iter, get(iter) - other[iter]);
 
         return out;
     }
 
     BitVec3& operator-=(const BitVec3 &other) {
         for(size_t iter = 0; iter < N; iter++)
-            get(iter) -= other[iter];
+            set(iter, get(iter) - other[iter]);
 
         return *this;
     }
@@ -162,14 +170,14 @@ public:
         BitVec3 out;
 
         for(size_t iter = 0; iter < N; iter++)
-            out[iter] = get(iter) - value;
+            out.set(iter, get(iter) - value);
 
         return out;
     }
 
     BitVec3& operator-=(const T value) {
         for(size_t iter = 0; iter < N; iter++)
-            get(iter) -= value;
+            set(iter, get(iter) - value);
 
         return *this;
     }
@@ -178,14 +186,14 @@ public:
         BitVec3 out;
 
         for(size_t iter = 0; iter < N; iter++)
-            out[iter] = get(iter) * other[iter];
+            out.set(iter, get(iter) * other[iter]);
 
         return out;
     }
 
     BitVec3& operator*=(const BitVec3 &other) {
         for(size_t iter = 0; iter < N; iter++)
-            get(iter) *= other[iter];
+            set(iter, get(iter) * other[iter]);
 
         return *this;
     }
@@ -194,14 +202,14 @@ public:
         BitVec3 out;
 
         for(size_t iter = 0; iter < N; iter++)
-            out[iter] = get(iter) * value;
+            out.set(iter, get(iter) * value);
 
         return out;
     }
 
     BitVec3& operator*=(const T value) {
         for(size_t iter = 0; iter < N; iter++)
-            get(iter) *= value;
+            set(iter, get(iter) * value);
 
         return *this;
     }
@@ -210,14 +218,14 @@ public:
         BitVec3 out;
 
         for(size_t iter = 0; iter < N; iter++)
-            out[iter] = get(iter) / other[iter];
+            out.set(iter, get(iter) / other[iter]);
 
         return out;
     }
 
     BitVec3& operator/=(const BitVec3 &other) {
         for(size_t iter = 0; iter < N; iter++)
-            get(iter) /= other[iter];
+            set(iter, get(iter) / other[iter]);
 
         return *this;
     }
@@ -226,14 +234,14 @@ public:
         BitVec3 out;
 
         for(size_t iter = 0; iter < N; iter++)
-            out[iter] = get(iter) / value;
+            out.set(iter, get(iter) / value);
 
         return out;
     }
 
     BitVec3& operator/=(const T value) {
         for(size_t iter = 0; iter < N; iter++)
-            get(iter) /= value;
+            set(iter, get(iter) / value);
 
         return *this;
     }
@@ -249,7 +257,7 @@ public:
 
     BitVec3& operator>>=(const auto offset) {
         for(size_t iter = 0; iter < N; iter++)
-            get(iter) >>= offset;
+            set(iter, get(iter) >> offset);
 
         return *this;
     }
@@ -258,14 +266,14 @@ public:
         BitVec3 out;
 
         for(size_t iter = 0; iter < N; iter++)
-            out[iter] = get(iter) << offset;
+            out.set(iter, get(iter) << offset);
 
         return out;
     }
 
     BitVec3& operator<<=(const auto offset) {
         for(size_t iter = 0; iter < N; iter++)
-            get(iter) <<= offset;
+            set(iter, get(iter) << offset);
 
         return *this;
     }
@@ -274,14 +282,14 @@ public:
         BitVec3 out;
 
         for(size_t iter = 0; iter < N; iter++)
-            out[iter] = get(iter) | other[iter];
+            out.set(iter, get(iter) | other[iter]);
 
         return out;
     }
 
     BitVec3& operator|=(const BitVec3 other) {
         for(size_t iter = 0; iter < N; iter++)
-            get(iter) |= other[iter];
+            set(iter, get(iter) | other[iter]);
 
         return *this;
     }
@@ -290,14 +298,14 @@ public:
         BitVec3 out;
 
         for(size_t iter = 0; iter < N; iter++)
-            out[iter] = get(iter) | value;
+            out.set(iter, get(iter) | value);
 
         return out;
     }
 
     BitVec3& operator|=(const T value) {
         for(size_t iter = 0; iter < N; iter++)
-            get(iter) |= value;
+            set(iter, get(iter) | value);
 
         return *this;
     }
@@ -306,14 +314,14 @@ public:
         BitVec3 out;
 
         for(size_t iter = 0; iter < N; iter++)
-            out[iter] = get(iter) & other[iter];
+            out.set(iter, get(iter) & other[iter]);
 
         return out;
     }
 
     BitVec3& operator&=(const BitVec3 other) {
         for(size_t iter = 0; iter < N; iter++)
-            get(iter) &= other[iter];
+            set(iter, get(iter) & other[iter]);
 
         return *this;
     }
@@ -322,14 +330,14 @@ public:
         BitVec3 out;
 
         for(size_t iter = 0; iter < N; iter++)
-            out[iter] = get(iter) & value;
+            out.set(iter, get(iter) & value);
 
         return out;
     }
 
     BitVec3& operator&=(const T value) {
         for(size_t iter = 0; iter < N; iter++)
-            get(iter) &= value;
+            set(iter, get(iter) & value);
 
         return *this;
     }
@@ -343,7 +351,9 @@ using bvec16i = BitVec3<int8_t, 4>;
 using bvec16u = BitVec3<uint8_t, 4>;
 using bvec256i = BitVec3<int8_t, 8>;
 using bvec256u = BitVec3<uint8_t, 8>;
-using bvec4096i = BitVec3<int8_t, 12>;
+using bvec1024i = BitVec3<int16_t, 10>;
+using bvec1024u = BitVec3<uint16_t, 10>;
+using bvec4096i = BitVec3<int16_t, 12>;
 using bvec4096u = BitVec3<uint16_t, 12>;
 
 using GlobalVoxel = BitVec3<int32_t, 24>;
@@ -385,25 +395,23 @@ using BinSoundId_t = ResourceId_t;
 using BinFontId_t = ResourceId_t;
 
 // Шаблоны использования бинарных ресурсов
-using TextureId_t = ResourceId_t;
-using AnimationId_t = ResourceId_t;
-using ModelId_t = ResourceId_t;
-using SoundId_t = ResourceId_t;
-using FontId_t = ResourceId_t;
+// using DefTextureId_t   = ResourceId_t;
+// using DefModelId_t     = ResourceId_t;
+// using DefSoundId_t     = ResourceId_t;
+// using DefFontId_t      = ResourceId_t;
 
 enum class EnumDefContent {
     Voxel, Node, Generator, World, Portal, Entity, FuncEntitry
 };
 
 // Игровые определения
-using DefVoxelId_t = ResourceId_t;
-using DefNodeId_t = ResourceId_t;
-using DefGeneratorId_t = ResourceId_t;
-using DefWorldId_t = ResourceId_t;
-using DefPortalId_t = ResourceId_t;
-using DefEntityId_t = ResourceId_t;
+using DefVoxelId_t      = ResourceId_t;
+using DefNodeId_t       = ResourceId_t;
+using DefWorldId_t      = ResourceId_t;
+using DefPortalId_t     = ResourceId_t;
+using DefEntityId_t     = ResourceId_t;
 using DefFuncEntityId_t = ResourceId_t;
-
+using DefItemId_t       = ResourceId_t;
 
 // Контент, основанный на игровых определениях
 using WorldId_t = ResourceId_t;

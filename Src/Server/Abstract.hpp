@@ -4,19 +4,31 @@
 #include <Common/Abstract.hpp>
 #include <Common/Collide.hpp>
 #include <boost/uuid/detail/sha1.hpp>
+#include <string>
+#include <unordered_map>
 
 
 namespace LV::Server {
 
+struct TexturePipeline {
+    std::vector<BinTextureId_t> BinTextures;
+    std::u8string Pipeline;
+};
+
+
 // В одном регионе может быть максимум 2^16 сущностей. Клиенту адресуются сущности в формате <мир>+<позиция региона>+<uint16_t>
 // И если сущность перешла из одного региона в другой, идентификатор сущности на стороне клиента сохраняется
-using EntityId_t = uint16_t;
-using FuncEntityId_t = uint16_t;
-using ClientEntityId_t = std::tuple<WorldId_t, Pos::GlobalRegion, EntityId_t>;
+using RegionEntityId_t = uint16_t;
+using ClientEntityId_t = RegionEntityId_t;
+using ServerEntityId_t = std::tuple<WorldId_t, Pos::GlobalRegion, RegionEntityId_t>;
+using RegionFuncEntityId_t = uint16_t;
+using ClientFuncEntityId_t = RegionFuncEntityId_t;
+using ServerFuncEntityId_t = std::tuple<WorldId_t, Pos::GlobalRegion, RegionFuncEntityId_t>;
 
 using MediaStreamId_t = uint16_t;
 using ContentBridgeId_t = ResourceId_t;
 using PlayerId_t = ResourceId_t;
+using DefGeneratorId_t = ResourceId_t;
 
 
 /*
@@ -44,24 +56,65 @@ struct ServerTime {
 };
 
 struct VoxelCube {
-    DefVoxelId_t VoxelId;
-    Pos::bvec256u Left, Right;
+    union {
+        struct {
+            DefVoxelId_t VoxelId : 24, Meta : 8;
+        };
 
-    auto operator<=>(const VoxelCube&) const = default;
+        DefVoxelId_t Data = 0;
+    };
+
+    Pos::bvec256u Left, Right; // TODO: заменить на позицию и размер
+
+    auto operator<=>(const VoxelCube& other) const {
+        if (auto cmp = Left <=> other.Left; cmp != 0)
+            return cmp;
+
+        if (auto cmp = Right <=> other.Right; cmp != 0)
+            return cmp;
+
+        return Data <=> other.Data;
+    }
+
+    bool operator==(const VoxelCube& other) const {
+        return Left == other.Left && Right == other.Right && Data == other.Data;
+    }
 };
 
 struct VoxelCube_Region {
-    Pos::bvec4096u Left, Right;
-    DefVoxelId_t VoxelId;
+    union {
+        struct {
+            DefVoxelId_t VoxelId : 24, Meta : 8;
+        };
 
-    auto operator<=>(const VoxelCube_Region&) const = default;
+        DefVoxelId_t Data = 0;
+    };
+
+    Pos::bvec1024u Left, Right; // TODO: заменить на позицию и размер
+
+    auto operator<=>(const VoxelCube_Region& other) const {
+        if (auto cmp = Left <=> other.Left; cmp != 0)
+            return cmp;
+
+        if (auto cmp = Right <=> other.Right; cmp != 0)
+            return cmp;
+
+        return Data <=> other.Data;
+    }
+
+    bool operator==(const VoxelCube_Region& other) const {
+        return Left == other.Left && Right == other.Right && Data == other.Data;
+    }
 };
 
 struct Node {
-    DefNodeId_t NodeId;
-    uint8_t Rotate : 6;
+    union {
+        struct {
+            DefNodeId_t NodeId : 24, Meta : 8;
+        };
+        DefNodeId_t Data;
+    };
 };
-
 
 struct AABB {
     Pos::Object VecMin, VecMax;
@@ -96,26 +149,26 @@ struct LocalAABB {
 
 struct CollisionAABB : public AABB {
     enum struct EnumType {
-        Voxel, Node, Entity, Barrier, Portal, Another
+        Voxel, Node, Entity, FuncEntity, Barrier, Portal, Another
     } Type;
 
     union {
         struct {
-            EntityId_t Index;
+            RegionEntityId_t Index;
         } Entity;
 
         struct {
-            FuncEntityId_t Index;
+            RegionFuncEntityId_t Index;
         } FuncEntity;
 
         struct {
+            Pos::bvec4u Chunk;
             Pos::bvec16u Pos;
         } Node;
 
         struct {
-            Pos::bvec16u Chunk;
+            Pos::bvec4u Chunk;
             uint32_t Index;
-            DefVoxelId_t Id;
         } Voxel;
 
         struct {
@@ -169,6 +222,15 @@ public:
     }
 
     DefEntityId_t getDefId() const { return DefId; }
+};
+
+class FuncEntity {
+    DefFuncEntityId_t DefId;
+
+public:
+    FuncEntity(DefFuncEntityId_t defId);
+
+    DefFuncEntityId_t getDefId() const { return DefId; }
 };
 
 
@@ -292,7 +354,7 @@ struct VoxelCuboidsFuncs {
     }
 };
 
-inline void convertRegionVoxelsToChunks(const std::vector<VoxelCube_Region>& regions, std::vector<VoxelCube> *chunks) {
+inline void convertRegionVoxelsToChunks(const std::vector<VoxelCube_Region>& regions, std::unordered_map<Pos::bvec4u, std::vector<VoxelCube>> &chunks) {
     for (const auto& region : regions) {
         int minX = region.Left.x >> 8;
         int minY = region.Left.y >> 8;
@@ -315,30 +377,24 @@ inline void convertRegionVoxelsToChunks(const std::vector<VoxelCube_Region>& reg
                         static_cast<uint8_t>(std::min<uint16_t>(((z+1) << 8)-1, region.Right.z) - (z << 8))
                     };
 
-                    int chunkIndex = z * 16 * 16 + y * 16 + x;
-                    chunks[chunkIndex].emplace_back(region.VoxelId, left, right);
+                    chunks[Pos::bvec4u(x, y, z)].push_back({
+                        region.VoxelId, region.Meta, left, right
+                    });
                 }
             }
         }
     }
 }
 
-inline void convertChunkVoxelsToRegion(const std::vector<VoxelCube> *chunks, std::vector<VoxelCube_Region> &regions) {
-    for (int x = 0; x < 16; ++x) {
-        for (int y = 0; y < 16; ++y) {
-            for (int z = 0; z < 16; ++z) {
-                int chunkIndex = z * 16 * 16 + y * 16 + x;
-
-                Pos::bvec4096u left(x << 8, y << 8, z << 8);
-                
-                for (const auto& cube : chunks[chunkIndex]) {
-                    regions.emplace_back(
-                        Pos::bvec4096u(left.x+cube.Left.x, left.y+cube.Left.y, left.z+cube.Left.z),
-                        Pos::bvec4096u(left.x+cube.Right.x, left.y+cube.Right.y, left.z+cube.Right.z), 
-                        cube.VoxelId
-                    );
-                }
-            }
+inline void convertChunkVoxelsToRegion(const std::unordered_map<Pos::bvec4u, std::vector<VoxelCube>> &chunks, std::vector<VoxelCube_Region> &regions) {
+    for(const auto& [pos, voxels] : chunks) {
+        Pos::bvec1024u left = pos << 8;
+        for (const auto& cube : voxels) {
+            regions.push_back({
+                cube.VoxelId, cube.Meta,
+                Pos::bvec1024u(left.x+cube.Left.x, left.y+cube.Left.y, left.z+cube.Left.z),
+                Pos::bvec1024u(left.x+cube.Right.x, left.y+cube.Right.y, left.z+cube.Right.z)
+            });
         }
     }
 

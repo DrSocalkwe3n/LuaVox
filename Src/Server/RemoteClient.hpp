@@ -102,7 +102,7 @@ public:
     // Соотнести идентификатор на стороне клиента с идентификатором на стороне сервера
     ServerKey toServer(ClientKey ckey) {
         return CSmapper.toServer(ckey);
-    } 
+    }
 
     // Удаляет серверный идентификатор, освобождая идентификатор клиента  
     ClientKey erase(ServerKey skey) {
@@ -138,30 +138,43 @@ public:
     этих ресурсов и переотправлять их клиенту
 */
 struct ResourceRequest {
-    std::vector<BinTextureId_t> NewTextures;
-    std::vector<BinModelId_t> NewModels;
-    std::vector<BinSoundId_t> NewSounds;
+    std::vector<BinTextureId_t>     BinTexture;
+    std::vector<BinAnimationId_t>   BinAnimation;
+    std::vector<BinModelId_t>       BinModel;
+    std::vector<BinSoundId_t>       BinSound;
+    std::vector<BinFontId_t>        BinFont;
 
-    std::vector<DefWorldId_t> NewWorlds;
-    std::vector<DefVoxelId_t> NewVoxels;
-    std::vector<DefNodeId_t> NewNodes;
-    std::vector<DefPortalId_t> NewPortals;
-    std::vector<DefEntityId_t> NewEntityes;
+    std::vector<DefVoxelId_t>       Voxel;
+    std::vector<DefNodeId_t>        Node;
+    std::vector<DefWorldId_t>       World;
+    std::vector<DefPortalId_t>      Portal;
+    std::vector<DefEntityId_t>      Entity;
+    std::vector<DefFuncEntityId_t>  FuncEntity;
+    std::vector<DefItemId_t>        Item;
 
     void insert(const ResourceRequest &obj) {
-        NewTextures.insert(NewTextures.end(), obj.NewTextures.begin(), obj.NewTextures.end());
-        NewModels.insert(NewModels.end(), obj.NewModels.begin(), obj.NewModels.end());
-        NewSounds.insert(NewSounds.end(), obj.NewSounds.begin(), obj.NewSounds.end());
+        BinTexture.insert(BinTexture.end(), obj.BinTexture.begin(), obj.BinTexture.end());
+        BinAnimation.insert(BinAnimation.end(), obj.BinAnimation.begin(), obj.BinAnimation.end());
+        BinModel.insert(BinModel.end(), obj.BinModel.begin(), obj.BinModel.end());
+        BinSound.insert(BinSound.end(), obj.BinSound.begin(), obj.BinSound.end());
+        BinFont.insert(BinFont.end(), obj.BinFont.begin(), obj.BinFont.end());
 
-        NewWorlds.insert(NewWorlds.end(), obj.NewWorlds.begin(), obj.NewWorlds.end());
-        NewVoxels.insert(NewVoxels.end(), obj.NewVoxels.begin(), obj.NewVoxels.end());
-        NewNodes.insert(NewNodes.end(), obj.NewNodes.begin(), obj.NewNodes.end());
-        NewPortals.insert(NewPortals.end(), obj.NewPortals.begin(), obj.NewPortals.end());
-        NewEntityes.insert(NewEntityes.end(), obj.NewEntityes.begin(), obj.NewEntityes.end());
+        Voxel.insert(Voxel.end(), obj.Voxel.begin(), obj.Voxel.end());
+        Node.insert(Node.end(), obj.Node.begin(), obj.Node.end());
+        World.insert(World.end(), obj.World.begin(), obj.World.end());
+        Portal.insert(Portal.end(), obj.Portal.begin(), obj.Portal.end());
+        Entity.insert(Entity.end(), obj.Entity.begin(), obj.Entity.end());
+        FuncEntity.insert(FuncEntity.end(), obj.FuncEntity.begin(), obj.FuncEntity.end());
+        Item.insert(Item.end(), obj.Item.begin(), obj.Item.end());
     }
 
     void uniq() {
-        for(std::vector<ResourceId_t> *vec : {&NewTextures, &NewModels, &NewSounds, &NewWorlds, &NewVoxels, &NewNodes, &NewPortals, &NewEntityes}) {
+        for(std::vector<ResourceId_t> *vec : {
+                &BinTexture, &BinAnimation, &BinModel, &BinSound, 
+                &BinFont, &Voxel, &Node, &World,
+                &Portal, &Entity, &FuncEntity, &Item
+            })
+        {
             std::sort(vec->begin(), vec->end());
             auto last = std::unique(vec->begin(), vec->end());
             vec->erase(last, vec->end());
@@ -169,7 +182,7 @@ struct ResourceRequest {
     }
 };
 
-using EntityKey = std::tuple<WorldId_c, Pos::GlobalRegion>;
+// using EntityKey = std::tuple<WorldId_c, Pos::GlobalRegion>;
 
 
 
@@ -186,85 +199,109 @@ class RemoteClient {
     DestroyLock UseLock;
     Net::AsyncSocket Socket;
     bool IsConnected = true, IsGoingShutdown = false;
-    std::vector<HASH> ClientCache;
+    std::vector<HASH> ClientBinaryCache;
+
+    /*
+        При обнаружении нового контента составляется запрос (ResourceRequest)
+        на полное описание ресурса. Это описание отправляется клиенту и используется 
+        чтобы выстроить зависимость какие базовые ресурсы использует контент.
+        Если базовые ресурсы не известны, то они также запрашиваются.
+    */
 
     struct ResUsesObj {
-        // Счётчики использования базовых ресурсов высшими объектами
-        std::map<BinTextureId_t, uint32_t> BinTexture;
-        std::map<BinSoundId_t, uint32_t> BinSound;
+        // Счётчики использования двоичных кэшируемых ресурсов
+        std::map<BinTextureId_t,    uint32_t>      BinTexture;
+        std::map<BinAnimationId_t,  uint32_t>    BinAnimation;
+        std::map<BinModelId_t,      uint32_t>        BinModel;
+        std::map<BinSoundId_t,      uint32_t>        BinSound;
+        std::map<BinFontId_t,       uint32_t>         BinFont;
 
-        // Может использовать текстуры
-        std::map<BinModelId_t, uint32_t> BinModel;
+        // Счётчики использование профилей контента
+        std::map<DefVoxelId_t,      uint32_t>        DefVoxel; // Один чанк, одно использование
+        std::map<DefNodeId_t,       uint32_t>         DefNode;
+        std::map<DefWorldId_t,      uint32_t>        DefWorld;
+        std::map<DefPortalId_t,     uint32_t>       DefPortal;
+        std::map<DefEntityId_t,     uint32_t>       DefEntity;
+        std::map<DefFuncEntityId_t, uint32_t>   DefFuncEntity;
+        std::map<DefItemId_t,       uint32_t>         DefItem; // При передаче инвентарей?
 
-        // Будут использовать в своих определениях текстуры, звуки, модели
-        std::map<DefWorldId_t, uint32_t> DefWorld;
-        std::map<DefVoxelId_t, uint32_t> DefVoxel;
-        std::map<DefNodeId_t, uint32_t> DefNode;
-        std::map<DefPortalId_t, uint32_t> DefPortal;
-        std::map<DefEntityId_t, uint32_t> DefEntity;
-
-
-        // Переписываемый контент
-
-        // Сущности используют текстуры, звуки, модели
-        struct EntityResourceUse {
-            DefEntityId_t DefId;
-
-            std::unordered_set<BinTextureId_t> Textures;
-            std::unordered_set<BinSoundId_t> Sounds;
-            std::unordered_set<BinModelId_t> Models;
+        // Зависимость профилей контента от профилей ресурсов
+        // Нужно чтобы пересчитать зависимости к профилям ресурсов
+        struct RefDefVoxel_t {
+            std::vector<BinTextureId_t> Texture;
+            std::vector<BinSoundId_t> Sound;
         };
-
-        std::map<GlobalEntityId_t, EntityResourceUse> Entity;
-
-        // Чанки используют воксели, ноды
-        std::map<std::tuple<WorldId_t, Pos::GlobalChunk>, std::unordered_set<DefVoxelId_t>> ChunkVoxels;
-        std::map<std::tuple<WorldId_t, Pos::GlobalChunk>, std::unordered_set<DefNodeId_t>> ChunkNodes;
-
-        // Миры
-        struct WorldResourceUse {
-            DefWorldId_t DefId;
-
-            std::unordered_set<BinTextureId_t> Textures;
-            std::unordered_set<BinSoundId_t> Sounds;
-            std::unordered_set<BinModelId_t> Models;
+        std::map<DefVoxelId_t, RefDefVoxel_t>           RefDefVoxel;
+        struct RefDefNode_t {
+            std::vector<BinModelId_t> Model;
+            std::vector<BinSoundId_t> Sound;
         };
-
-        std::map<WorldId_t, WorldResourceUse> Worlds;
-
-
-        // Порталы
-        struct PortalResourceUse {
-            DefPortalId_t DefId;
-
-            std::unordered_set<BinTextureId_t> Textures;
-            std::unordered_set<BinSoundId_t> Sounds;
-            std::unordered_set<BinModelId_t> Models;
+        std::map<DefNodeId_t, RefDefNode_t>             RefDefNode;
+        struct RefDefWorld_t {
+            std::vector<BinTextureId_t> Texture;
+            std::vector<BinModelId_t> Model;
         };
+        std::map<WorldId_t, RefDefWorld_t>              RefDefWorld;
+        struct RefDefPortal_t {
+            std::vector<BinTextureId_t> Texture;
+            std::vector<BinAnimationId_t> Animation;
+            std::vector<BinModelId_t> Model;
+        };
+        std::map<DefPortalId_t, RefDefPortal_t>           RefDefPortal;
+        struct RefDefEntity_t {
+            std::vector<BinTextureId_t> Texture;
+            std::vector<BinAnimationId_t> Animation;
+            std::vector<BinModelId_t> Model;
+        };
+        std::map<DefEntityId_t, RefDefEntity_t>           RefDefEntity;
+        struct RefDefFuncEntity_t {
+            std::vector<BinTextureId_t> Texture;
+            std::vector<BinAnimationId_t> Animation;
+            std::vector<BinModelId_t> Model;
+        };
+        std::map<DefFuncEntityId_t, RefDefFuncEntity_t>       RefDefFuncEntity;
+        struct RefDefItem_t {
+            std::vector<BinTextureId_t> Texture;
+            std::vector<BinAnimationId_t> Animation;
+            std::vector<BinModelId_t> Model;
+        };
+        std::map<DefItemId_t, RefDefItem_t>             RefDefItem;
 
-        std::map<PortalId_t, PortalResourceUse> Portals;
-    
+        // Модификационные зависимости экземпляров профилей контента
+        struct ChunkRef {
+            // Отсортированные списки уникальных вокселей
+            std::vector<DefVoxelId_t> Voxel;
+            std::vector<DefNodeId_t> Node;
+        };
+        std::map<WorldId_t, std::map<Pos::GlobalChunk, ChunkRef>> RefChunk;
+        struct RefWorld_t {
+            DefWorldId_t Profile;
+        };
+        std::map<WorldId_t, RefWorld_t> RefWorld;
+        struct RefPortal_t {
+            DefPortalId_t Profile;
+        };
+        std::map<PortalId_t, RefPortal_t> RefPortal;
+        struct RefEntity_t {
+            DefEntityId_t Profile;
+        };
+        std::map<ServerEntityId_t, RefEntity_t> RefEntity;
+        struct RefFuncEntity_t {
+            DefFuncEntityId_t Profile;
+        };
+        std::map<ServerFuncEntityId_t, RefFuncEntity_t> RefFuncEntity;
+
     } ResUses;
 
+    // Смена идентификаторов сервера на клиентские
     struct {
-        SCSKeyRemapper<BinTextureId_t, TextureId_c> BinTextures;
-        SCSKeyRemapper<BinSoundId_t, SoundId_c> BinSounds;
-        SCSKeyRemapper<BinModelId_t, ModelId_c> BinModels;
-
-        SCSKeyRemapper<DefWorldId_t, DefWorldId_c> DefWorlds;
-        SCSKeyRemapper<DefVoxelId_t, DefVoxelId_c> DefVoxels;
-        SCSKeyRemapper<DefNodeId_t, DefNodeId_c> DefNodes;
-        SCSKeyRemapper<DefPortalId_t, DefPortalId_c> DefPortals;
-        SCSKeyRemapper<DefEntityId_t, DefEntityId_c> DefEntityes;
-
-        SCSKeyRemapper<WorldId_t, WorldId_c> Worlds;
-        SCSKeyRemapper<PortalId_t, PortalId_c> Portals;
-        SCSKeyRemapper<GlobalEntityId_t, EntityId_c> Entityes;
+        SCSKeyRemapper<ServerEntityId_t, ClientEntityId_t> Entityes;
+        SCSKeyRemapper<ServerFuncEntityId_t, ClientEntityId_t> FuncEntityes;
     } ResRemap;
 
     Net::Packet NextPacket;
-    ResourceRequest NextRequest;
     std::vector<Net::Packet> SimplePackets;
+    ResourceRequest NextRequest;
 
 public:
     const std::string Username;
@@ -273,7 +310,7 @@ public:
 
 public:
     RemoteClient(asio::io_context &ioc, tcp::socket socket, const std::string username, std::vector<HASH> &&client_cache)
-        : LOG("RemoteClient " + username), Socket(ioc, std::move(socket)), Username(username), ClientCache(std::move(client_cache))
+        : LOG("RemoteClient " + username), Socket(ioc, std::move(socket)), Username(username), ClientBinaryCache(std::move(client_cache))
     {
     }
 
@@ -291,27 +328,40 @@ public:
     }
 
     // Функции подготавливают пакеты к отправке
+
     // Отслеживаемое игроком использование контента
-    //  Maybe?
-    //  Текущий список вокселей, определения нод, которые больше не используются в чанке, и определения нод, которые теперь используются
-    //void prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::vector<VoxelCube> &voxels, const std::vector<DefVoxelId_t> &noLongerInUseDefs, const std::vector<DefVoxelId_t> &nowUsed);
-    void prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::vector<VoxelCube> &voxels);
-    void prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::unordered_map<Pos::Local16_u, Node> &nodes);
-    void prepareChunkUpdate_LightPrism(WorldId_t worldId, Pos::GlobalChunk chunkPos, const LightPrism *lights);
+    // В зоне видимости добавился чанк или изменились его воксели
+    void prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::vector<VoxelCube>* voxels);
+    // В зоне видимости добавился чанк или изменились его ноды
+    void prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, const Node* nodes);
+    void prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::unordered_map<Pos::bvec16u, Node> &nodes);
+    //void prepareChunkUpdate_LightPrism(WorldId_t worldId, Pos::GlobalChunk chunkPos, const LightPrism *lights);
+    // Чанк удалён из зоны видимости
     void prepareChunkRemove(WorldId_t worldId, Pos::GlobalChunk chunkPos);
 
-    void prepareEntitySwap(GlobalEntityId_t prevEntityId, GlobalEntityId_t nextEntityId);
-    void prepareEntityUpdate(GlobalEntityId_t entityId, const Entity *entity);
-    void prepareEntityRemove(GlobalEntityId_t entityId);
+    // В зоне видимости добавилась новая сущность или она изменилась
+    void prepareEntityUpdate(ServerEntityId_t entityId, const Entity *entity);
+    // Наблюдаемая сущность пересекла границы региона, у неё изменился серверный идентификатор
+    void prepareEntitySwap(ServerEntityId_t prevEntityId, ServerEntityId_t nextEntityId);
+    // Клиент перестал наблюдать за сущностью
+    void prepareEntityRemove(ServerEntityId_t entityId);
 
+    void prepareFuncEntitySwap(ServerEntityId_t prevEntityId, ServerEntityId_t nextEntityId);
+    void prepareFuncEntityUpdate(ServerEntityId_t entityId, const FuncEntity *funcRntity);
+    void prepareFuncEntityRemove(ServerEntityId_t entityId);
+
+    // В зоне видимости добавился мир или он изменился
     void prepareWorldUpdate(WorldId_t worldId, World* world);
+    // Клиент перестал наблюдать за миром
     void prepareWorldRemove(WorldId_t worldId);
 
+    // В зоне видимости добавился порта или он изменился
     void preparePortalUpdate(PortalId_t portalId, void* portal);
+    // Клиент перестал наблюдать за порталом
     void preparePortalRemove(PortalId_t portalId);
 
     // Прочие моменты
-    void prepareCameraSetEntity(GlobalEntityId_t entityId);
+    void prepareCameraSetEntity(ServerEntityId_t entityId);
 
     // Отправка подготовленных пакетов
     ResourceRequest pushPreparedPackets();
@@ -321,16 +371,20 @@ public:
     // Глобально их можно запросить в выдаче pushPreparedPackets()
 
     // Двоичные файлы
-    void informateDefTexture(const std::unordered_map<BinTextureId_t, std::shared_ptr<ResourceFile>> &textures);
-    void informateDefSound(const std::unordered_map<BinSoundId_t, std::shared_ptr<ResourceFile>> &sounds);
-    void informateDefModel(const std::unordered_map<BinModelId_t, std::shared_ptr<ResourceFile>> &models);
+    void informateBinTexture(const std::unordered_map<BinTextureId_t, std::shared_ptr<ResourceFile>> &textures);
+    void informateBinAnimation(const std::unordered_map<BinAnimationId_t, std::shared_ptr<ResourceFile>> &animations);
+    void informateBinModel(const std::unordered_map<BinModelId_t, std::shared_ptr<ResourceFile>> &models);
+    void informateBinSound(const std::unordered_map<BinSoundId_t, std::shared_ptr<ResourceFile>> &sounds);
+    void informateBinFont(const std::unordered_map<BinFontId_t, std::shared_ptr<ResourceFile>> &fonts);
 
     // Игровые определения
-    void informateDefWorld(const std::unordered_map<DefWorldId_t, World*> &worlds);
     void informateDefVoxel(const std::unordered_map<DefVoxelId_t, void*> &voxels);
     void informateDefNode(const std::unordered_map<DefNodeId_t, void*> &nodes);
-    void informateDefEntityes(const std::unordered_map<DefEntityId_t, void*> &entityes);
-    void informateDefPortals(const std::unordered_map<DefPortalId_t, void*> &portals);
+    void informateDefWorld(const std::unordered_map<DefWorldId_t, void*> &worlds);
+    void informateDefPortal(const std::unordered_map<DefPortalId_t, void*> &portals);
+    void informateDefEntity(const std::unordered_map<DefEntityId_t, void*> &entityes);
+    void informateDefFuncEntity(const std::unordered_map<DefFuncEntityId_t, void*> &funcEntityes);
+    void informateDefItem(const std::unordered_map<DefItemId_t, void*> &items);
 
 private:
     void checkPacketBorder(uint16_t size);
@@ -338,10 +392,24 @@ private:
     coro<> readPacket(Net::AsyncSocket &sock);
     coro<> rP_System(Net::AsyncSocket &sock);
 
-    void incrementBinary(std::unordered_set<BinTextureId_t> &textures, std::unordered_set<BinSoundId_t> &sounds,
-        std::unordered_set<BinModelId_t> &models);
-    void decrementBinary(std::unordered_set<BinTextureId_t> &textures, std::unordered_set<BinSoundId_t> &sounds,
-        std::unordered_set<BinModelId_t> &models);
+    void incrementBinary(const std::vector<BinTextureId_t> &textures, const std::vector<BinAnimationId_t> &animation,
+        const std::vector<BinSoundId_t> &sounds, const std::vector<BinModelId_t> &models,
+        const std::vector<BinFontId_t> &fonts
+    );
+    void decrementBinary(std::vector<BinTextureId_t>&& textures, std::vector<BinAnimationId_t>&& animation,
+        std::vector<BinSoundId_t>&& sounds, std::vector<BinModelId_t>&& models,
+        std::vector<BinFontId_t>&& fonts
+    );
+    void informateBin(ToClient::L2Resource type, ResourceId_t id, const std::shared_ptr<ResourceFile>& pair);
+
+    // void incrementProfile(const std::vector<TextureId_t> &textures, const std::vector<ModelId_t> &model,
+    //     const std::vector<SoundId_t> &sounds, const std::vector<FontId_t> &font
+    // );
+    // void decrementProfile(std::vector<TextureId_t> &&textures, std::vector<ModelId_t> &&model,
+    //     std::vector<SoundId_t> &&sounds, std::vector<FontId_t> &&font
+    // );
+
+    
 };
 
 

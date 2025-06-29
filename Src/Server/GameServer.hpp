@@ -19,7 +19,6 @@
 #include "World.hpp"
 
 #include "SaveBackend.hpp"
-#include "boost/asio/ip/address.hpp"
 
 
 namespace LV::Server {
@@ -51,20 +50,24 @@ class GameServer : public AsyncObject {
         // WorldDefManager WorldDM;
         // VoxelDefManager VoxelDM;
         // NodeDefManager NodeDM;
-        BinaryResourceManager TextureM;
-        BinaryResourceManager ModelM;
-        BinaryResourceManager SoundM;
+        BinaryResourceManager Texture;
+        BinaryResourceManager Animation;
+        BinaryResourceManager Model;
+        BinaryResourceManager Sound;
+        BinaryResourceManager Font;
 
         ContentObj(asio::io_context &ioc,
                 std::shared_ptr<ResourceFile> zeroTexture,
+                std::shared_ptr<ResourceFile> zeroAnimation,
                 std::shared_ptr<ResourceFile> zeroModel,
-                std::shared_ptr<ResourceFile> zeroSound)
-            : TextureM(ioc, zeroTexture),
-              ModelM(ioc, zeroModel),
-              SoundM(ioc, zeroSound)
-        {
-
-        }
+                std::shared_ptr<ResourceFile> zeroSound,
+                std::shared_ptr<ResourceFile> zeroFont)
+            : Texture(ioc, zeroTexture),
+              Animation(ioc, zeroAnimation),
+              Model(ioc, zeroModel),
+              Sound(ioc, zeroSound),
+              Font(ioc, zeroFont)
+        {}
 
     } Content;
 
@@ -114,7 +117,7 @@ class GameServer : public AsyncObject {
 public:
     GameServer(asio::io_context &ioc, fs::path worldPath)
         : AsyncObject(ioc),
-          Content(ioc, nullptr, nullptr, nullptr)
+          Content(ioc, nullptr, nullptr, nullptr, nullptr, nullptr)
     {
         init(worldPath);
     }

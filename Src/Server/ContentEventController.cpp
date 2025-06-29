@@ -13,7 +13,7 @@ ContentEventController::ContentEventController(std::unique_ptr<RemoteClient> &&r
 }
 
 uint16_t ContentEventController::getViewRangeActive() const {
-    return 16;
+    return 1;
 }
 
 uint16_t ContentEventController::getViewRangeBackground() const {
@@ -34,9 +34,9 @@ void ContentEventController::checkContentViewChanges() {
         for(const auto &[regionPos, chunks] : regions) {
             size_t bitPos = chunks._Find_first();
             while(bitPos != chunks.size()) {
-                Pos::Local16_u chunkPosLocal;
-                chunkPosLocal = bitPos;
-                Pos::GlobalChunk chunkPos = regionPos.toChunk(chunkPosLocal);
+                Pos::bvec4u chunkPosLocal;
+                chunkPosLocal.unpack(bitPos);
+                Pos::GlobalChunk chunkPos = (Pos::GlobalChunk(regionPos) << 2) + chunkPosLocal;
                 Remote->prepareChunkRemove(worldId, chunkPos);
                 bitPos = chunks._Find_next(bitPos);
             }
@@ -59,7 +59,7 @@ void ContentEventController::onWorldUpdate(WorldId_t worldId, World *worldObj)
 }
 
 void ContentEventController::onChunksUpdate_Voxels(WorldId_t worldId, Pos::GlobalRegion regionPos, 
-    const std::unordered_map<Pos::Local16_u, const std::vector<VoxelCube>*> &chunks)
+    const std::unordered_map<Pos::bvec4u, const std::vector<VoxelCube>*>& chunks)
 {
     auto pWorld = ContentViewState.find(worldId);
     if(pWorld == ContentViewState.end())
@@ -69,19 +69,19 @@ void ContentEventController::onChunksUpdate_Voxels(WorldId_t worldId, Pos::Globa
     if(pRegion == pWorld->second.end())
         return;
 
-    const std::bitset<4096> &chunkBitset = pRegion->second;
+    const std::bitset<64> &chunkBitset = pRegion->second;
 
     for(auto pChunk : chunks) {
-        if(!chunkBitset.test(pChunk.first))
+        if(!chunkBitset.test(pChunk.first.pack()))
             continue;
 
-        Pos::GlobalChunk chunkPos = regionPos.toChunk(pChunk.first);
-        Remote->prepareChunkUpdate_Voxels(worldId, chunkPos, *pChunk.second);
+        Pos::GlobalChunk chunkPos = (Pos::GlobalChunk(regionPos) << 2) + pChunk.first;
+        Remote->prepareChunkUpdate_Voxels(worldId, chunkPos, pChunk.second);
     }
 }
 
 void ContentEventController::onChunksUpdate_Nodes(WorldId_t worldId, Pos::GlobalRegion regionPos, 
-    const std::unordered_map<Pos::Local16_u, const std::unordered_map<Pos::Local16_u, Node>*> &chunks)
+    const std::unordered_map<Pos::bvec4u, const Node*> &chunks)
 {
     auto pWorld = ContentViewState.find(worldId);
     if(pWorld == ContentViewState.end())
@@ -91,41 +91,41 @@ void ContentEventController::onChunksUpdate_Nodes(WorldId_t worldId, Pos::Global
     if(pRegion == pWorld->second.end())
         return;
 
-    const std::bitset<4096> &chunkBitset = pRegion->second;
+    const std::bitset<64> &chunkBitset = pRegion->second;
 
     for(auto pChunk : chunks) {
-        if(!chunkBitset.test(pChunk.first))
+        if(!chunkBitset.test(pChunk.first.pack()))
             continue;
 
-        Pos::GlobalChunk chunkPos = regionPos.toChunk(pChunk.first);
-        Remote->prepareChunkUpdate_Nodes(worldId, chunkPos, *pChunk.second);
+        Pos::GlobalChunk chunkPos = (Pos::GlobalChunk(regionPos) << 2) + Pos::GlobalChunk(pChunk.first);
+        Remote->prepareChunkUpdate_Nodes(worldId, chunkPos, pChunk.second);
     }
 }
 
-void ContentEventController::onChunksUpdate_LightPrism(WorldId_t worldId, Pos::GlobalRegion regionPos, 
-    const std::unordered_map<Pos::Local16_u, const LightPrism*> &chunks)
-{
-    auto pWorld = ContentViewState.find(worldId);
-    if(pWorld == ContentViewState.end())
-        return;
+// void ContentEventController::onChunksUpdate_LightPrism(WorldId_t worldId, Pos::GlobalRegion regionPos, 
+//     const std::unordered_map<Pos::bvec4u, const LightPrism*> &chunks)
+// {
+//     auto pWorld = ContentViewState.find(worldId);
+//     if(pWorld == ContentViewState.end())
+//         return;
 
-    auto pRegion = pWorld->second.find(regionPos);
-    if(pRegion == pWorld->second.end())
-        return;
+//     auto pRegion = pWorld->second.find(regionPos);
+//     if(pRegion == pWorld->second.end())
+//         return;
 
-    const std::bitset<4096> &chunkBitset = pRegion->second;
+//     const std::bitset<4096> &chunkBitset = pRegion->second;
 
-    for(auto pChunk : chunks) {
-        if(!chunkBitset.test(pChunk.first))
-            continue;
+//     for(auto pChunk : chunks) {
+//         if(!chunkBitset.test(pChunk.first))
+//             continue;
 
-        Pos::GlobalChunk chunkPos = regionPos.toChunk(pChunk.first);
-        Remote->prepareChunkUpdate_LightPrism(worldId, chunkPos, pChunk.second);
-    }
-}
+//         Pos::GlobalChunk chunkPos = regionPos.toChunk(pChunk.first);
+//         Remote->prepareChunkUpdate_LightPrism(worldId, chunkPos, pChunk.second);
+//     }
+// }
 
 void ContentEventController::onEntityEnterLost(WorldId_t worldId, Pos::GlobalRegion regionPos, 
-    const std::unordered_set<LocalEntityId_t> &enter, const std::unordered_set<LocalEntityId_t> &lost)
+    const std::unordered_set<RegionEntityId_t> &enter, const std::unordered_set<RegionEntityId_t> &lost)
 {
     auto pWorld = Subscribed.Entities.find(worldId);
     if(pWorld == Subscribed.Entities.end()) {
@@ -141,9 +141,9 @@ void ContentEventController::onEntityEnterLost(WorldId_t worldId, Pos::GlobalReg
         pRegion = pWorld->second.find(regionPos);
     }
 
-    std::unordered_set<LocalEntityId_t> &entityesId = pRegion->second;
+    std::unordered_set<RegionEntityId_t> &entityesId = pRegion->second;
 
-    for(LocalEntityId_t eId : lost) {
+    for(RegionEntityId_t eId : lost) {
         entityesId.erase(eId);
     }
     
@@ -157,13 +157,13 @@ void ContentEventController::onEntityEnterLost(WorldId_t worldId, Pos::GlobalReg
     }
 
     // Сообщить Remote
-    for(LocalEntityId_t eId : lost) {
+    for(RegionEntityId_t eId : lost) {
         Remote->prepareEntityRemove({worldId, regionPos, eId});
     }
 }
 
 void ContentEventController::onEntitySwap(WorldId_t lastWorldId, Pos::GlobalRegion lastRegionPos, 
-    LocalEntityId_t lastId, WorldId_t newWorldId, Pos::GlobalRegion newRegionPos, LocalEntityId_t newId)
+    RegionEntityId_t lastId, WorldId_t newWorldId, Pos::GlobalRegion newRegionPos, RegionEntityId_t newId)
 {
     // Проверим отслеживается ли эта сущность нами
     auto lpWorld = Subscribed.Entities.find(lastWorldId);

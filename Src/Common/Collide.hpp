@@ -1,5 +1,6 @@
-#include "Common/Abstract.hpp"
-#include <iostream>
+#pragma once
+#include <algorithm>
+
 
 namespace LV {
 

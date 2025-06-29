@@ -15,16 +15,17 @@ class GameServer;
 
 class Region {
 public:
-    uint64_t IsChunkChanged_Voxels[64] = {0};
-    uint64_t IsChunkChanged_Nodes[64] = {0};
+    uint64_t IsChunkChanged_Voxels = 0;
+    uint64_t IsChunkChanged_Nodes = 0;
     bool IsChanged = false; // Изменён ли был регион, относительно последнего сохранения
-    // cx cy cz
-    std::vector<VoxelCube> Voxels[16][16][16];
+    std::unordered_map<Pos::bvec4u, std::vector<VoxelCube>> Voxels;
     // x y cx cy cz
-    LightPrism Lights[16][16][16][16][16];
-    std::unordered_map<Pos::Local16_u, Node> Nodes[16][16][16];
+    //LightPrism Lights[16][16][4][4][4];
+
+    Node Nodes[16][16][16][4][4][4];
 
     std::vector<Entity> Entityes;
+    std::vector<FuncEntity> FuncEntityes;
     std::vector<ContentEventController*> CECs;
     // Используется для прорежения количества проверок на наблюдаемые чанки и сущности
     // В одно обновление региона - проверка одного наблюдателя
@@ -35,11 +36,10 @@ public:
 
     void getCollideBoxes(Pos::GlobalRegion rPos, AABB aabb, std::vector<CollisionAABB> &boxes) {
         // Абсолютная позиция начала региона
-        Pos::Object raPos(rPos.X, rPos.Y, rPos.Z);
-        raPos <<= Pos::Object_t::BS_Bit;
+        Pos::Object raPos = Pos::Object(rPos) << Pos::Object_t::BS_Bit;
 
         // Бокс региона
-        AABB regionAABB(raPos, raPos+Pos::Object(Pos::Object_t::BS*256));
+        AABB regionAABB(raPos, raPos+Pos::Object(Pos::Object_t::BS*64));
 
         // Если регион не загружен, то он весь непроходим
         if(!IsLoaded) {
@@ -65,46 +65,48 @@ public:
 
         // Собираем коробки вокселей
         if(aabb.isCollideWith(regionAABB)) {
+            // Определяем с какими чанками есть пересечения
             glm::ivec3 beg, end;
             for(int axis = 0; axis < 3; axis++)
-                beg[axis] = std::max(aabb.VecMin[axis], regionAABB.VecMin[axis]) >> 16;
+                beg[axis] = std::max(aabb.VecMin[axis], regionAABB.VecMin[axis]) >> 12 >> 4;
             for(int axis = 0; axis < 3; axis++)
-                end[axis] = (std::min(aabb.VecMax[axis], regionAABB.VecMax[axis])+0xffff) >> 16;
+                end[axis] = (std::min(aabb.VecMax[axis], regionAABB.VecMax[axis])+0xffff) >> 12 >> 4;
 
             for(; beg.z <= end.z; beg.z++)
             for(; beg.y <= end.y; beg.y++)
             for(; beg.x <= end.x; beg.x++) {
-                std::vector<VoxelCube> &voxels = Voxels[beg.x][beg.y][beg.z];
+                auto iterVoxels = Voxels.find(Pos::bvec4u(beg));
 
-                if(voxels.empty())
+                if(iterVoxels == Voxels.end() && iterVoxels->second.empty())
                     continue;
+
+                auto &voxels = iterVoxels->second;
 
                 CollisionAABB aabbInfo = CollisionAABB(regionAABB);
                 for(int axis = 0; axis < 3; axis++)
-                    aabbInfo.VecMin[axis] |= beg[axis] << 16;
+                    aabbInfo.VecMin.set(axis, aabbInfo.VecMin[axis] | beg[axis] << 16);
 
                 for(size_t iter = 0; iter < voxels.size(); iter++) {
                     VoxelCube &cube = voxels[iter];
 
                     for(int axis = 0; axis < 3; axis++)
-                        aabbInfo.VecMin[axis] &= ~0xff00;
+                        aabbInfo.VecMin.set(axis, aabbInfo.VecMin[axis] & ~0xff00);
                     aabbInfo.VecMax = aabbInfo.VecMin;
 
-                    aabbInfo.VecMin.x |= int(cube.Left.X) << 8;
-                    aabbInfo.VecMin.y |= int(cube.Left.Y) << 8;
-                    aabbInfo.VecMin.z |= int(cube.Left.Z) << 8;
+                    aabbInfo.VecMin.x |= int(cube.Left.x) << 8;
+                    aabbInfo.VecMin.y |= int(cube.Left.y) << 8;
+                    aabbInfo.VecMin.z |= int(cube.Left.z) << 8;
 
-                    aabbInfo.VecMax.x |= int(cube.Right.X) << 8;
-                    aabbInfo.VecMax.y |= int(cube.Right.Y) << 8;
-                    aabbInfo.VecMax.z |= int(cube.Right.Z) << 8;
+                    aabbInfo.VecMax.x |= int(cube.Right.x) << 8;
+                    aabbInfo.VecMax.y |= int(cube.Right.y) << 8;
+                    aabbInfo.VecMax.z |= int(cube.Right.z) << 8;
 
                     if(aabb.isCollideWith(aabbInfo)) {
                         aabbInfo = {
                             .Type = CollisionAABB::EnumType::Voxel,
                             .Voxel = {
-                                .Chunk = Pos::Local16_u(beg.x, beg.y, beg.z),
+                                .Chunk = Pos::bvec4u(beg.x, beg.y, beg.z),
                                 .Index = static_cast<uint32_t>(iter),
-                                .Id = cube.VoxelId
                             }
                         };
 
@@ -118,7 +120,7 @@ public:
 
     }
 
-    LocalEntityId_t pushEntity(Entity &entity) {
+    RegionEntityId_t pushEntity(Entity &entity) {
         for(size_t iter = 0; iter < Entityes.size(); iter++) {
             Entity &obj = Entityes[iter];
 
@@ -135,16 +137,17 @@ public:
             return Entityes.size()-1;
         }
 
-        return LocalEntityId_t(-1);
+        // В регионе не осталось места
+        return RegionEntityId_t(-1);
     }
 
     void load(SB_Region *data) {
-        convertRegionVoxelsToChunks(data->Voxels, (std::vector<VoxelCube>*) Voxels);
+        convertRegionVoxelsToChunks(data->Voxels, Voxels);
     }
 
     void save(SB_Region *data) {
         data->Voxels.clear();
-        convertChunkVoxelsToRegion((const std::vector<VoxelCube>*) Voxels, data->Voxels);
+        convertChunkVoxelsToRegion(Voxels, data->Voxels);
     }
 };
 

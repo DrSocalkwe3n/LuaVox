@@ -34,7 +34,12 @@ struct GlobalTime {
 };
 
 struct VoxelCube {
-    DefVoxelId_t VoxelId;
+    union {
+        struct {
+            DefVoxelId_t VoxelId : 24, Meta : 8;
+        };
+        DefVoxelId_t Data;
+    };
     Pos::bvec256u Left, Size;
 };
 
@@ -77,39 +82,32 @@ public:
     virtual void onBinaryResourceAdd(std::unordered_map<EnumBinResource, std::unordered_map<ResourceId_t, BinaryResource>>) = 0;
     virtual void onBinaryResourceLost(std::unordered_map<EnumBinResource, std::vector<ResourceId_t>>) = 0;
 
-    // Профили использования двоичных ресурсов
-    // В этом месте нужно зарание распарсить
-    virtual void onBinaryProfileAdd(std::unordered_map<EnumBinResource, std::unordered_map<ResourceId_t, std::u8string>>) = 0;
-    virtual void onBinaryProfileLost(std::unordered_map<EnumBinResource, std::vector<ResourceId_t>>) = 0;
-
-    virtual void onContentDefines(std::unordered_map<EnumDefContent, std::unordered_map<>>);
-    EnumDefContent
-
-    virtual void onDefWorldUpdates(const std::vector<DefWorldId_c> &updates) = 0;
-    virtual void onDefVoxelUpdates(const std::vector<DefVoxelId_c> &updates) = 0;
-    virtual void onDefNodeUpdates(const std::vector<DefNodeId_c> &updates) = 0;
-    virtual void onDefPortalUpdates(const std::vector<DefPortalId_c> &updates) = 0;
-    virtual void onDefEntityUpdates(const std::vector<DefEntityId_c> &updates) = 0;
+    virtual void onContentDefinesAdd(std::unordered_map<EnumDefContent, std::unordered_map<ResourceId_t, std::u8string>>) = 0;
+    virtual void onContentDefinesLost(std::unordered_map<EnumDefContent, std::vector<ResourceId_t>>) = 0;
 
     // Сообщаем об изменившихся чанках
-    virtual void onChunksChange(WorldId_c worldId, const std::unordered_set<Pos::GlobalChunk> &changeOrAddList, const std::unordered_set<Pos::GlobalChunk> &remove) = 0;
+    virtual void onChunksChange(WorldId_t worldId, const std::unordered_set<Pos::GlobalChunk> &changeOrAddList, const std::unordered_set<Pos::GlobalChunk> &remove) = 0;
     // Установить позицию для камеры
-    virtual void setCameraPos(WorldId_c worldId, Pos::Object pos, glm::quat quat) = 0;
+    virtual void setCameraPos(WorldId_t worldId, Pos::Object pos, glm::quat quat) = 0;
 
     virtual ~IRenderSession();
 };
 
-
 struct Region {
-    std::unordered_map<Pos::Local16_u, Chunk> Chunks;
+    std::unordered_map<Pos::bvec16u, Chunk> Chunks;
 };
-
 
 struct World {
-    std::vector<EntityId_c> Entitys;
-    std::unordered_map<Pos::GlobalRegion::Key, Region> Regions;
+    
 };
 
+struct DefVoxelInfo {
+
+};
+
+struct DefNodeInfo {
+
+};
 
 struct DefWorldInfo {
 
@@ -123,8 +121,14 @@ struct DefEntityInfo {
 
 };
 
-struct WorldInfo {
+struct DefFuncEntityInfo {
 
+};
+
+struct WorldInfo {
+    std::vector<EntityId_t> Entitys;
+    std::vector<FuncEntityId_t> FuncEntitys;
+    std::unordered_map<Pos::GlobalRegion, Region> Regions;
 };
 
 struct VoxelInfo {
@@ -143,24 +147,33 @@ struct EntityInfo {
 
 };
 
+struct FuncEntityInfo {
+
+};
+
+struct DefItemInfo {
+
+};
+
 /* Интерфейс обработчика сессии с сервером */
 class IServerSession {
 public:
     struct {
-        std::unordered_map<DefWorldId_c, DefWorldInfo>      DefWorlds;
-        std::unordered_map<DefVoxelId_c, VoxelInfo>         DefVoxels;
-        std::unordered_map<DefNodeId_c, NodeInfo>           DefNodes;
-        std::unordered_map<DefPortalId_c, DefPortalInfo>    DefPortals;
-        std::unordered_map<DefEntityId_c, DefEntityInfo>    DefEntityes;
-
-        std::unordered_map<WorldId_c, WorldInfo>            Worlds;
-        std::unordered_map<PortalId_c, PortalInfo>          Portals;
-        std::unordered_map<EntityId_c, EntityInfo>          Entityes;
+        std::unordered_map<DefVoxelId_t, DefVoxelInfo>              DefVoxel;
+        std::unordered_map<DefNodeId_t, DefNodeInfo>                DefNode;
+        std::unordered_map<DefWorldId_t, DefWorldInfo>              DefWorld;
+        std::unordered_map<DefPortalId_t, DefPortalInfo>            DefPortal;
+        std::unordered_map<DefEntityId_t, DefEntityInfo>            DefEntity;
+        std::unordered_map<DefFuncEntityId_t, DefFuncEntityInfo>    DefFuncEntity;
+        std::unordered_map<DefItemId_t, DefItemInfo>                DefItem;
     } Registry;
 
     struct {
-        std::unordered_map<WorldId_c, World> Worlds;
-    } External;
+        std::unordered_map<WorldId_t, WorldInfo>                    Worlds;
+        std::unordered_map<PortalId_t, PortalInfo>                  Portals;
+        std::unordered_map<EntityId_t, EntityInfo>                  Entityes;
+        std::unordered_map<FuncEntityId_t, FuncEntityInfo>          FuncEntityes;
+    } Data;
 
     virtual ~IServerSession();
 

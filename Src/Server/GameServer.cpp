@@ -110,7 +110,7 @@ void GameServer::Expanse_t::_accumulateContentViewCircles(ContentViewCircle circ
 ContentViewGlobal GameServer::Expanse_t::makeContentViewGlobal(const std::vector<ContentViewCircle> &views) {
     ContentViewGlobal cvg;
     Pos::GlobalRegion posRegion, lastPosRegion;
-    std::bitset<4096> *cache = nullptr;
+    std::bitset<64> *cache = nullptr;
 
     for(const ContentViewCircle &circle : views) {
         ContentViewWorld &cvw = cvg[circle.WorldId];
@@ -123,14 +123,14 @@ ContentViewGlobal GameServer::Expanse_t::makeContentViewGlobal(const std::vector
                         continue;
 
                     Pos::GlobalChunk posChunk(x+circle.Pos.x, y+circle.Pos.y, z+circle.Pos.z);
-                    posRegion.fromChunk(posChunk);
+                    posRegion = posChunk >> 2;
 
                     if(!cache || lastPosRegion != posRegion) {
                         lastPosRegion = posRegion;
                         cache = &cvw[posRegion];
                     }
 
-                    cache->_Unchecked_set(posChunk.toLocal());
+                    cache->_Unchecked_set(Pos::bvec4u(posChunk).pack());
                 }
     }
 
@@ -279,17 +279,19 @@ Region* GameServer::forceGetRegion(WorldId_t worldId, Pos::GlobalRegion pos) {
             region->IsLoaded = true;
             region->load(&data);
         } else {
-            
             region->IsLoaded = true;
-            if(pos.Y == 0) {
-                for(int z = 0; z < 16; z++)
-                    for(int x = 0; x < 16; x++) {
-                        region->Voxels[x][0][z].push_back({0, {0, 0, 0}, {255, 255, 255},});
-                    }
+            if(pos.y == 0) {
+                for(int z = 0; z < 4; z++)
+                for(int y = 0; y < 4; y++)
+                for(int x = 0; x < 4; x++) {
+                    Node *nodes = (Node*) &region->Nodes[0][0][0][z][y][x];
+                    for(int index = 0; index < 16*16*16; index++)
+                        nodes[index] = {static_cast<DefNodeId_t>(y == 0 ? 1 : 0), 0};
+                    region->IsChunkChanged_Nodes |= (y == 0 ? 1 : 0) << (z*4*4+y*4+x);
+                }
             }
         }
 
-        std::fill(region->IsChunkChanged_Voxels, region->IsChunkChanged_Voxels+64, ~0);
         return region.get();
     } else {
         return iterRegion->second.get();
@@ -403,27 +405,43 @@ void GameServer::run() {
 }
 
 void GameServer::stepContent() {
-    Content.TextureM.update(CurrentTickDuration);
-    if(Content.TextureM.hasPreparedInformation()) {
-        auto table = Content.TextureM.takePreparedInformation();
+    Content.Texture.update(CurrentTickDuration);
+    if(Content.Texture.hasPreparedInformation()) {
+        auto table = Content.Texture.takePreparedInformation();
         for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
-            cec->Remote->informateDefTexture(table);
+            cec->Remote->informateBinTexture(table);
         }
     }
 
-    Content.ModelM.update(CurrentTickDuration);
-    if(Content.ModelM.hasPreparedInformation()) {
-        auto table = Content.ModelM.takePreparedInformation();
+    Content.Animation.update(CurrentTickDuration);
+    if(Content.Animation.hasPreparedInformation()) {
+        auto table = Content.Animation.takePreparedInformation();
         for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
-            cec->Remote->informateDefTexture(table);
+            cec->Remote->informateBinAnimation(table);
         }
     }
 
-    Content.SoundM.update(CurrentTickDuration);
-    if(Content.SoundM.hasPreparedInformation()) {
-        auto table = Content.SoundM.takePreparedInformation();
+    Content.Model.update(CurrentTickDuration);
+    if(Content.Model.hasPreparedInformation()) {
+        auto table = Content.Model.takePreparedInformation();
         for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
-            cec->Remote->informateDefTexture(table);
+            cec->Remote->informateBinModel(table);
+        }
+    }
+
+    Content.Sound.update(CurrentTickDuration);
+    if(Content.Sound.hasPreparedInformation()) {
+        auto table = Content.Sound.takePreparedInformation();
+        for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
+            cec->Remote->informateBinSound(table);
+        }
+    }
+
+    Content.Font.update(CurrentTickDuration);
+    if(Content.Font.hasPreparedInformation()) {
+        auto table = Content.Font.takePreparedInformation();
+        for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
+            cec->Remote->informateBinFont(table);
         }
     }
 }
@@ -501,6 +519,17 @@ void GameServer::stepPlayers() {
 void GameServer::stepWorlds() {
     for(auto &pair : Expanse.Worlds)
         pair.second->onUpdate(this, CurrentTickDuration);
+
+    // Оповещаем о новых мирах
+    for(const std::unique_ptr<ContentEventController>& cec : Game.CECs) {
+        for(WorldId_t id : cec->NewWorlds) {
+            auto iter = Expanse.Worlds.find(id);
+            assert(iter != Expanse.Worlds.end());
+            cec->onWorldUpdate(id, iter->second.get());
+        }
+
+        cec->NewWorlds.clear();
+    }
 
     for(auto &pWorld : Expanse.Worlds) {
         World &wobj = *pWorld.second;
@@ -675,10 +704,10 @@ void GameServer::stepWorlds() {
                     if(rPos != pRegion.first || pWorld.first != entity.WorldId) {
 
                         Region *toRegion = forceGetRegion(entity.WorldId, rPos);
-                        LocalEntityId_t newId = toRegion->pushEntity(entity);
+                        RegionEntityId_t newId = toRegion->pushEntity(entity);
                         // toRegion->Entityes[newId].WorldId = Если мир изменился
 
-                        if(newId == LocalEntityId_t(-1)) {
+                        if(newId == RegionEntityId_t(-1)) {
                             // В другом регионе нет места
                         } else {
                             entity.IsRemoved = true;
@@ -692,45 +721,42 @@ void GameServer::stepWorlds() {
             }
 
             // Проверить необходимость перерасчёта вертикальной проходимости света 
-            std::unordered_map<Pos::Local16_u, const LightPrism*> ChangedLightPrism;
-            {
-                for(int big = 0; big < 64; big++) {
-                    uint64_t bits = region.IsChunkChanged_Voxels[big] | region.IsChunkChanged_Nodes[big];
+            // std::unordered_map<Pos::bvec4u, const LightPrism*> ChangedLightPrism;
+            // {
+            //     for(int big = 0; big < 64; big++) {
+            //         uint64_t bits = region.IsChunkChanged_Voxels[big] | region.IsChunkChanged_Nodes[big];
 
-                    if(!bits)
-                        continue;
+            //         if(!bits)
+            //             continue;
 
-                    for(int little = 0; little < 64; little++) {
-                        if(((bits >> little) & 1) == 0)
-                            continue;
+            //         for(int little = 0; little < 64; little++) {
+            //             if(((bits >> little) & 1) == 0)
+            //                 continue;
 
                         
-                    }
-                }
-            }
+            //         }
+            //     }
+            // }
 
             // Сбор данных об изменившихся чанках
-            std::unordered_map<Pos::Local16_u, const std::vector<VoxelCube>*> ChangedVoxels;
-            std::unordered_map<Pos::Local16_u, const std::unordered_map<Pos::Local16_u, Node>*> ChangedNodes;
+            std::unordered_map<Pos::bvec4u, const std::vector<VoxelCube>*> ChangedVoxels;
+            std::unordered_map<Pos::bvec4u, const Node*> ChangedNodes;
             {
+                if(!region.IsChunkChanged_Voxels && !region.IsChunkChanged_Nodes)
+                    continue;
 
-                for(int big = 0; big < 64; big++) {
-                    uint64_t bits_voxels = region.IsChunkChanged_Voxels[big];
-                    uint64_t bits_nodes = region.IsChunkChanged_Nodes[big];
+                for(int index = 0; index < 64; index++) {
+                    Pos::bvec4u pos;
+                    pos.unpack(index);
 
-                    if(!bits_voxels && !bits_nodes)
-                        continue;
+                    if(((region.IsChunkChanged_Voxels >> index) & 1) == 1) {
+                        auto iter = region.Voxels.find(pos);
+                        assert(iter != region.Voxels.end());
+                        ChangedVoxels[pos] = &iter->second;
+                    }
 
-                    for(int little = 0; little < 64; little++) {
-                        Pos::Local16_u pos(little & 0xf, ((big & 0x3) << 2) | (little >> 4), big >> 2);
-
-                        if(((bits_voxels >> little) & 1) == 1) {
-                            ChangedVoxels[pos] = &region.Voxels[pos.X][pos.Y][pos.Z];
-                        }
-
-                        if(((bits_nodes >> little) & 1) == 1) {
-                            ChangedNodes[pos] = &region.Nodes[pos.X][pos.Y][pos.Z];
-                        }
+                    if(((region.IsChunkChanged_Nodes >> index) & 1) == 1) {
+                        ChangedNodes[pos] = (Node*) &region.Nodes[0][0][0][pos.x][pos.y][pos.z];
                     }
                 }
             }
@@ -762,11 +788,11 @@ void GameServer::stepWorlds() {
                         continue;
 
                     // Наблюдаемые чанки
-                    const std::bitset<4096> &chunkBitset = chunkBitsetIter->second;
+                    const std::bitset<64> &chunkBitset = chunkBitsetIter->second;
 
                     // Пересылка изменений в регионе
-                    if(!ChangedLightPrism.empty())
-                        cec->onChunksUpdate_LightPrism(pWorld.first, pRegion.first, ChangedLightPrism);
+                    // if(!ChangedLightPrism.empty())
+                    //     cec->onChunksUpdate_LightPrism(pWorld.first, pRegion.first, ChangedLightPrism);
 
                     if(!ChangedVoxels.empty())
                         cec->onChunksUpdate_Voxels(pWorld.first, pRegion.first, ChangedVoxels);
@@ -776,31 +802,31 @@ void GameServer::stepWorlds() {
 
                     // Отправка полной информации о новых наблюдаемых чанках
                     {
-                        const std::bitset<4096> *new_chunkBitset = nullptr;
+                        const std::bitset<64> *new_chunkBitset = nullptr;
                         try { new_chunkBitset = &cec->ContentView_NewView.View.at(pWorld.first).at(pRegion.first); } catch(...) {}
 
                         if(new_chunkBitset) {
-                            std::unordered_map<Pos::Local16_u, const LightPrism*> newLightPrism;
-                            std::unordered_map<Pos::Local16_u, const std::vector<VoxelCube>*> newVoxels;
-                            std::unordered_map<Pos::Local16_u, const std::unordered_map<Pos::Local16_u, Node>*> newNodes;
+                            //std::unordered_map<Pos::bvec4u, const LightPrism*> newLightPrism;
+                            std::unordered_map<Pos::bvec4u, const std::vector<VoxelCube>*> newVoxels;
+                            std::unordered_map<Pos::bvec4u, const Node*> newNodes;
 
-                            newLightPrism.reserve(new_chunkBitset->count());
+                            //newLightPrism.reserve(new_chunkBitset->count());
                             newVoxels.reserve(new_chunkBitset->count());
                             newNodes.reserve(new_chunkBitset->count());
 
                             size_t bitPos = new_chunkBitset->_Find_first();
                             while(bitPos != new_chunkBitset->size()) {
-                                Pos::Local16_u chunkPos;
+                                Pos::bvec4u chunkPos;
                                 chunkPos = bitPos;
 
-                                newLightPrism.insert({chunkPos, &region.Lights[0][0][chunkPos.X][chunkPos.Y][chunkPos.Z]});
-                                newVoxels.insert({chunkPos, &region.Voxels[chunkPos.X][chunkPos.Y][chunkPos.Z]});
-                                newNodes.insert({chunkPos, &region.Nodes[chunkPos.X][chunkPos.Y][chunkPos.Z]});
+                                //newLightPrism.insert({chunkPos, &region.Lights[0][0][chunkPos.X][chunkPos.Y][chunkPos.Z]});
+                                newVoxels.insert({chunkPos, &region.Voxels[chunkPos]});
+                                newNodes.insert({chunkPos, &region.Nodes[0][0][0][chunkPos.x][chunkPos.y][chunkPos.z]});
 
                                 bitPos = new_chunkBitset->_Find_next(bitPos);
                             }
 
-                            cec->onChunksUpdate_LightPrism(pWorld.first, pRegion.first, newLightPrism);
+                            //cec->onChunksUpdate_LightPrism(pWorld.first, pRegion.first, newLightPrism);
                             cec->onChunksUpdate_Voxels(pWorld.first, pRegion.first, newVoxels);
                             cec->onChunksUpdate_Nodes(pWorld.first, pRegion.first, newNodes);
                         }
@@ -894,7 +920,7 @@ void GameServer::stepWorlds() {
                 region.IsChanged = false;
 
                 SB_Region data;
-                convertChunkVoxelsToRegion((const std::vector<VoxelCube>*) region.Voxels, data.Voxels);
+                convertChunkVoxelsToRegion(region.Voxels, data.Voxels);
                 SaveBackend.World->save(worldStringId, pRegion.first, &data);
             }
 
@@ -904,9 +930,8 @@ void GameServer::stepWorlds() {
             }
 
             // Сброс информации об изменившихся данных
-
-            std::fill(region.IsChunkChanged_Voxels, region.IsChunkChanged_Voxels+64, 0);
-            std::fill(region.IsChunkChanged_Nodes, region.IsChunkChanged_Nodes+64, 0);
+            region.IsChunkChanged_Voxels = 0;
+            region.IsChunkChanged_Nodes = 0;
         }
 
         for(Pos::GlobalRegion regionPos : regionsToRemove) {
@@ -931,7 +956,7 @@ void GameServer::stepWorlds() {
 
                 // TODO: Передефайнить идентификаторы нод
 
-                convertRegionVoxelsToChunks(data.Voxels, (std::vector<VoxelCube>*) robj.Voxels);
+                convertRegionVoxelsToChunks(data.Voxels, robj.Voxels);
             }
         }
 
@@ -980,6 +1005,22 @@ void GameServer::stepViewContent() {
             ContentViewGlobal_DiffInfo lostView = cec.ContentViewState.calcDiffWith(newCbg);
             if(!newView.empty() || !lostView.empty()) {
                 lost_CVG.insert({&cec, {newView}});
+
+                std::vector<WorldId_t> newWorlds, lostWorlds;
+
+                // Поиск потерянных миров
+                for(const auto& [key, _] : cec.ContentViewState) {
+                    if(!newCbg.contains(key))
+                        lostWorlds.push_back(key);
+                }
+
+                // Поиск новых увиденных миров
+                for(const auto& [key, _] : newCbg) {
+                    if(!cec.ContentViewState.contains(key))
+                        newWorlds.push_back(key);
+                }
+
+                cec.NewWorlds = std::move(newWorlds);
                 cec.ContentViewState = std::move(newCbg);
                 cec.ContentView_NewView = std::move(newView);
                 cec.ContentView_LostView = std::move(lostView);
@@ -1011,15 +1052,20 @@ void GameServer::stepSendPlayersPackets() {
 
     full.uniq();
 
-    if(!full.NewTextures.empty())
-        Content.TextureM.needResourceResponse(full.NewTextures);
+    if(!full.BinTexture.empty())
+        Content.Texture.needResourceResponse(full.BinTexture);
 
-    if(!full.NewModels.empty())
-        Content.ModelM.needResourceResponse(full.NewModels);
+    if(!full.BinAnimation.empty())
+        Content.Animation.needResourceResponse(full.BinAnimation);
 
-    if(!full.NewSounds.empty())
-        Content.SoundM.needResourceResponse(full.NewSounds);
+    if(!full.BinModel.empty())
+        Content.Model.needResourceResponse(full.BinModel);
 
+    if(!full.BinSound.empty())
+        Content.Sound.needResourceResponse(full.BinSound);
+
+    if(!full.BinFont.empty())
+        Content.Font.needResourceResponse(full.BinFont);
 }
 
 void GameServer::stepLoadRegions() {

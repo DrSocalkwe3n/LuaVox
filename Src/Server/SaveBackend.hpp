@@ -13,7 +13,7 @@ namespace LV::Server {
 struct SB_Region {
     std::vector<VoxelCube_Region> Voxels;
     std::unordered_map<DefVoxelId_t, std::string> VoxelsMap;
-    std::unordered_map<Pos::Local16_u, Node> Nodes;
+    std::unordered_map<Pos::bvec16u, Node> Nodes;
     std::unordered_map<DefNodeId_t, std::string> NodeMap;
     std::vector<Entity> Entityes;
     std::unordered_map<DefEntityId_t, std::string> EntityMap;

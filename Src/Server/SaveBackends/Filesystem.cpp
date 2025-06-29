@@ -30,7 +30,7 @@ public:
     }
 
     fs::path getPath(std::string worldId, Pos::GlobalRegion regionPos) {
-        return Dir / worldId / std::to_string(regionPos.X) / std::to_string(regionPos.Y) / std::to_string(regionPos.Z);
+        return Dir / worldId / std::to_string(regionPos.x) / std::to_string(regionPos.y) / std::to_string(regionPos.z);
     }
 
     virtual bool isAsync() { return false; };
@@ -48,13 +48,13 @@ public:
             for(js::value &jvVoxel : jaVoxels) {
                 js::object &joVoxel = jvVoxel.as_object();
                 VoxelCube_Region cube;
-                cube.VoxelId = joVoxel.at("Material").as_uint64();
-                cube.Left.X = joVoxel.at("LeftX").as_uint64();
-                cube.Left.Y = joVoxel.at("LeftY").as_uint64();
-                cube.Left.Z = joVoxel.at("LeftZ").as_uint64();
-                cube.Right.X = joVoxel.at("RightX").as_uint64();
-                cube.Right.Y = joVoxel.at("RightY").as_uint64();
-                cube.Right.Z = joVoxel.at("RightZ").as_uint64();
+                cube.Data = joVoxel.at("Data").as_uint64();
+                cube.Left.x = joVoxel.at("LeftX").as_uint64();
+                cube.Left.y = joVoxel.at("LeftY").as_uint64();
+                cube.Left.z = joVoxel.at("LeftZ").as_uint64();
+                cube.Right.x = joVoxel.at("RightX").as_uint64();
+                cube.Right.y = joVoxel.at("RightY").as_uint64();
+                cube.Right.z = joVoxel.at("RightZ").as_uint64();
                 data->Voxels.push_back(cube);
             }
         }
@@ -74,13 +74,13 @@ public:
             js::array jaVoxels;
             for(const VoxelCube_Region &cube : data->Voxels) {
                 js::object joVoxel;
-                joVoxel["Material"] = cube.VoxelId;
-                joVoxel["LeftX"] = cube.Left.X;
-                joVoxel["LeftY"] = cube.Left.Y;
-                joVoxel["LeftZ"] = cube.Left.Z;
-                joVoxel["RightX"] = cube.Right.X;
-                joVoxel["RightY"] = cube.Right.Y;
-                joVoxel["RightZ"] = cube.Right.Z;
+                joVoxel["Data"] = cube.Data;
+                joVoxel["LeftX"] = cube.Left.x;
+                joVoxel["LeftY"] = cube.Left.y;
+                joVoxel["LeftZ"] = cube.Left.z;
+                joVoxel["RightX"] = cube.Right.x;
+                joVoxel["RightY"] = cube.Right.y;
+                joVoxel["RightZ"] = cube.Right.z;
                 jaVoxels.push_back(std::move(joVoxel));
             }
 

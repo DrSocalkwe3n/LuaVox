@@ -232,16 +232,16 @@ void VulkanRenderSession::init(Vulkan *instance) {
         {
             std::vector<VoxelCube> cubes;
 
-            cubes.emplace_back(0, Pos::Local256_u{0, 0, 0}, Pos::Local256_u{0, 0, 0});
-            cubes.emplace_back(1, Pos::Local256_u{255, 0, 0}, Pos::Local256_u{0, 0, 0});
-            cubes.emplace_back(1, Pos::Local256_u{0, 255, 0}, Pos::Local256_u{0, 0, 0});
-            cubes.emplace_back(1, Pos::Local256_u{0, 0, 255}, Pos::Local256_u{0, 0, 0});
-            cubes.emplace_back(2, Pos::Local256_u{255, 255, 0}, Pos::Local256_u{0, 0, 0});
-            cubes.emplace_back(2, Pos::Local256_u{0, 255, 255}, Pos::Local256_u{0, 0, 0});
-            cubes.emplace_back(2, Pos::Local256_u{255, 0, 255}, Pos::Local256_u{0, 0, 0});
-            cubes.emplace_back(3, Pos::Local256_u{255, 255, 255}, Pos::Local256_u{0, 0, 0});
+            cubes.push_back({0, 0, Pos::bvec256u{0, 0, 0}, Pos::bvec256u{0, 0, 0}});
+            cubes.push_back({1, 0, Pos::bvec256u{255, 0, 0}, Pos::bvec256u{0, 0, 0}});
+            cubes.push_back({1, 0, Pos::bvec256u{0, 255, 0}, Pos::bvec256u{0, 0, 0}});
+            cubes.push_back({1, 0, Pos::bvec256u{0, 0, 255}, Pos::bvec256u{0, 0, 0}});
+            cubes.push_back({2, 0, Pos::bvec256u{255, 255, 0}, Pos::bvec256u{0, 0, 0}});
+            cubes.push_back({2, 0, Pos::bvec256u{0, 255, 255}, Pos::bvec256u{0, 0, 0}});
+            cubes.push_back({2, 0, Pos::bvec256u{255, 0, 255}, Pos::bvec256u{0, 0, 0}});
+            cubes.push_back({3, 0, Pos::bvec256u{255, 255, 255}, Pos::bvec256u{0, 0, 0}});
 
-            cubes.emplace_back(4, Pos::Local256_u{64, 64, 64}, Pos::Local256_u{127, 127, 127});
+            cubes.push_back({4, 0, Pos::bvec256u{64, 64, 64}, Pos::bvec256u{127, 127, 127}});
 
             std::vector<VoxelVertexPoint> vertexs = generateMeshForVoxelChunks(cubes);
 
@@ -595,50 +595,30 @@ void VulkanRenderSession::init(Vulkan *instance) {
     }
 }
 
-void VulkanRenderSession::onDefTexture(TextureId_c id, std::vector<std::byte> &&info) {
+void VulkanRenderSession::onBinaryResourceAdd(std::unordered_map<EnumBinResource, std::unordered_map<ResourceId_t, BinaryResource>>) {
 
 }
 
-void VulkanRenderSession::onDefTextureLost(const std::vector<TextureId_c> &&lost) {
+void VulkanRenderSession::onBinaryResourceLost(std::unordered_map<EnumBinResource, std::vector<ResourceId_t>>) {
 
 }
 
-void VulkanRenderSession::onDefModel(ModelId_c id, std::vector<std::byte> &&info) {
+void VulkanRenderSession::onContentDefinesAdd(std::unordered_map<EnumDefContent, std::unordered_map<ResourceId_t, std::u8string>>) {
 
 }
 
-void VulkanRenderSession::onDefModelLost(const std::vector<ModelId_c> &&lost) {
+void VulkanRenderSession::onContentDefinesLost(std::unordered_map<EnumDefContent, std::vector<ResourceId_t>>) {
 
 }
 
-void VulkanRenderSession::onDefWorldUpdates(const std::vector<DefWorldId_c> &updates) {
-
-}
-
-void VulkanRenderSession::onDefVoxelUpdates(const std::vector<DefVoxelId_c> &updates) {
-
-}
-
-void VulkanRenderSession::onDefNodeUpdates(const std::vector<DefNodeId_c> &updates) {
-
-}
-
-void VulkanRenderSession::onDefPortalUpdates(const std::vector<DefPortalId_c> &updates) {
-
-}
-
-void VulkanRenderSession::onDefEntityUpdates(const std::vector<DefEntityId_c> &updates) {
-
-}
-
-void VulkanRenderSession::onChunksChange(WorldId_c worldId, const std::unordered_set<Pos::GlobalChunk> &changeOrAddList, const std::unordered_set<Pos::GlobalChunk> &remove) {
-    auto &table = External.ChunkVoxelMesh[worldId];
+void VulkanRenderSession::onChunksChange(WorldId_t worldId, const std::unordered_set<Pos::GlobalChunk> &changeOrAddList, const std::unordered_set<Pos::GlobalChunk> &remove) {
+auto &table = External.ChunkVoxelMesh[worldId];
 
     for(Pos::GlobalChunk pos : changeOrAddList) {
-        Pos::GlobalRegion rPos(pos.X >> 4, pos.Y >> 4, pos.Z >> 4);
-        Pos::Local16_u cPos(pos.X & 0xf, pos.Y & 0xf, pos.Z & 0xf);
+        Pos::GlobalRegion rPos = pos >> 4;
+        Pos::bvec16u cPos = pos & 0xf;
 
-        const auto &voxels = ServerSession->External.Worlds[worldId].Regions[rPos].Chunks[cPos].Voxels;
+        const auto &voxels = ServerSession->Data.Worlds[worldId].Regions[rPos].Chunks[cPos].Voxels;
 
         if(voxels.empty()) {
             auto iter = table.find(pos);
@@ -669,7 +649,7 @@ void VulkanRenderSession::onChunksChange(WorldId_c worldId, const std::unordered
         External.ChunkVoxelMesh.erase( External.ChunkVoxelMesh.find(worldId));
 }
 
-void VulkanRenderSession::setCameraPos(WorldId_c worldId, Pos::Object pos, glm::quat quat) {
+void VulkanRenderSession::setCameraPos(WorldId_t worldId, Pos::Object pos, glm::quat quat) {
     WorldId = worldId;
     Pos = pos;
     Quat = quat;
@@ -738,7 +718,7 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
             glm::mat4 orig = PCO.Model;
 
             for(auto &pair : iterWorld->second) {
-                glm::vec3 cpos(pair.first.X, pair.first.Y, pair.first.Z);
+                glm::vec3 cpos(pair.first.x, pair.first.y, pair.first.z);
                 PCO.Model = glm::translate(orig, cpos*16.f);
                 vkBuffer = *pair.second;
 
@@ -759,78 +739,78 @@ std::vector<VoxelVertexPoint> VulkanRenderSession::generateMeshForVoxelChunks(co
     
     for(const VoxelCube &cube : cubes) {
         out.emplace_back(
-            cube.Left.X,
-            cube.Left.Y,
-            cube.Left.Z,
+            cube.Left.x,
+            cube.Left.y,
+            cube.Left.z,
             0,
             0, 0,
-            cube.Size.X,
-            cube.Size.Z,
+            cube.Size.x,
+            cube.Size.z,
             cube.VoxelId,
             0, 0,
             0
         );
 
         out.emplace_back(
-            cube.Left.X,
-            cube.Left.Y,
-            cube.Left.Z,
+            cube.Left.x,
+            cube.Left.y,
+            cube.Left.z,
             1,
             0, 0,
-            cube.Size.X,
-            cube.Size.Y,
+            cube.Size.x,
+            cube.Size.y,
             cube.VoxelId,
             0, 0,
             0
         );
 
         out.emplace_back(
-            cube.Left.X,
-            cube.Left.Y,
-            cube.Left.Z,
+            cube.Left.x,
+            cube.Left.y,
+            cube.Left.z,
             2,
             0, 0,
-            cube.Size.Z,
-            cube.Size.Y,
+            cube.Size.z,
+            cube.Size.y,
             cube.VoxelId,
             0, 0,
             0
         );
 
         out.emplace_back(
-            cube.Left.X,
-            cube.Left.Y+cube.Size.Y+1,
-            cube.Left.Z,
+            cube.Left.x,
+            cube.Left.y+cube.Size.y+1,
+            cube.Left.z,
             3,
             0, 0,
-            cube.Size.X,
-            cube.Size.Z,
+            cube.Size.x,
+            cube.Size.z,
             cube.VoxelId,
             0, 0,
             0
         );
 
         out.emplace_back(
-            cube.Left.X,
-            cube.Left.Y,
-            cube.Left.Z+cube.Size.Z+1,
+            cube.Left.x,
+            cube.Left.y,
+            cube.Left.z+cube.Size.z+1,
             4,
             0, 0,
-            cube.Size.X,
-            cube.Size.Y,
+            cube.Size.x,
+            cube.Size.y,
             cube.VoxelId,
             0, 0,
             0
         );
 
         out.emplace_back(
-            cube.Left.X+cube.Size.X+1,
-            cube.Left.Y,
-            cube.Left.Z,
+            cube.Left.x+cube.Size.x+1,
+            cube.Left.y,
+            cube.Left.z,
             5,
             0, 0,
-            cube.Size.Z,
-            cube.Size.Y,
+            cube.Size.z,
+            cube.Size.y,
             cube.VoxelId,
             0, 0,
             0

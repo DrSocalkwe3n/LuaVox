@@ -78,7 +78,7 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
     IServerSession *ServerSession = nullptr;
 
     // Положение камеры
-    WorldId_c WorldId;
+    WorldId_t WorldId;
     Pos::Object Pos;
     glm::quat Quat;
 
@@ -130,10 +130,10 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
         NodeStaticTransparentPipeline = VK_NULL_HANDLE;
 
 
-    std::map<TextureId_c, uint16_t> ServerToAtlas;
+    std::map<BinTextureId_t, uint16_t> ServerToAtlas;
 
     struct {
-        std::unordered_map<WorldId_c, std::unordered_map<Pos::GlobalChunk, std::unique_ptr<Buffer>>> ChunkVoxelMesh;
+        std::unordered_map<WorldId_t, std::unordered_map<Pos::GlobalChunk, std::unique_ptr<Buffer>>> ChunkVoxelMesh;
     } External;
 
     virtual void free(Vulkan *instance) override;
@@ -151,19 +151,12 @@ public:
         assert(serverSession);
     }
 
-    virtual void onDefTexture(TextureId_c id, std::vector<std::byte> &&info) override;
-    virtual void onDefTextureLost(const std::vector<TextureId_c> &&lost) override;
-    virtual void onDefModel(ModelId_c id, std::vector<std::byte> &&info) override;
-    virtual void onDefModelLost(const std::vector<ModelId_c> &&lost) override;
-
-    virtual void onDefWorldUpdates(const std::vector<DefWorldId_c> &updates) override;
-    virtual void onDefVoxelUpdates(const std::vector<DefVoxelId_c> &updates) override;
-    virtual void onDefNodeUpdates(const std::vector<DefNodeId_c> &updates) override;
-    virtual void onDefPortalUpdates(const std::vector<DefPortalId_c> &updates) override;
-    virtual void onDefEntityUpdates(const std::vector<DefEntityId_c> &updates) override;
-
-    virtual void onChunksChange(WorldId_c worldId, const std::unordered_set<Pos::GlobalChunk> &changeOrAddList, const std::unordered_set<Pos::GlobalChunk> &remove) override;
-    virtual void setCameraPos(WorldId_c worldId, Pos::Object pos, glm::quat quat) override;
+    virtual void onBinaryResourceAdd(std::unordered_map<EnumBinResource, std::unordered_map<ResourceId_t, BinaryResource>>) override;
+    virtual void onBinaryResourceLost(std::unordered_map<EnumBinResource, std::vector<ResourceId_t>>) override;
+    virtual void onContentDefinesAdd(std::unordered_map<EnumDefContent, std::unordered_map<ResourceId_t, std::u8string>>) override;
+    virtual void onContentDefinesLost(std::unordered_map<EnumDefContent, std::vector<ResourceId_t>>) override;
+    virtual void onChunksChange(WorldId_t worldId, const std::unordered_set<Pos::GlobalChunk> &changeOrAddList, const std::unordered_set<Pos::GlobalChunk> &remove) override;
+    virtual void setCameraPos(WorldId_t worldId, Pos::Object pos, glm::quat quat) override;
 
     glm::mat4 calcViewMatrix(glm::quat quat, glm::vec3 camOffset = glm::vec3(0)) {
         return glm::translate(glm::mat4(quat), camOffset);

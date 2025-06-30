@@ -2,6 +2,7 @@
 
 #include "Abstract.hpp"
 #include "Common/Abstract.hpp"
+#include "Common/Async.hpp"
 #include <boost/json.hpp>
 #include <boost/json/object.hpp>
 #include <memory>
@@ -10,31 +11,51 @@
 
 namespace LV::Server {
 
+/*
+    Обменная единица мира
+*/
 struct SB_Region {
-    std::vector<VoxelCube_Region> Voxels;
-    std::unordered_map<DefVoxelId_t, std::string> VoxelsMap;
-    std::unordered_map<Pos::bvec16u, Node> Nodes;
-    std::unordered_map<DefNodeId_t, std::string> NodeMap;
+    // Список вокселей всех чанков
+    std::unordered_map<Pos::bvec4u, VoxelCube> Voxels;
+    // Привязка вокселей к ключу профиля
+    std::vector<std::pair<DefVoxelId_t, std::string>> VoxelsMap;
+    // Ноды всех чанков
+    std::array<std::array<Node, 16*16*16>, 4*4*4> Nodes;
+    // Привязка нод к ключу профиля
+    std::vector<std::pair<DefNodeId_t, std::string>> NodeMap;
+    // Сущности
     std::vector<Entity> Entityes;
-    std::unordered_map<DefEntityId_t, std::string> EntityMap;
+    // Привязка идентификатора к ключу профиля
+    std::vector<std::pair<DefEntityId_t, std::string>> EntityMap;
 };
 
 class IWorldSaveBackend {
 public:
     virtual ~IWorldSaveBackend();
 
-    // Может ли использоваться параллельно
-    virtual bool isAsync() { return false; };
-    // Существует ли регион
-    virtual bool isExist(std::string worldId, Pos::GlobalRegion regionPos) = 0;
-    // Загрузить регион
-    virtual void load(std::string worldId, Pos::GlobalRegion regionPos, SB_Region *data) = 0;
-    // Сохранить регион
-    virtual void save(std::string worldId, Pos::GlobalRegion regionPos, const SB_Region *data) = 0;
-    // Удалить регион
-    virtual void remove(std::string worldId, Pos::GlobalRegion regionPos) = 0;
-    // Удалить мир
-    virtual void remove(std::string worldId) = 0;
+    struct TickSyncInfo_In {
+        // Для загрузки и более не используемые (регионы автоматически подгружаются по списку загруженных)
+        std::vector<Pos::GlobalRegion> Load, Unload;
+        // Регионы для сохранения
+        std::vector<std::pair<Pos::GlobalRegion, std::unique_ptr<SB_Region>>> ToSave;
+    };
+
+    struct TickSyncInfo_Out {
+        std::vector<Pos::GlobalRegion> NotExisten;
+        std::vector<std::pair<Pos::GlobalRegion, std::unique_ptr<SB_Region>>> LoadedRegions;
+    };
+
+    /*
+        Обмен данными раз в такт
+        Хотим списки на загрузку регионов
+        Отдаём уже загруженные регионы и список отсутствующих в базе регионов
+    */
+    virtual TickSyncInfo_Out tickSync(TickSyncInfo_In &&data) = 0;
+
+    /*
+        Устанавливает радиус вокруг прогруженного региона для предзагрузки регионов
+    */
+    virtual void changePreloadDistance(uint8_t value) = 0;
 };
 
 struct SB_Player {
@@ -45,8 +66,6 @@ class IPlayerSaveBackend {
 public:
     virtual ~IPlayerSaveBackend();
 
-    // Может ли использоваться параллельно
-    virtual bool isAsync() { return false; };
     // Существует ли игрок
     virtual bool isExist(PlayerId_t playerId) = 0;
     // Загрузить игрока
@@ -66,34 +85,30 @@ class IAuthSaveBackend {
 public:
     virtual ~IAuthSaveBackend();
 
-    // Может ли использоваться параллельно
-    virtual bool isAsync() { return false; };
     // Существует ли игрок
-    virtual bool isExist(std::string playerId) = 0;
+    virtual coro<bool> isExist(std::string username) = 0;
     // Переименовать игрока
-    virtual void rename(std::string fromPlayerId, std::string toPlayerId) = 0;
-    // Загрузить игрока
-    virtual void load(std::string playerId, SB_Auth *data) = 0;
+    virtual coro<> rename(std::string prevUsername, std::string newUsername) = 0;
+    // Загрузить игрока (если есть, вернёт true)
+    virtual coro<bool> load(std::string username, SB_Auth &data) = 0;
     // Сохранить игрока
-    virtual void save(std::string playerId, const SB_Auth *data) = 0;
+    virtual coro<> save(std::string username, const SB_Auth &data) = 0;
     // Удалить игрока
-    virtual void remove(std::string playerId) = 0;
+    virtual coro<> remove(std::string username) = 0;
 };
 
 class IModStorageSaveBackend {
 public:
     virtual ~IModStorageSaveBackend();
 
-    // Может ли использоваться параллельно
-    virtual bool isAsync() { return false; };
-    // Загрузить запись
-    virtual void load(std::string domain, std::string key, std::string *data) = 0;
-    // Сохранить запись
-    virtual void save(std::string domain, std::string key, const std::string *data) = 0;
-    // Удалить запись
-    virtual void remove(std::string domain, std::string key) = 0;
-    // Удалить домен
-    virtual void remove(std::string domain) = 0;
+    // // Загрузить запись
+    // virtual void load(std::string domain, std::string key, std::string *data) = 0;
+    // // Сохранить запись
+    // virtual void save(std::string domain, std::string key, const std::string *data) = 0;
+    // // Удалить запись
+    // virtual void remove(std::string domain, std::string key) = 0;
+    // // Удалить домен
+    // virtual void remove(std::string domain) = 0;
 };
 
 class ISaveBackendProvider {

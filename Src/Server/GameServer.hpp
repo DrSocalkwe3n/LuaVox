@@ -42,7 +42,6 @@ class GameServer : public AsyncObject {
     struct {
         Lockable<std::set<std::string>> ConnectedPlayersSet;
         Lockable<std::list<std::unique_ptr<RemoteClient>>> NewConnectedPlayers;
-
     } External;
 
     struct ContentObj {

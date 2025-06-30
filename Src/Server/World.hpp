@@ -30,7 +30,6 @@ public:
     // В одно обновление региона - проверка одного наблюдателя
     uint16_t CEC_NextChunkAndEntityesViewCheck = 0;
 
-    bool IsLoaded = false;
     float LastSaveTime = 0;
 
     void getCollideBoxes(Pos::GlobalRegion rPos, AABB aabb, std::vector<CollisionAABB> &boxes) {
@@ -39,12 +38,6 @@ public:
 
         // Бокс региона
         AABB regionAABB(raPos, raPos+Pos::Object(Pos::Object_t::BS*64));
-
-        // Если регион не загружен, то он весь непроходим
-        if(!IsLoaded) {
-            boxes.emplace_back(regionAABB);
-            return;
-        }
 
         // Собираем коробки сущностей
         for(size_t iter = 0; iter < Entityes.size(); iter++) {
@@ -92,13 +85,13 @@ public:
                         aabbInfo.VecMin.set(axis, aabbInfo.VecMin[axis] & ~0xff00);
                     aabbInfo.VecMax = aabbInfo.VecMin;
 
-                    aabbInfo.VecMin.x |= int(cube.Left.x) << 8;
-                    aabbInfo.VecMin.y |= int(cube.Left.y) << 8;
-                    aabbInfo.VecMin.z |= int(cube.Left.z) << 8;
+                    aabbInfo.VecMin.x |= int(cube.Left.x) << 6;
+                    aabbInfo.VecMin.y |= int(cube.Left.y) << 6;
+                    aabbInfo.VecMin.z |= int(cube.Left.z) << 6;
 
-                    aabbInfo.VecMax.x |= int(cube.Right.x) << 8;
-                    aabbInfo.VecMax.y |= int(cube.Right.y) << 8;
-                    aabbInfo.VecMax.z |= int(cube.Right.z) << 8;
+                    aabbInfo.VecMax.x |= int(cube.Right.x) << 6;
+                    aabbInfo.VecMax.y |= int(cube.Right.y) << 6;
+                    aabbInfo.VecMax.z |= int(cube.Right.z) << 6;
 
                     if(aabb.isCollideWith(aabbInfo)) {
                         aabbInfo = {
@@ -139,22 +132,12 @@ public:
         // В регионе не осталось места
         return RegionEntityId_t(-1);
     }
-
-    void load(SB_Region *data) {
-        convertRegionVoxelsToChunks(data->Voxels, Voxels);
-    }
-
-    void save(SB_Region *data) {
-        data->Voxels.clear();
-        convertChunkVoxelsToRegion(Voxels, data->Voxels);
-    }
 };
 
 class World {
     DefWorldId_t DefId;
 
 public:
-    std::vector<Pos::GlobalRegion> NeedToLoad;
     std::unordered_map<Pos::GlobalRegion, std::unique_ptr<Region>> Regions;
 
 public:
@@ -166,9 +149,24 @@ public:
     */
     void onUpdate(GameServer *server, float dtime);
 
-    // Игрок начал отслеживать регионы
-    void onCEC_RegionsEnter(ContentEventController *cec, const std::vector<Pos::GlobalRegion> &enter);
-    void onCEC_RegionsLost(ContentEventController *cec, const std::vector<Pos::GlobalRegion> &lost);
+    /*
+        Подписывает игрока на отслеживаемые им регионы
+        Возвращает список не загруженных регионов, на которые соответственно игрока не получилось подписать
+    */
+    std::vector<Pos::GlobalRegion> onCEC_RegionsEnter(ContentEventController *cec, const std::vector<Pos::GlobalRegion> &enter);
+    void onCEC_RegionsLost(ContentEventController *cec, const std::vector<Pos::GlobalRegion> &lost); 
+    struct SaveUnloadInfo {
+        std::vector<Pos::GlobalRegion> ToUnload;
+        std::vector<std::pair<Pos::GlobalRegion, SB_Region_In>> ToSave;
+    };
+    SaveUnloadInfo onStepDatabaseSync();
+
+    struct RegionIn {
+        std::unordered_map<Pos::bvec4u, std::vector<VoxelCube>> Voxels;
+        std::array<std::array<Node, 16*16*16>, 4*4*4> Nodes;
+        std::vector<Entity> Entityes;
+    };
+    void pushRegions(std::vector<std::pair<Pos::GlobalRegion, RegionIn>>);
 
     DefWorldId_t getDefId() const { return DefId; }
 };

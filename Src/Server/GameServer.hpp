@@ -181,14 +181,15 @@ private:
         Подпись на загруженные регионы (отправить полностью на клиент)
     */
 
-    void stepDatabase();
+    IWorldSaveBackend::TickSyncInfo_Out stepDatabaseSync();
 
     /*
         Синхронизация с генератором карт (отправка запросов на генерацию и получение шума для обработки модами)
+        Обработка модами сырых регионов полученных с бд
         Синхронизация с потоками модов
     */
 
-    void stepLuaAsync();
+    void stepGeneratorAndLuaAsync(IWorldSaveBackend::TickSyncInfo_Out db);
 
     /*
         Получить пакеты с игроков

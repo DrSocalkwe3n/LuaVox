@@ -14,7 +14,7 @@ namespace LV::Server {
 /*
     Обменная единица мира
 */
-struct SB_Region {
+struct SB_Region_In {
     // Список вокселей всех чанков
     std::unordered_map<Pos::bvec4u, VoxelCube> Voxels;
     // Привязка вокселей к ключу профиля
@@ -29,20 +29,28 @@ struct SB_Region {
     std::vector<std::pair<DefEntityId_t, std::string>> EntityMap;
 };
 
+struct DB_Region_Out {
+    std::vector<VoxelCube_Region> Voxels;
+    std::array<std::array<Node, 16*16*16>, 4*4*4> Nodes;
+    std::vector<Entity> Entityes;
+
+    std::vector<std::string> VoxelIdToKey, NodeIdToKey, EntityToKey;
+};
+
 class IWorldSaveBackend {
 public:
     virtual ~IWorldSaveBackend();
 
     struct TickSyncInfo_In {
         // Для загрузки и более не используемые (регионы автоматически подгружаются по списку загруженных)
-        std::vector<Pos::GlobalRegion> Load, Unload;
+        std::unordered_map<WorldId_t, std::vector<Pos::GlobalRegion>> Load, Unload;
         // Регионы для сохранения
-        std::vector<std::pair<Pos::GlobalRegion, std::unique_ptr<SB_Region>>> ToSave;
+        std::unordered_map<WorldId_t, std::vector<std::pair<Pos::GlobalRegion, SB_Region_In>>> ToSave;
     };
 
     struct TickSyncInfo_Out {
-        std::vector<Pos::GlobalRegion> NotExisten;
-        std::vector<std::pair<Pos::GlobalRegion, std::unique_ptr<SB_Region>>> LoadedRegions;
+        std::unordered_map<WorldId_t, std::vector<Pos::GlobalRegion>> NotExisten;
+        std::unordered_map<WorldId_t, std::vector<std::pair<Pos::GlobalRegion, DB_Region_Out>>> LoadedRegions;
     };
 
     /*

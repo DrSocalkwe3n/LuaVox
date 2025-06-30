@@ -5,9 +5,11 @@
 #include "Server/Abstract.hpp"
 #include "Server/ContentEventController.hpp"
 #include <algorithm>
+#include <array>
 #include <boost/json/parse.hpp>
 #include <chrono>
 #include <glm/geometric.hpp>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <thread>
@@ -15,6 +17,7 @@
 #include "SaveBackends/Filesystem.hpp"
 #include "Server/SaveBackend.hpp"
 #include "Server/World.hpp"
+#include "glm/gtc/noise.hpp"
 
 namespace LV::Server {
 
@@ -441,20 +444,189 @@ void GameServer::stepModInitializations() {
 
 }
 
-void GameServer::stepDatabase() {
-
+IWorldSaveBackend::TickSyncInfo_Out GameServer::stepDatabaseSync() {
+    IWorldSaveBackend::TickSyncInfo_In toDB;
+    
     for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
         assert(cec);
         // Пересчитать зоны наблюдения
         if(cec->CrossedBorder) {
             cec->CrossedBorder = false;
             
+            // Пересчёт зон наблюдения
+            ServerObjectPos oPos = cec->getPos();
+
+            ContentViewCircle cvc;
+            cvc.WorldId = oPos.WorldId;
+            cvc.Pos = Pos::Object_t::asChunkPos(oPos.ObjectPos);
+            cvc.Range = 2*2;
+
+            std::vector<ContentViewCircle> newCVCs = Expanse.accumulateContentViewCircles(cvc);
+            ContentViewInfo newCbg = Expanse_t::makeContentViewInfo(newCVCs);
+
+            ContentViewInfo_Diff diff = newCbg.diffWith(cec->ContentViewState);
+            if(!diff.WorldsNew.empty()) {
+                // Сообщить о новых мирах
+                for(const WorldId_t id : diff.WorldsNew) {
+                    auto iter = Expanse.Worlds.find(id);
+                    assert(iter != Expanse.Worlds.end());
+
+                    cec->onWorldUpdate(id, iter->second.get());
+                }
+            }
+
+            cec->ContentViewState = newCbg;
+            // Вычистка не наблюдаемых регионов
+            cec->removeUnobservable(diff);
+
+            // Подписываем игрока на наблюдение за регионами
+            for(const auto& [worldId, regions] : diff.RegionsNew) {
+                auto iterWorld = Expanse.Worlds.find(worldId);
+                assert(iterWorld != Expanse.Worlds.end());
+
+                std::vector<Pos::GlobalRegion> notLoaded = iterWorld->second->onCEC_RegionsEnter(cec.get(), regions);
+                if(!notLoaded.empty()) {
+                    // Добавляем к списку на загрузку
+                    std::vector<Pos::GlobalRegion> &tl = toDB.Load[worldId];
+                    tl.insert(tl.end(), notLoaded.begin(), notLoaded.end());
+                }
+            }
+
+            // Отписываем то, что игрок больше не наблюдает
+            for(const auto& [worldId, regions] : diff.RegionsLost) {
+                auto iterWorld = Expanse.Worlds.find(worldId);
+                assert(iterWorld != Expanse.Worlds.end());
+
+                iterWorld->second->onCEC_RegionsLost(cec.get(), regions);
+            }
         }
     }
+
+    for(auto& [worldId, regions] : toDB.Load) {
+        std::sort(regions.begin(), regions.end());
+        auto eraseIter = std::unique(regions.begin(), regions.end());
+        regions.erase(eraseIter, regions.end());
+    }
+
+    // Обзавелись списком на прогрузку регионов
+    // Теперь узнаем что нужно сохранить и что из регионов было выгружено
+    for(auto& [worldId, world] : Expanse.Worlds) {
+        World::SaveUnloadInfo info = world->onStepDatabaseSync();
+        
+        if(!info.ToSave.empty()) {
+            auto &obj = toDB.ToSave[worldId];
+            obj.insert(obj.end(), std::make_move_iterator(info.ToSave.begin()), std::make_move_iterator(info.ToSave.end()));
+        }
+
+        if(!info.ToUnload.empty()) {
+            auto &obj = toDB.Unload[worldId];
+            obj.insert(obj.end(), info.ToUnload.begin(), info.ToUnload.end());
+        }
+    }
+
+    // Синхронизируемся с базой
+    return SaveBackend.World->tickSync(std::move(toDB));
 }
 
-void GameServer::stepLuaAsync() {
+void GameServer::stepGeneratorAndLuaAsync(IWorldSaveBackend::TickSyncInfo_Out db) {
+    // 1. Получили сырые регионы и те регионы, что не существуют
+    // 2.1 Те регионы, что не существуют отправляются на расчёт шума
+    // 2.2 Далее в луа для обработки шума
+    // 3.1 Нужно прогнать идентификаторы через обработчики lua
+    // 3.2 Полученный регион связать с существующими профилями сервера
+    // 4. Полученные регионы раздать мирам и попробовать по новой подписать к ним игроков, если они всё ещё должны наблюдать эти регионы
 
+
+    // Синхронизация с генератором шума
+    std::unordered_map<WorldId_t, std::vector<std::pair<Pos::GlobalRegion, std::array<float, 64*64*64>>>> calculatedNoise;
+    for(auto& [worldId, regions] : db.NotExisten) {
+        auto &r = calculatedNoise[worldId];
+        for(Pos::GlobalRegion pos : regions) {
+            r.emplace_back();
+            std::get<0>(r.back()) = pos;
+            auto &region = std::get<1>(r.back());
+            Pos::GlobalNode posNode = pos;
+            posNode <<= 6;
+
+            float *ptr = &region[0];
+
+            for(int z = 0; z < 64; z++)
+            for(int y = 0; y < 64; y++)
+            for(int x = 0; x < 64; x++, ptr++) {
+                *ptr = glm::perlin(glm::dvec3(posNode.x+x, posNode.y+y, posNode.z+z));
+            }
+        }
+    }
+
+    std::unordered_map<WorldId_t, std::vector<std::pair<Pos::GlobalRegion, World::RegionIn>>> toLoadRegions;
+
+    // Синхронизация с контроллером асинхронных обработчиков луа
+    // 2.2 и 3.1
+    // Обработка шума
+    for(auto& [WorldId_t, regions] : calculatedNoise) {
+        auto &list = toLoadRegions[WorldId_t];
+        
+        for(auto& [pos, noise] : regions) {
+            auto &obj = list.emplace_back(pos, World::RegionIn()).second;
+            
+            float *ptr = &noise[0];
+
+            for(int z = 0; z < 64; z++)
+            for(int y = 0; y < 64; y++)
+            for(int x = 0; x < 64; x++, ptr++) {
+                DefVoxelId_t id = *ptr > 0.5 ? 1 : 0;
+                Pos::bvec64u nodePos(x, y, z);
+                auto &node = obj.Nodes[Pos::bvec4u(nodePos >> 4).pack()][Pos::bvec16u(nodePos & 0xf).pack()];
+                node.NodeId = id;
+                node.Meta = 0;
+            }
+
+        }
+    }
+
+    // Обработка идентификаторов на стороне луа
+
+    // Трансформация полученных ключей в профили сервера
+    for(auto& [WorldId_t, regions] : db.LoadedRegions) {
+        auto &list = toLoadRegions[WorldId_t];
+
+        for(auto& [pos, region] : regions) {
+            auto &obj = list.emplace_back(pos, World::RegionIn()).second;
+            convertRegionVoxelsToChunks(region.Voxels, obj.Voxels);
+            obj.Nodes = std::move(region.Nodes);
+            obj.Entityes = std::move(region.Entityes);
+        }
+    }
+
+    // Раздадим полученные регионы мирам и попробуем подписать на них наблюдателей
+    for(auto& [worldId, regions] : toLoadRegions) {
+        auto iterWorld = Expanse.Worlds.find(worldId);
+        assert(iterWorld != Expanse.Worlds.end());
+
+        std::vector<Pos::GlobalRegion> newRegions;
+        newRegions.reserve(regions.size());
+        for(auto& [pos, _] : regions)
+            newRegions.push_back(pos);
+        std::sort(newRegions.begin(), newRegions.end());
+
+        std::unordered_map<ContentEventController*, std::vector<Pos::GlobalRegion>> toSubscribe;
+        
+        for(auto& cec : Game.CECs) {
+            auto iterViewWorld = cec->ContentViewState.Regions.find(worldId);
+            if(iterViewWorld == cec->ContentViewState.Regions.end())
+                continue;
+
+            for(auto& pos : iterViewWorld->second) {
+                if(std::binary_search(newRegions.begin(), newRegions.end(), pos))
+                    toSubscribe[cec.get()].push_back(pos);
+            }
+        }
+
+        iterWorld->second->pushRegions(std::move(regions));
+        for(auto& [cec, poses] : toSubscribe) {
+            iterWorld->second->onCEC_RegionsEnter(cec, poses);
+        }
+    }
 }
 
 void GameServer::stepPlayerProceed() {
@@ -466,34 +638,11 @@ void GameServer::stepWorldPhysic() {
 }
 
 void GameServer::stepGlobalStep() {
-
+    for(auto &pair : Expanse.Worlds)
+        pair.second->onUpdate(this, CurrentTickDuration);
 }
 
 void GameServer::stepSyncContent() {
-    // Сбор запросов на ресурсы и профили
-    ResourceRequest full;
-    for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
-        full.insert(cec->Remote->pushPreparedPackets());
-    }
-
-    full.uniq();
-
-    if(!full.BinTexture.empty())
-        Content.Texture.needResourceResponse(full.BinTexture);
-
-    if(!full.BinAnimation.empty())
-        Content.Animation.needResourceResponse(full.BinAnimation);
-
-    if(!full.BinModel.empty())
-        Content.Model.needResourceResponse(full.BinModel);
-
-    if(!full.BinSound.empty())
-        Content.Sound.needResourceResponse(full.BinSound);
-
-    if(!full.BinFont.empty())
-        Content.Font.needResourceResponse(full.BinFont);
-
-
     // Оповещения о ресурсах и профилях
     Content.Texture.update(CurrentTickDuration);
     if(Content.Texture.hasPreparedInformation()) {
@@ -534,45 +683,32 @@ void GameServer::stepSyncContent() {
             cec->Remote->informateBinFont(table);
         }
     }
-}
 
-void GameServer::stepSyncWithAsync() {
+    // Сбор запросов на ресурсы и профили + отправка пакетов игрокам
+    ResourceRequest full;
     for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
-        assert(cec);
-
-        for(const auto &[worldId, regions] : cec->ContentViewState.Regions) {
-            for(const auto &[regionPos, chunkBitfield] : regions) {
-                forceGetRegion(worldId, regionPos);
-            }
-        }
-
-        // Подпись на регионы
-        for(const auto &[worldId, newRegions] : cec->ContentView_NewView.Regions) {
-            auto worldIter = Expanse.Worlds.find(worldId);
-            assert(worldIter != Expanse.Worlds.end() && "TODO: Логика не определена");
-            assert(worldIter->second);
-            World &world = *worldIter->second;
-
-            // Подписать наблюдателей на регионы миров
-            world.onCEC_RegionsEnter(cec.get(), newRegions);
-        }
+        full.insert(cec->Remote->pushPreparedPackets());
     }
+
+    full.uniq();
+
+    if(!full.BinTexture.empty())
+        Content.Texture.needResourceResponse(full.BinTexture);
+
+    if(!full.BinAnimation.empty())
+        Content.Animation.needResourceResponse(full.BinAnimation);
+
+    if(!full.BinModel.empty())
+        Content.Model.needResourceResponse(full.BinModel);
+
+    if(!full.BinSound.empty())
+        Content.Sound.needResourceResponse(full.BinSound);
+
+    if(!full.BinFont.empty())
+        Content.Font.needResourceResponse(full.BinFont);
 }
 
 void GameServer::stepWorlds() {
-    for(auto &pair : Expanse.Worlds)
-        pair.second->onUpdate(this, CurrentTickDuration);
-
-    // Оповещаем о новых мирах
-    for(const std::unique_ptr<ContentEventController>& cec : Game.CECs) {
-        for(WorldId_t id : cec->NewWorlds) {
-            auto iter = Expanse.Worlds.find(id);
-            assert(iter != Expanse.Worlds.end());
-            cec->onWorldUpdate(id, iter->second.get());
-        }
-
-        cec->NewWorlds.clear();
-    }
 
     for(auto &pWorld : Expanse.Worlds) {
         World &wobj = *pWorld.second;
@@ -1010,65 +1146,5 @@ void GameServer::stepWorlds() {
 
 }
 
-void GameServer::stepViewContent() {
-    if(Game.CECs.empty())
-        return;
-
-    for(auto &cec : Game.CECs) {
-        assert(cec);
-
-        if(!cec->CrossedBorder)
-            continue;
-
-        cec->CrossedBorder = false;
-
-        // Пересчёт зон наблюдения
-        ServerObjectPos oPos = cec->getPos();
-
-        ContentViewCircle cvc;
-        cvc.WorldId = oPos.WorldId;
-        cvc.Pos = Pos::Object_t::asChunkPos(oPos.ObjectPos);
-        cvc.Range = 2*2;
-
-        std::vector<ContentViewCircle> newCVCs = Expanse.accumulateContentViewCircles(cvc);
-        ContentViewInfo newCbg = Expanse_t::makeContentViewInfo(newCVCs);
-
-        ContentViewInfo_Diff diff = newCbg.diffWith(cec->ContentViewState);
-        if(!diff.WorldsNew.empty()) {
-            // Сообщить о новых мирах
-            for(const WorldId_t id : diff.WorldsNew) {
-                auto iter = Expanse.Worlds.find(id);
-                assert(iter != Expanse.Worlds.end());
-
-                cec->onWorldUpdate(id, iter->second.get());
-            }
-        }
-
-        cec->ContentViewState = newCbg;
-        cec->removeUnobservable(diff);
-    }
-}
-
-void GameServer::stepLoadRegions() {
-    for(auto &iterWorld : Expanse.Worlds) {
-        for(Pos::GlobalRegion pos : iterWorld.second->NeedToLoad) {
-            forceGetRegion(iterWorld.first, pos);
-        }
-
-        iterWorld.second->NeedToLoad.clear();
-    }
-}
-
-void GameServer::stepGlobal() {
-
-}
-
-void GameServer::stepSave() {
-
-}
-
-void GameServer::save() {
-
-}
 
 }

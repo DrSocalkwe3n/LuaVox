@@ -112,12 +112,13 @@ void RemoteClient::prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk
     // Исключим зависимости предыдущей версии чанка
     auto iterWorld = ResUses.RefChunk.find(worldId);
     assert(iterWorld != ResUses.RefChunk.end());
+    Pos::bvec4u lChunk = (chunkPos & 0xf);
+    // Исключим зависимости предыдущей версии чанка
     {
-        auto iterChunk = iterWorld->second.find(chunkPos);
-        if(iterChunk != iterWorld->second.end()) {
-            // Раньше этот чанк был, значит не новый для клиента
+        auto iterRegion = iterWorld->second.find(chunkPos);
+        if(iterRegion != iterWorld->second.end()) {
             // Уменьшим счётчик зависимостей
-            for(const DefVoxelId_t& id : iterChunk->second.Voxel) {
+            for(const DefVoxelId_t& id : iterRegion->second[lChunk.pack()].Voxel) {
                 auto iter = ResUses.DefVoxel.find(id);
                 assert(iter != ResUses.DefVoxel.end()); // Воксель должен быть в зависимостях
                 if(--iter->second == 0) {
@@ -129,7 +130,7 @@ void RemoteClient::prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk
         }
     }
 
-    iterWorld->second[chunkPos].Voxel = v;
+    iterWorld->second[chunkPos][lChunk.pack()].Voxel = v;
 
     if(!newTypes.empty()) {
         // Добавляем новые типы в запрос
@@ -184,14 +185,13 @@ void RemoteClient::prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk 
 
     auto iterWorld = ResUses.RefChunk.find(worldId);
     assert(iterWorld != ResUses.RefChunk.end());
+    Pos::bvec4u lChunk = (chunkPos & 0xf);
     // Исключим зависимости предыдущей версии чанка
     {
-        
-        auto iterChunk = iterWorld->second.find(chunkPos);
-        if(iterChunk != iterWorld->second.end()) {
-            // Раньше этот чанк был, значит не новый для клиента
+        auto iterRegion = iterWorld->second.find(chunkPos);
+        if(iterRegion != iterWorld->second.end()) {
             // Уменьшим счётчик зависимостей
-            for(const DefNodeId_t& id : iterChunk->second.Node) {
+            for(const DefNodeId_t& id : iterRegion->second[lChunk.pack()].Node) {
                 auto iter = ResUses.DefNode.find(id);
                 assert(iter != ResUses.DefNode.end()); // Нода должна быть в зависимостях
                 if(--iter->second == 0) {
@@ -203,7 +203,7 @@ void RemoteClient::prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk 
         }
     }
 
-    iterWorld->second[chunkPos].Node = n;
+    iterWorld->second[chunkPos][lChunk.pack()].Node = n;
 
     if(!newTypes.empty()) {
         // Добавляем новые типы в запрос
@@ -223,9 +223,7 @@ void RemoteClient::prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk 
     LOG.debug() << "Увидели " << chunkPos.x << ' ' << chunkPos.y << ' ' << chunkPos.z;
 }
 
-void RemoteClient::prepareChunkRemove(WorldId_t worldId, Pos::GlobalChunk chunkPos)
-{
-    LOG.debug() << "Потеряли " << chunkPos.x << ' ' << chunkPos.y << ' ' << chunkPos.z;
+void RemoteClient::prepareRegionRemove(WorldId_t worldId, Pos::GlobalRegion regionPos) {
     std::vector<DefVoxelId_t>
         lostTypesV /* Потерянные типы вокселей */;
     std::vector<DefNodeId_t>
@@ -235,28 +233,29 @@ void RemoteClient::prepareChunkRemove(WorldId_t worldId, Pos::GlobalChunk chunkP
     {
         auto iterWorld = ResUses.RefChunk.find(worldId);
         assert(iterWorld != ResUses.RefChunk.end());
-        
-        auto iterChunk = iterWorld->second.find(chunkPos);
-        assert(iterChunk != iterWorld->second.end());
-        
-        // Уменьшим счётчики зависимостей
-        for(const DefVoxelId_t& id : iterChunk->second.Voxel) {
-            auto iter = ResUses.DefVoxel.find(id);
-            assert(iter != ResUses.DefVoxel.end()); // Воксель должен быть в зависимостях
-            if(--iter->second == 0) {
-                // Ноды больше нет в зависимостях
-                lostTypesV.push_back(id);
-                ResUses.DefVoxel.erase(iter);
-            }
-        }
 
-        for(const DefNodeId_t& id : iterChunk->second.Node) {
-            auto iter = ResUses.DefNode.find(id);
-            assert(iter != ResUses.DefNode.end()); // Нода должна быть в зависимостях
-            if(--iter->second == 0) {
-                // Ноды больше нет в зависимостях
-                lostTypesN.push_back(id);
-                ResUses.DefNode.erase(iter);
+        auto iterRegion = iterWorld->second.find(regionPos);
+        assert(iterRegion != iterWorld->second.end());
+        
+        for(const auto &iterChunk : iterRegion->second) {
+            for(const DefVoxelId_t& id : iterChunk.Voxel) {
+                auto iter = ResUses.DefVoxel.find(id);
+                assert(iter != ResUses.DefVoxel.end()); // Воксель должен быть в зависимостях
+                if(--iter->second == 0) {
+                    // Вокселя больше нет в зависимостях
+                    lostTypesV.push_back(id);
+                    ResUses.DefVoxel.erase(iter);
+                }
+            }
+
+            for(const DefNodeId_t& id : iterChunk.Node) {
+                auto iter = ResUses.DefNode.find(id);
+                assert(iter != ResUses.DefNode.end()); // Нода должна быть в зависимостях
+                if(--iter->second == 0) {
+                    // Ноды больше нет в зависимостях
+                    lostTypesN.push_back(id);
+                    ResUses.DefNode.erase(iter);
+                }
             }
         }
     }
@@ -281,8 +280,8 @@ void RemoteClient::prepareChunkRemove(WorldId_t worldId, Pos::GlobalChunk chunkP
 
     checkPacketBorder(16);
     NextPacket << (uint8_t) ToClient::L1::Content
-        << (uint8_t) ToClient::L2Content::RemoveChunk
-        << worldId << chunkPos.pack();
+        << (uint8_t) ToClient::L2Content::RemoveRegion
+        << worldId << regionPos.pack();
 }
 
 void RemoteClient::prepareEntityUpdate(ServerEntityId_t entityId, const Entity *entity)
@@ -364,87 +363,6 @@ void RemoteClient::prepareEntityRemove(ServerEntityId_t entityId)
     NextPacket << (uint8_t) ToClient::L1::Content
         << (uint8_t) ToClient::L2Content::RemoveEntity
         << cId;
-}
-
-void RemoteClient::prepareFuncEntityUpdate(ServerFuncEntityId_t entityId, const FuncEntity *entity)
-{
-    // Сопоставим с идентификатором клиента
-    ClientFuncEntityId_t ceId = ResRemap.FuncEntityes.toClient(entityId);
-
-    // Профиль новый
-    {
-        DefFuncEntityId_t profile = entity->getDefId();
-        auto iter = ResUses.DefFuncEntity.find(profile);
-        if(iter == ResUses.DefFuncEntity.end()) {
-            // Клиенту неизвестен профиль
-            NextRequest.FuncEntity.push_back(profile);
-            ResUses.DefFuncEntity[profile] = 1;
-        } else
-            iter->second++;
-    }
-
-    // Добавление модификационных зависимостей
-    // incrementBinary({}, {}, {}, {}, {});
-
-    // Старые данные
-    {
-        auto iterEntity = ResUses.RefFuncEntity.find(entityId);
-        if(iterEntity != ResUses.RefFuncEntity.end()) {
-            // Убавляем зависимость к старому профилю
-            auto iterProfile = ResUses.DefFuncEntity.find(iterEntity->second.Profile);
-            assert(iterProfile != ResUses.DefFuncEntity.end()); // Старый профиль должен быть
-            if(--iterProfile->second == 0) {
-                // Старый профиль больше не нужен
-                auto iterProfileRef = ResUses.RefDefFuncEntity.find(iterEntity->second.Profile);
-                decrementBinary(std::move(iterProfileRef->second.Texture), std::move(iterProfileRef->second.Animation), {}, 
-                    std::move(iterProfileRef->second.Model), {});
-                ResUses.DefFuncEntity.erase(iterProfile);
-            }
-
-            // Убавляем зависимость к модификационным данным
-            // iterEntity->second.
-            // decrementBinary({}, {}, {}, {}, {});
-        }
-    }
-
-    // TODO: отправить клиенту
-}
-
-void RemoteClient::prepareFuncEntitySwap(ServerFuncEntityId_t prev, ServerFuncEntityId_t next)
-{
-    ResRemap.FuncEntityes.rebindClientKey(prev, next);
-}
-
-void RemoteClient::prepareFuncEntityRemove(ServerFuncEntityId_t entityId)
-{
-    ClientFuncEntityId_t cId = ResRemap.FuncEntityes.erase(entityId);
-
-    // Убавляем старые данные
-    {
-        auto iterEntity = ResUses.RefFuncEntity.find(entityId);
-        assert(iterEntity != ResUses.RefFuncEntity.end()); // Зависимости должны быть
-
-        // Убавляем модификационные заависимости
-        //decrementBinary(std::vector<BinTextureId_t> &&textures, std::vector<BinAnimationId_t> &&animation, std::vector<BinSoundId_t> &&sounds, std::vector<BinModelId_t> &&models, std::vector<BinFontId_t> &&fonts)
-        
-        // Убавляем зависимость к профилю
-        auto iterProfile = ResUses.DefFuncEntity.find(iterEntity->second.Profile);
-        assert(iterProfile != ResUses.DefFuncEntity.end()); // Профиль должен быть
-        if(--iterProfile->second == 0) {
-            // Профиль больше не используется
-            auto iterProfileRef = ResUses.RefDefFuncEntity.find(iterEntity->second.Profile);
-
-            decrementBinary(std::move(iterProfileRef->second.Texture), std::move(iterProfileRef->second.Animation), {}, std::move(iterProfileRef->second.Model), {});
-        
-            ResUses.RefDefFuncEntity.erase(iterProfileRef);
-            ResUses.DefFuncEntity.erase(iterProfile);
-        }
-    }
-
-    // checkPacketBorder(16);
-    // NextPacket << (uint8_t) ToClient::L1::Content
-    //     << (uint8_t) ToClient::L2Content::RemoveEntity
-    //     << cId;
 }
 
 void RemoteClient::prepareWorldUpdate(WorldId_t worldId, World* world)
@@ -683,19 +601,6 @@ void RemoteClient::informateDefEntity(const std::unordered_map<DefEntityId_t, vo
 
         NextPacket << (uint8_t) ToClient::L1::Definition
             << (uint8_t) ToClient::L2Definition::Entity
-            << id;
-    }
-}
-
-void RemoteClient::informateDefFuncEntity(const std::unordered_map<DefFuncEntityId_t, void*> &entityes)
-{
-    for(auto pair : entityes) {
-        DefFuncEntityId_t id = pair.first;
-        if(!ResUses.DefFuncEntity.contains(id))
-            continue;
-
-        NextPacket << (uint8_t) ToClient::L1::Definition
-            << (uint8_t) ToClient::L2Definition::FuncEntity
             << id;
     }
 }

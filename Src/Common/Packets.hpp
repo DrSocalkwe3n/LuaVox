@@ -178,7 +178,7 @@ enum struct L2Content : uint8_t {
     ChunkVoxels,
     ChunkNodes,
     ChunkLightPrism,
-    RemoveChunk
+    RemoveRegion
 };
 
 }

@@ -4,6 +4,7 @@
 #include "Common/Packets.hpp"
 #include "Server/Abstract.hpp"
 #include "Server/ContentEventController.hpp"
+#include <algorithm>
 #include <boost/json/parse.hpp>
 #include <chrono>
 #include <glm/geometric.hpp>
@@ -11,7 +12,6 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
-#include <unordered_set>
 #include "SaveBackends/Filesystem.hpp"
 #include "Server/SaveBackend.hpp"
 #include "Server/World.hpp"
@@ -31,7 +31,7 @@ static thread_local std::vector<ContentViewCircle> TL_Circles;
 std::vector<ContentViewCircle> GameServer::Expanse_t::accumulateContentViewCircles(ContentViewCircle circle, int depth)
 {
     TL_Circles.clear();
-    TL_Circles.reserve(256);
+    TL_Circles.reserve(64);
     TL_Circles.push_back(circle);
     _accumulateContentViewCircles(circle, depth);
     return TL_Circles;
@@ -42,7 +42,7 @@ void GameServer::Expanse_t::_accumulateContentViewCircles(ContentViewCircle circ
         auto &br = pair.second;
         if(br.LeftWorld == circle.WorldId) {
             glm::i32vec3 vec = circle.Pos-br.LeftPos;
-            ContentViewCircle circleNew = {br.RightWorld, br.RightPos, circle.Range-(vec.x*vec.x+vec.y*vec.y+vec.z*vec.z+16)};
+            ContentViewCircle circleNew = {br.RightWorld, br.RightPos, static_cast<int16_t>(circle.Range-int16_t(vec.x*vec.x+vec.y*vec.y+vec.z*vec.z))};
 
             if(circleNew.Range >= 0) {
                 bool isIn = false;
@@ -69,7 +69,7 @@ void GameServer::Expanse_t::_accumulateContentViewCircles(ContentViewCircle circ
 
         if(br.IsTwoWay && br.RightWorld == circle.WorldId) {
             glm::i32vec3 vec = circle.Pos-br.RightPos;
-            ContentViewCircle circleNew = {br.LeftWorld, br.LeftPos, circle.Range-(vec.x*vec.x+vec.y*vec.y+vec.z*vec.z+16)};
+            ContentViewCircle circleNew = {br.LeftWorld, br.LeftPos, static_cast<int16_t>(circle.Range-int16_t(vec.x*vec.x+vec.y*vec.y+vec.z*vec.z))};
 
             if(circleNew.Range >= 0) {
                 bool isIn = false;
@@ -107,34 +107,29 @@ void GameServer::Expanse_t::_accumulateContentViewCircles(ContentViewCircle circ
 // }
 
 
-ContentViewGlobal GameServer::Expanse_t::makeContentViewGlobal(const std::vector<ContentViewCircle> &views) {
-    ContentViewGlobal cvg;
-    Pos::GlobalRegion posRegion, lastPosRegion;
-    std::bitset<64> *cache = nullptr;
+ContentViewInfo GameServer::Expanse_t::makeContentViewInfo(const std::vector<ContentViewCircle> &views) {
+    ContentViewInfo cvi;
 
     for(const ContentViewCircle &circle : views) {
-        ContentViewWorld &cvw = cvg[circle.WorldId];
-        uint16_t chunkRange = std::sqrt(circle.Range);
-        for(int32_t z = -chunkRange; z <= chunkRange; z++)
-            for(int32_t y = -chunkRange; y <= chunkRange; y++)
-                for(int32_t x = -chunkRange; x <= chunkRange; x++)
-                {
-                    if(z*z+y*y+x*x > circle.Range)
-                        continue;
+        std::vector<Pos::GlobalRegion> &cvw = cvi.Regions[circle.WorldId];
+        int32_t regionRange = std::sqrt(circle.Range);
 
-                    Pos::GlobalChunk posChunk(x+circle.Pos.x, y+circle.Pos.y, z+circle.Pos.z);
-                    posRegion = posChunk >> 2;
+        cvw.reserve(cvw.size()+std::pow(regionRange*2+1, 3));
 
-                    if(!cache || lastPosRegion != posRegion) {
-                        lastPosRegion = posRegion;
-                        cache = &cvw[posRegion];
-                    }
-
-                    cache->_Unchecked_set(Pos::bvec4u(posChunk).pack());
-                }
+        for(int32_t z = -regionRange; z <= regionRange; z++)
+            for(int32_t y = -regionRange; y <= regionRange; y++)
+                for(int32_t x = -regionRange; x <= regionRange; x++)
+                    cvw.push_back(Pos::GlobalRegion(x, y, z));
     }
 
-    return cvg;
+    for(auto& [worldId, regions] : cvi.Regions) {
+        std::sort(regions.begin(), regions.end());
+        auto eraseIter = std::unique(regions.begin(), regions.end());
+        regions.erase(eraseIter, regions.end());
+        regions.shrink_to_fit();
+    }
+
+    return cvi;
 }
 
 coro<> GameServer::pushSocketConnect(tcp::socket socket) {
@@ -404,7 +399,102 @@ void GameServer::run() {
     LOG.info() << "Сервер завершил работу";
 }
 
-void GameServer::stepContent() {
+void GameServer::stepConnections() {
+    // Подключить новых игроков
+    if(!External.NewConnectedPlayers.no_lock_readable().empty()) {
+        auto lock = External.NewConnectedPlayers.lock_write();
+
+        for(std::unique_ptr<RemoteClient>& client : *lock) {
+            co_spawn(client->run());
+            Game.CECs.push_back(std::make_unique<ContentEventController>(std::move(client)));
+        }
+
+        lock->clear();
+    }
+
+    // Отключение игроков
+    for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
+        // Убрать отключившихся
+        if(!cec->Remote->isConnected()) {
+            // Отписываем наблюдателя от миров
+            for(auto wPair : cec->ContentViewState.Regions) {
+                auto wIter = Expanse.Worlds.find(wPair.first);
+                assert(wIter != Expanse.Worlds.end());
+
+                wIter->second->onCEC_RegionsLost(cec.get(), wPair.second);
+            }
+
+            std::string username = cec->Remote->Username;
+            External.ConnectedPlayersSet.lock_write()->erase(username);
+            
+            cec.reset();
+        }
+    }
+
+    // Вычистить невалидные ссылки на игроков
+    Game.CECs.erase(std::remove_if(Game.CECs.begin(), Game.CECs.end(),
+            [](const std::unique_ptr<ContentEventController>& ptr) { return !ptr; }), 
+        Game.CECs.end());
+}
+
+void GameServer::stepModInitializations() {
+
+}
+
+void GameServer::stepDatabase() {
+
+    for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
+        assert(cec);
+        // Пересчитать зоны наблюдения
+        if(cec->CrossedBorder) {
+            cec->CrossedBorder = false;
+            
+        }
+    }
+}
+
+void GameServer::stepLuaAsync() {
+
+}
+
+void GameServer::stepPlayerProceed() {
+
+}
+
+void GameServer::stepWorldPhysic() {
+
+}
+
+void GameServer::stepGlobalStep() {
+
+}
+
+void GameServer::stepSyncContent() {
+    // Сбор запросов на ресурсы и профили
+    ResourceRequest full;
+    for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
+        full.insert(cec->Remote->pushPreparedPackets());
+    }
+
+    full.uniq();
+
+    if(!full.BinTexture.empty())
+        Content.Texture.needResourceResponse(full.BinTexture);
+
+    if(!full.BinAnimation.empty())
+        Content.Animation.needResourceResponse(full.BinAnimation);
+
+    if(!full.BinModel.empty())
+        Content.Model.needResourceResponse(full.BinModel);
+
+    if(!full.BinSound.empty())
+        Content.Sound.needResourceResponse(full.BinSound);
+
+    if(!full.BinFont.empty())
+        Content.Font.needResourceResponse(full.BinFont);
+
+
+    // Оповещения о ресурсах и профилях
     Content.Texture.update(CurrentTickDuration);
     if(Content.Texture.hasPreparedInformation()) {
         auto table = Content.Texture.takePreparedInformation();
@@ -450,7 +540,7 @@ void GameServer::stepSyncWithAsync() {
     for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
         assert(cec);
 
-        for(const auto &[worldId, regions] : cec->ContentViewState) {
+        for(const auto &[worldId, regions] : cec->ContentViewState.Regions) {
             for(const auto &[regionPos, chunkBitfield] : regions) {
                 forceGetRegion(worldId, regionPos);
             }
@@ -467,53 +557,6 @@ void GameServer::stepSyncWithAsync() {
             world.onCEC_RegionsEnter(cec.get(), newRegions);
         }
     }
-}
-
-void GameServer::stepPlayers() {
-    // Подключить новых игроков
-    if(!External.NewConnectedPlayers.no_lock_readable().empty()) {
-        auto lock = External.NewConnectedPlayers.lock_write();
-
-        for(std::unique_ptr<RemoteClient> &client : *lock) {
-            co_spawn(client->run());
-            Game.CECs.push_back(std::make_unique<ContentEventController>(std::move(client)));
-        }
-
-        lock->clear();
-    }
-
-    // Обработка игроков
-    for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
-        // Убрать отключившихся
-        if(!cec->Remote->isConnected()) {
-            // Отписываем наблюдателя от миров
-            for(auto wPair : cec->ContentViewState) {
-                auto wIter = Expanse.Worlds.find(wPair.first);
-                if(wIter == Expanse.Worlds.end())
-                    continue;
-
-                std::vector<Pos::GlobalRegion> regions;
-                regions.reserve(wPair.second.size());
-                for(const auto &[rPos, _] : wPair.second) {
-                    regions.push_back(rPos);
-                }
-
-                wIter->second->onCEC_RegionsLost(cec.get(), regions);
-            }
-
-            std::string username = cec->Remote->Username;
-            External.ConnectedPlayersSet.lock_write()->erase(username);
-            
-            cec.reset();
-        }
-
-        
-    }
-
-    // Вычистить невалидные ссылки на игроков
-    Game.CECs.erase(std::remove_if(Game.CECs.begin(), Game.CECs.end(),
-            [](const std::unique_ptr<ContentEventController>& ptr) { return !ptr; }), 
-        Game.CECs.end());
 }
 
 void GameServer::stepWorlds() {
@@ -802,10 +845,6 @@ void GameServer::stepWorlds() {
 
                     // Отправка полной информации о новых наблюдаемых чанках
                     {
-                        const std::bitset<64> *new_chunkBitset = nullptr;
-                        try { new_chunkBitset = &cec->ContentView_NewView.View.at(pWorld.first).at(pRegion.first); } catch(...) {}
-
-                        if(new_chunkBitset) {
                             //std::unordered_map<Pos::bvec4u, const LightPrism*> newLightPrism;
                             std::unordered_map<Pos::bvec4u, const std::vector<VoxelCube>*> newVoxels;
                             std::unordered_map<Pos::bvec4u, const Node*> newNodes;
@@ -829,7 +868,7 @@ void GameServer::stepWorlds() {
                             //cec->onChunksUpdate_LightPrism(pWorld.first, pRegion.first, newLightPrism);
                             cec->onChunksUpdate_Voxels(pWorld.first, pRegion.first, newVoxels);
                             cec->onChunksUpdate_Nodes(pWorld.first, pRegion.first, newNodes);
-                        }
+                        
                     }
 
                     // То, что уже отслеживает наблюдатель
@@ -903,8 +942,12 @@ void GameServer::stepWorlds() {
                     //     // Отправить полную информацию о новых наблюдаемых сущностях наблюдателю
                     // }
 
-                    if(!region.Entityes.empty())
-                        cec->onEntityUpdates(pWorld.first, pRegion.first, region.Entityes);
+                    if(!region.Entityes.empty()) {
+                        std::unordered_map<RegionEntityId_t, Entity*> entities;
+                        for(size_t iter = 0; iter < region.Entityes.size(); iter++)
+                            entities[iter] = &region.Entityes[iter];
+                        cec->onEntityUpdates(pWorld.first, pRegion.first, entities);
+                    }
                 }
             }
 
@@ -971,101 +1014,39 @@ void GameServer::stepViewContent() {
     if(Game.CECs.empty())
         return;
 
-    // Затереть изменения предыдущего такта
-    for(auto &cecPtr : Game.CECs) {
-        assert(cecPtr);
-        cecPtr->ContentView_NewView = {};
-        cecPtr->ContentView_LostView = {};
-    }
+    for(auto &cec : Game.CECs) {
+        assert(cec);
 
-    // Если наблюдаемая территория изменяется
-    // -> Новая увиденная + Старая потерянная
-    std::unordered_map<ContentEventController*, ContentViewGlobal_DiffInfo> lost_CVG;
+        if(!cec->CrossedBorder)
+            continue;
 
-    // Обновления поля зрения
-    for(int iter = 0; iter < 1; iter++) {
-        if(++Game.CEC_NextRebuildViewCircles >= Game.CECs.size())
-            Game.CEC_NextRebuildViewCircles = 0;
+        cec->CrossedBorder = false;
 
-        ContentEventController &cec = *Game.CECs[Game.CEC_NextRebuildViewCircles];
-        ServerObjectPos oPos = cec.getPos();
+        // Пересчёт зон наблюдения
+        ServerObjectPos oPos = cec->getPos();
 
         ContentViewCircle cvc;
         cvc.WorldId = oPos.WorldId;
         cvc.Pos = Pos::Object_t::asChunkPos(oPos.ObjectPos);
-        cvc.Range = cec.getViewRangeActive();
-        cvc.Range *= cvc.Range;
+        cvc.Range = 2*2;
 
         std::vector<ContentViewCircle> newCVCs = Expanse.accumulateContentViewCircles(cvc);
-        //size_t hash = (std::hash<std::vector<ContentViewCircle>>{})(newCVCs);
-        if(/*hash != cec.CVCHash*/ true) {
-            //cec.CVCHash = hash;
-            ContentViewGlobal newCbg = Expanse_t::makeContentViewGlobal(newCVCs);
-            ContentViewGlobal_DiffInfo newView = newCbg.calcDiffWith(cec.ContentViewState);
-            ContentViewGlobal_DiffInfo lostView = cec.ContentViewState.calcDiffWith(newCbg);
-            if(!newView.empty() || !lostView.empty()) {
-                lost_CVG.insert({&cec, {newView}});
+        ContentViewInfo newCbg = Expanse_t::makeContentViewInfo(newCVCs);
 
-                std::vector<WorldId_t> newWorlds, lostWorlds;
+        ContentViewInfo_Diff diff = newCbg.diffWith(cec->ContentViewState);
+        if(!diff.WorldsNew.empty()) {
+            // Сообщить о новых мирах
+            for(const WorldId_t id : diff.WorldsNew) {
+                auto iter = Expanse.Worlds.find(id);
+                assert(iter != Expanse.Worlds.end());
 
-                // Поиск потерянных миров
-                for(const auto& [key, _] : cec.ContentViewState) {
-                    if(!newCbg.contains(key))
-                        lostWorlds.push_back(key);
-                }
-
-                // Поиск новых увиденных миров
-                for(const auto& [key, _] : newCbg) {
-                    if(!cec.ContentViewState.contains(key))
-                        newWorlds.push_back(key);
-                }
-
-                cec.NewWorlds = std::move(newWorlds);
-                cec.ContentViewState = std::move(newCbg);
-                cec.ContentView_NewView = std::move(newView);
-                cec.ContentView_LostView = std::move(lostView);
+                cec->onWorldUpdate(id, iter->second.get());
             }
         }
+
+        cec->ContentViewState = newCbg;
+        cec->removeUnobservable(diff);
     }
-
-    for(const auto &[cec, lostView] : lost_CVG) {
-        // Отписать наблюдателей от регионов миров
-        for(const auto &[worldId, lostList] : lostView.Regions) {
-            auto worldIter = Expanse.Worlds.find(worldId);
-            assert(worldIter != Expanse.Worlds.end() && "TODO: Логика не определена");
-            assert(worldIter->second);
-
-            World &world = *worldIter->second;
-            world.onCEC_RegionsLost(cec, lostList);
-        }
-
-        cec->checkContentViewChanges();
-    }
-}
-
-void GameServer::stepSendPlayersPackets() {
-    ResourceRequest full;
-
-    for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
-        full.insert(cec->Remote->pushPreparedPackets());
-    }
-
-    full.uniq();
-
-    if(!full.BinTexture.empty())
-        Content.Texture.needResourceResponse(full.BinTexture);
-
-    if(!full.BinAnimation.empty())
-        Content.Animation.needResourceResponse(full.BinAnimation);
-
-    if(!full.BinModel.empty())
-        Content.Model.needResourceResponse(full.BinModel);
-
-    if(!full.BinSound.empty())
-        Content.Sound.needResourceResponse(full.BinSound);
-
-    if(!full.BinFont.empty())
-        Content.Font.needResourceResponse(full.BinFont);
 }
 
 void GameServer::stepLoadRegions() {

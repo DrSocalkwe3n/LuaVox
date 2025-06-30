@@ -86,9 +86,9 @@ class GameServer : public AsyncObject {
         // depth ограничивает глубину входа в ContentBridges
         std::vector<ContentViewCircle> accumulateContentViewCircles(ContentViewCircle circle, int depth = 2);
         // Вынести в отдельный поток
-        static ContentViewGlobal makeContentViewGlobal(const std::vector<ContentViewCircle> &views);
-        ContentViewGlobal makeContentViewGlobal(ContentViewCircle circle, int depth = 2) {
-            return makeContentViewGlobal(accumulateContentViewCircles(circle, depth));
+        static ContentViewInfo makeContentViewInfo(const std::vector<ContentViewCircle> &views);
+        ContentViewInfo makeContentViewInfo(ContentViewCircle circle, int depth = 2) {
+            return makeContentViewInfo(accumulateContentViewCircles(circle, depth));
         }
 
         // std::unordered_map<WorldId_t, std::vector<ContentViewCircle>> remapCVCsByWorld(const std::vector<ContentViewCircle> &list);
@@ -100,8 +100,13 @@ class GameServer : public AsyncObject {
 
         /*
             Регистрация миров по строке
-
         */
+
+
+        /*
+            
+        */
+
 
         private:
             void _accumulateContentViewCircles(ContentViewCircle circle, int depth);
@@ -154,29 +159,61 @@ private:
     void prerun();
     void run();
 
-    void stepContent();
     /*
-        Дождаться и получить необходимые данные с бд или диска
-        Получить несрочные данные
+        Подключение/отключение игроков
     */
-    void stepSyncWithAsync();
-    void stepPlayers();
-    void stepWorlds();
-    /*
-        Пересмотр наблюдаемых зон (чанки, регионы, миры)
-        Добавить требуемые регионы в список на предзагрузку с приоритетом
-        TODO: нужен механизм асинхронной загрузки регионов с бд
 
-        В начале следующего такта обязательное дожидание прогрузки активной зоны
-        и 
-        оповещение миров об изменениях в наблюдаемых регионах 
+    void stepConnections();
+
+    /*
+        Переинициализация модов, если требуется
     */
-    void stepViewContent();
-    void stepSendPlayersPackets();
-    void stepLoadRegions();
-    void stepGlobal();
-    void stepSave();
-    void save();
+
+    void stepModInitializations();
+
+    /*
+        Пересчёт зон видимости игроков, если необходимо
+        Выгрузить более не используемые регионы
+        Сохранение регионов
+        Создание списка регионов необходимых для загрузки (бд автоматически будет предзагружать)
+        <Синхронизация с модулем сохранений>
+        Очередь загрузки, выгрузка регионов и получение загруженных из бд регионов
+        Получить список регионов отсутствующих в сохранении и требующих генерации
+        Подпись на загруженные регионы (отправить полностью на клиент)
+    */
+
+    void stepDatabase();
+
+    /*
+        Синхронизация с генератором карт (отправка запросов на генерацию и получение шума для обработки модами)
+        Синхронизация с потоками модов
+    */
+
+    void stepLuaAsync();
+
+    /*
+        Получить пакеты с игроков
+    */
+
+    void stepPlayerProceed();
+
+    /*
+        Физика
+    */
+
+    void stepWorldPhysic();
+
+    /*
+        Глобальный такт
+    */
+
+    void stepGlobalStep();
+
+    /*
+        Обработка запросов двоичных ресурсов и определений
+        Отправка пакетов игрокам
+    */
+    void stepSyncContent();
 };
 
 }

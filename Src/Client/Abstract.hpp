@@ -164,7 +164,6 @@ public:
         std::unordered_map<DefWorldId_t, DefWorldInfo>              DefWorld;
         std::unordered_map<DefPortalId_t, DefPortalInfo>            DefPortal;
         std::unordered_map<DefEntityId_t, DefEntityInfo>            DefEntity;
-        std::unordered_map<DefFuncEntityId_t, DefFuncEntityInfo>    DefFuncEntity;
         std::unordered_map<DefItemId_t, DefItemInfo>                DefItem;
     } Registry;
 
@@ -172,7 +171,6 @@ public:
         std::unordered_map<WorldId_t, WorldInfo>                    Worlds;
         std::unordered_map<PortalId_t, PortalInfo>                  Portals;
         std::unordered_map<EntityId_t, EntityInfo>                  Entityes;
-        std::unordered_map<FuncEntityId_t, FuncEntityInfo>          FuncEntityes;
     } Data;
 
     virtual ~IServerSession();

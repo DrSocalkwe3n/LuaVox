@@ -149,7 +149,6 @@ struct ResourceRequest {
     std::vector<DefWorldId_t>       World;
     std::vector<DefPortalId_t>      Portal;
     std::vector<DefEntityId_t>      Entity;
-    std::vector<DefFuncEntityId_t>  FuncEntity;
     std::vector<DefItemId_t>        Item;
 
     void insert(const ResourceRequest &obj) {
@@ -164,7 +163,6 @@ struct ResourceRequest {
         World.insert(World.end(), obj.World.begin(), obj.World.end());
         Portal.insert(Portal.end(), obj.Portal.begin(), obj.Portal.end());
         Entity.insert(Entity.end(), obj.Entity.begin(), obj.Entity.end());
-        FuncEntity.insert(FuncEntity.end(), obj.FuncEntity.begin(), obj.FuncEntity.end());
         Item.insert(Item.end(), obj.Item.begin(), obj.Item.end());
     }
 
@@ -172,7 +170,7 @@ struct ResourceRequest {
         for(std::vector<ResourceId_t> *vec : {
                 &BinTexture, &BinAnimation, &BinModel, &BinSound, 
                 &BinFont, &Voxel, &Node, &World,
-                &Portal, &Entity, &FuncEntity, &Item
+                &Portal, &Entity, &Item
             })
         {
             std::sort(vec->begin(), vec->end());
@@ -222,7 +220,6 @@ class RemoteClient {
         std::map<DefWorldId_t,      uint32_t>        DefWorld;
         std::map<DefPortalId_t,     uint32_t>       DefPortal;
         std::map<DefEntityId_t,     uint32_t>       DefEntity;
-        std::map<DefFuncEntityId_t, uint32_t>   DefFuncEntity;
         std::map<DefItemId_t,       uint32_t>         DefItem; // При передаче инвентарей?
 
         // Зависимость профилей контента от профилей ресурсов
@@ -254,12 +251,6 @@ class RemoteClient {
             std::vector<BinModelId_t> Model;
         };
         std::map<DefEntityId_t, RefDefEntity_t>           RefDefEntity;
-        struct RefDefFuncEntity_t {
-            std::vector<BinTextureId_t> Texture;
-            std::vector<BinAnimationId_t> Animation;
-            std::vector<BinModelId_t> Model;
-        };
-        std::map<DefFuncEntityId_t, RefDefFuncEntity_t>       RefDefFuncEntity;
         struct RefDefItem_t {
             std::vector<BinTextureId_t> Texture;
             std::vector<BinAnimationId_t> Animation;
@@ -273,7 +264,7 @@ class RemoteClient {
             std::vector<DefVoxelId_t> Voxel;
             std::vector<DefNodeId_t> Node;
         };
-        std::map<WorldId_t, std::map<Pos::GlobalChunk, ChunkRef>> RefChunk;
+        std::map<WorldId_t, std::map<Pos::GlobalRegion, std::array<ChunkRef, 4*4*4>>> RefChunk;
         struct RefWorld_t {
             DefWorldId_t Profile;
         };
@@ -286,10 +277,6 @@ class RemoteClient {
             DefEntityId_t Profile;
         };
         std::map<ServerEntityId_t, RefEntity_t> RefEntity;
-        struct RefFuncEntity_t {
-            DefFuncEntityId_t Profile;
-        };
-        std::map<ServerFuncEntityId_t, RefFuncEntity_t> RefFuncEntity;
 
     } ResUses;
 
@@ -336,8 +323,8 @@ public:
     void prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, const Node* nodes);
     void prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::unordered_map<Pos::bvec16u, Node> &nodes);
     //void prepareChunkUpdate_LightPrism(WorldId_t worldId, Pos::GlobalChunk chunkPos, const LightPrism *lights);
-    // Чанк удалён из зоны видимости
-    void prepareChunkRemove(WorldId_t worldId, Pos::GlobalChunk chunkPos);
+    // Регион удалён из зоны видимости
+    void prepareRegionRemove(WorldId_t worldId, Pos::GlobalRegion regionPos);
 
     // В зоне видимости добавилась новая сущность или она изменилась
     void prepareEntityUpdate(ServerEntityId_t entityId, const Entity *entity);
@@ -345,10 +332,6 @@ public:
     void prepareEntitySwap(ServerEntityId_t prevEntityId, ServerEntityId_t nextEntityId);
     // Клиент перестал наблюдать за сущностью
     void prepareEntityRemove(ServerEntityId_t entityId);
-
-    void prepareFuncEntitySwap(ServerEntityId_t prevEntityId, ServerEntityId_t nextEntityId);
-    void prepareFuncEntityUpdate(ServerEntityId_t entityId, const FuncEntity *funcRntity);
-    void prepareFuncEntityRemove(ServerEntityId_t entityId);
 
     // В зоне видимости добавился мир или он изменился
     void prepareWorldUpdate(WorldId_t worldId, World* world);
@@ -383,7 +366,6 @@ public:
     void informateDefWorld(const std::unordered_map<DefWorldId_t, void*> &worlds);
     void informateDefPortal(const std::unordered_map<DefPortalId_t, void*> &portals);
     void informateDefEntity(const std::unordered_map<DefEntityId_t, void*> &entityes);
-    void informateDefFuncEntity(const std::unordered_map<DefFuncEntityId_t, void*> &funcEntityes);
     void informateDefItem(const std::unordered_map<DefItemId_t, void*> &items);
 
 private:

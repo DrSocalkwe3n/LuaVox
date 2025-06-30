@@ -25,7 +25,6 @@ public:
     Node Nodes[16][16][16][4][4][4];
 
     std::vector<Entity> Entityes;
-    std::vector<FuncEntity> FuncEntityes;
     std::vector<ContentEventController*> CECs;
     // Используется для прорежения количества проверок на наблюдаемые чанки и сущности
     // В одно обновление региона - проверка одного наблюдателя

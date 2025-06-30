@@ -410,7 +410,6 @@ using DefNodeId_t       = ResourceId_t;
 using DefWorldId_t      = ResourceId_t;
 using DefPortalId_t     = ResourceId_t;
 using DefEntityId_t     = ResourceId_t;
-using DefFuncEntityId_t = ResourceId_t;
 using DefItemId_t       = ResourceId_t;
 
 // Контент, основанный на игровых определениях

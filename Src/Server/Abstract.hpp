@@ -224,16 +224,6 @@ public:
     DefEntityId_t getDefId() const { return DefId; }
 };
 
-class FuncEntity {
-    DefFuncEntityId_t DefId;
-
-public:
-    FuncEntity(DefFuncEntityId_t defId);
-
-    DefFuncEntityId_t getDefId() const { return DefId; }
-};
-
-
 template<typename Vec>
 struct VoxelCuboidsFuncs {
 

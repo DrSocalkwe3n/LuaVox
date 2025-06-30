@@ -3,6 +3,7 @@
 #include "RemoteClient.hpp"
 #include "Server/Abstract.hpp"
 #include "World.hpp"
+#include <algorithm>
 
 
 namespace LV::Server {
@@ -10,10 +11,6 @@ namespace LV::Server {
 ContentEventController::ContentEventController(std::unique_ptr<RemoteClient> &&remote)
     : Remote(std::move(remote))
 {
-}
-
-uint16_t ContentEventController::getViewRangeActive() const {
-    return 1;
 }
 
 uint16_t ContentEventController::getViewRangeBackground() const {
@@ -28,31 +25,20 @@ ServerObjectPos ContentEventController::getPos() const {
     return {0, Remote->CameraPos};
 }
 
-void ContentEventController::checkContentViewChanges() {
-    // Очистка уже не наблюдаемых чанков
-    for(const auto &[worldId, regions] : ContentView_LostView.View) {
-        for(const auto &[regionPos, chunks] : regions) {
-            size_t bitPos = chunks._Find_first();
-            while(bitPos != chunks.size()) {
-                Pos::bvec4u chunkPosLocal;
-                chunkPosLocal.unpack(bitPos);
-                Pos::GlobalChunk chunkPos = (Pos::GlobalChunk(regionPos) << 2) + chunkPosLocal;
-                Remote->prepareChunkRemove(worldId, chunkPos);
-                bitPos = chunks._Find_next(bitPos);
-            }
-        }
+void ContentEventController::removeUnobservable(const ContentViewInfo_Diff& diff) {
+    for(const auto& [worldId, regions] : diff.RegionsLost) {
+        for(const Pos::GlobalRegion region : regions)
+            Remote->prepareRegionRemove(worldId, region);
     }
 
-    // Очистка миров
-    for(WorldId_t worldId : ContentView_LostView.Worlds) {
+    for(const WorldId_t worldId : diff.WorldsLost)
         Remote->prepareWorldRemove(worldId);
-    }
 }
 
 void ContentEventController::onWorldUpdate(WorldId_t worldId, World *worldObj)
 {
-    auto pWorld = ContentViewState.find(worldId);
-    if(pWorld == ContentViewState.end())
+    auto pWorld = ContentViewState.Regions.find(worldId);
+    if(pWorld == ContentViewState.Regions.end())
         return;
 
     Remote->prepareWorldUpdate(worldId, worldObj);
@@ -61,20 +47,14 @@ void ContentEventController::onWorldUpdate(WorldId_t worldId, World *worldObj)
 void ContentEventController::onChunksUpdate_Voxels(WorldId_t worldId, Pos::GlobalRegion regionPos, 
     const std::unordered_map<Pos::bvec4u, const std::vector<VoxelCube>*>& chunks)
 {
-    auto pWorld = ContentViewState.find(worldId);
-    if(pWorld == ContentViewState.end())
+    auto pWorld = ContentViewState.Regions.find(worldId);
+    if(pWorld == ContentViewState.Regions.end())
         return;
 
-    auto pRegion = pWorld->second.find(regionPos);
-    if(pRegion == pWorld->second.end())
+    if(!std::binary_search(pWorld->second.begin(), pWorld->second.end(), regionPos))
         return;
-
-    const std::bitset<64> &chunkBitset = pRegion->second;
 
     for(auto pChunk : chunks) {
-        if(!chunkBitset.test(pChunk.first.pack()))
-            continue;
-
         Pos::GlobalChunk chunkPos = (Pos::GlobalChunk(regionPos) << 2) + pChunk.first;
         Remote->prepareChunkUpdate_Voxels(worldId, chunkPos, pChunk.second);
     }
@@ -83,20 +63,14 @@ void ContentEventController::onChunksUpdate_Voxels(WorldId_t worldId, Pos::Globa
 void ContentEventController::onChunksUpdate_Nodes(WorldId_t worldId, Pos::GlobalRegion regionPos, 
     const std::unordered_map<Pos::bvec4u, const Node*> &chunks)
 {
-    auto pWorld = ContentViewState.find(worldId);
-    if(pWorld == ContentViewState.end())
+    auto pWorld = ContentViewState.Regions.find(worldId);
+    if(pWorld == ContentViewState.Regions.end())
         return;
 
-    auto pRegion = pWorld->second.find(regionPos);
-    if(pRegion == pWorld->second.end())
+    if(!std::binary_search(pWorld->second.begin(), pWorld->second.end(), regionPos))
         return;
-
-    const std::bitset<64> &chunkBitset = pRegion->second;
 
     for(auto pChunk : chunks) {
-        if(!chunkBitset.test(pChunk.first.pack()))
-            continue;
-
         Pos::GlobalChunk chunkPos = (Pos::GlobalChunk(regionPos) << 2) + Pos::GlobalChunk(pChunk.first);
         Remote->prepareChunkUpdate_Nodes(worldId, chunkPos, pChunk.second);
     }
@@ -127,99 +101,43 @@ void ContentEventController::onChunksUpdate_Nodes(WorldId_t worldId, Pos::Global
 void ContentEventController::onEntityEnterLost(WorldId_t worldId, Pos::GlobalRegion regionPos, 
     const std::unordered_set<RegionEntityId_t> &enter, const std::unordered_set<RegionEntityId_t> &lost)
 {
-    auto pWorld = Subscribed.Entities.find(worldId);
-    if(pWorld == Subscribed.Entities.end()) {
-        // pWorld = std::get<0>(Subscribed.Entities.emplace(std::make_pair(worldId, decltype(Subscribed.Entities)::value_type())));
-        Subscribed.Entities[worldId];
-        pWorld = Subscribed.Entities.find(worldId);
-    }
-
-    auto pRegion = pWorld->second.find(regionPos);
-    if(pRegion == pWorld->second.end()) {
-        // pRegion = std::get<0>(pWorld->second.emplace(std::make_pair(worldId, decltype(pWorld->second)::value_type())));
-        pWorld->second[regionPos];
-        pRegion = pWorld->second.find(regionPos);
-    }
-
-    std::unordered_set<RegionEntityId_t> &entityesId = pRegion->second;
-
-    for(RegionEntityId_t eId : lost) {
-        entityesId.erase(eId);
-    }
-    
-    entityesId.insert(enter.begin(), enter.end());
-
-    if(entityesId.empty()) {
-        pWorld->second.erase(pRegion);
-
-        if(pWorld->second.empty())
-            Subscribed.Entities.erase(pWorld);
-    }
-
     // Сообщить Remote
     for(RegionEntityId_t eId : lost) {
         Remote->prepareEntityRemove({worldId, regionPos, eId});
     }
 }
 
-void ContentEventController::onEntitySwap(WorldId_t lastWorldId, Pos::GlobalRegion lastRegionPos, 
-    RegionEntityId_t lastId, WorldId_t newWorldId, Pos::GlobalRegion newRegionPos, RegionEntityId_t newId)
+void ContentEventController::onEntitySwap(ServerEntityId_t prevId, ServerEntityId_t newId)
 {
-    // Проверим отслеживается ли эта сущность нами
-    auto lpWorld = Subscribed.Entities.find(lastWorldId);
-    if(lpWorld == Subscribed.Entities.end())
-        // Исходный мир нами не отслеживается
-        return;
-
-    auto lpRegion = lpWorld->second.find(lastRegionPos);
-    if(lpRegion == lpWorld->second.end())
-        // Исходный регион нами не отслеживается
-        return;
-
-    auto lpceId = lpRegion->second.find(lastId);
-    if(lpceId == lpRegion->second.end())
-        // Сущность нами не отслеживается
-        return;
-
-    // Проверим отслеживается ли регион, в который будет перемещена сущность
-    auto npWorld = Subscribed.Entities.find(newWorldId);
-    if(npWorld != Subscribed.Entities.end()) {
-        auto npRegion = npWorld->second.find(newRegionPos);
-        if(npRegion != npWorld->second.end()) {
-            // Следующий регион отслеживается, перекинем сущность
-            lpRegion->second.erase(lpceId);
-            npRegion->second.insert(newId);
-
-            Remote->prepareEntitySwap({lastWorldId, lastRegionPos, lastId}, {newWorldId, newRegionPos, newId});
-
-            goto entitySwaped;
-        }
+    {
+        auto pWorld = ContentViewState.Regions.find(std::get<0>(prevId));
+        assert(pWorld != ContentViewState.Regions.end());
+        assert(std::binary_search(pWorld->second.begin(), pWorld->second.end(), std::get<1>(prevId)));
     }
 
-    Remote->prepareEntityRemove({lastWorldId, lastRegionPos, lastId});
+    {
+        auto npWorld = ContentViewState.Regions.find(std::get<0>(newId));
+        assert(npWorld != ContentViewState.Regions.end());
+        assert(std::binary_search(npWorld->second.begin(), npWorld->second.end(), std::get<1>(prevId)));
+    }
 
-    entitySwaped:
-    return;
+    Remote->prepareEntitySwap(prevId, newId);
 }
 
 void ContentEventController::onEntityUpdates(WorldId_t worldId, Pos::GlobalRegion regionPos, 
-    const std::vector<Entity> &entities)
+    const std::unordered_map<RegionEntityId_t, Entity*> &entities)
 {
-    auto lpWorld = Subscribed.Entities.find(worldId);
-    if(lpWorld == Subscribed.Entities.end())
+    auto pWorld = ContentViewState.Regions.find(worldId);
+    if(pWorld == ContentViewState.Regions.end())
         // Исходный мир нами не отслеживается
         return;
 
-    auto lpRegion = lpWorld->second.find(regionPos);
-    if(lpRegion == lpWorld->second.end())
+    if(!std::binary_search(pWorld->second.begin(), pWorld->second.end(), regionPos))
         // Исходный регион нами не отслеживается
         return;
 
-    for(size_t eId = 0; eId < entities.size(); eId++) {
-        if(!lpRegion->second.contains(eId))
-            continue;
-
-        Remote->prepareEntityUpdate({worldId, regionPos, eId}, &entities[eId]);
+    for(const auto& [id, entity] : entities) {
+        Remote->prepareEntityUpdate({worldId, regionPos, id}, entity);
     }
 }
 

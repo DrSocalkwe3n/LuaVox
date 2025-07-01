@@ -257,45 +257,6 @@ coro<> GameServer::pushSocketGameProtocol(tcp::socket socket, const std::string 
     }
 }
 
-Region* GameServer::forceGetRegion(WorldId_t worldId, Pos::GlobalRegion pos) {
-    auto worldIter = Expanse.Worlds.find(worldId);
-    assert(worldIter != Expanse.Worlds.end());
-    World &world = *worldIter->second;
-
-    auto iterRegion = world.Regions.find(pos);
-    if(iterRegion == world.Regions.end() || !iterRegion->second->IsLoaded) {
-        std::unique_ptr<Region> &region = world.Regions[pos];
-
-        if(!region)
-            region = std::make_unique<Region>();
-
-        std::string worldName = "world_"+std::to_string(worldId);
-        if(SaveBackend.World->isExist(worldName, pos)) {
-            SB_Region data;
-            SaveBackend.World->load(worldName, pos, &data);
-
-            region->IsLoaded = true;
-            region->load(&data);
-        } else {
-            region->IsLoaded = true;
-            if(pos.y == 0) {
-                for(int z = 0; z < 4; z++)
-                for(int y = 0; y < 4; y++)
-                for(int x = 0; x < 4; x++) {
-                    Node *nodes = (Node*) &region->Nodes[0][0][0][z][y][x];
-                    for(int index = 0; index < 16*16*16; index++)
-                        nodes[index] = {static_cast<DefNodeId_t>(y == 0 ? 1 : 0), 0};
-                    region->IsChunkChanged_Nodes |= (y == 0 ? 1 : 0) << (z*4*4+y*4+x);
-                }
-            }
-        }
-
-        return region.get();
-    } else {
-        return iterRegion->second.get();
-    }
-}
-
 void GameServer::init(fs::path worldPath) {
     Expanse.Worlds[0] = std::make_unique<World>(0);
 
@@ -332,9 +293,6 @@ void GameServer::run() {
             for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
                 cec->Remote->shutdown(EnumDisconnect::ByInterface, ShutdownReason);
             }
-            
-            // Сохранить данные
-            save();
 
             {
                 // Отключить вновь подключившихся
@@ -356,31 +314,14 @@ void GameServer::run() {
             break;
         }
 
-        // 
-        stepContent();
-
-        stepSyncWithAsync();
-
-        // Принять события от игроков
-        stepPlayers();
-        
-        // Обновить регионы
-        stepWorlds();
-
-        // Проверить видимый контент
-        stepViewContent();
-
-        // Отправить пакеты игрокам && Проверить контент необходимый для отправки
-        stepSendPlayersPackets();
-
-        // Выставить регионы на прогрузку
-        stepLoadRegions();
-
-        // Lua globalStep
-        stepGlobal();
-
-        // Сохранение
-        stepSave();
+        stepConnections();
+        stepModInitializations();
+        IWorldSaveBackend::TickSyncInfo_Out dat1 = stepDatabaseSync();
+        stepGeneratorAndLuaAsync(std::move(dat1));
+        stepPlayerProceed();
+        stepWorldPhysic();
+        stepGlobalStep();
+        stepSyncContent();
 
         // Сон или подгонка длительности такта при высоких нагрузках
         std::chrono::steady_clock::time_point atTickEnd = std::chrono::steady_clock::now();
@@ -634,7 +575,444 @@ void GameServer::stepPlayerProceed() {
 }
 
 void GameServer::stepWorldPhysic() {
+    // Максимальная скорость в обсчёте за такт половина максимального размера объекта
+    // По всем объектам в регионе расчитывается максимальный размео по оси, делённый на линейную скорость
+    // Выбирается наибольшая скорость. Если скорость превышает максимальную за раз, 
+    // то физика в текущем такте рассчитывается в несколько проходов
 
+    
+    // for(auto &pWorld : Expanse.Worlds) {
+    //     World &wobj = *pWorld.second;
+       
+    //     assert(pWorld.first == 0 && "Требуется WorldManager");
+
+    //     std::string worldStringId = "unexisten";
+
+    //     std::vector<Pos::GlobalRegion> regionsToRemove;
+    //     for(auto &pRegion : wobj.Regions) {
+    //         Region &region = *pRegion.second;
+
+    //         // Позиции исчисляются в целых числах
+    //         // Вместо умножения на dtime, используется *dTimeMul/dTimeDiv
+    //         int32_t dTimeDiv = Pos::Object_t::BS;
+    //         int32_t dTimeMul = dTimeDiv*CurrentTickDuration;
+
+    //         // Обновить сущностей
+    //         for(size_t entityIndex = 0; entityIndex < region.Entityes.size(); entityIndex++) {
+    //             Entity &entity = region.Entityes[entityIndex];
+
+    //             if(entity.IsRemoved)
+    //                 continue;
+
+    //             // Если нет ни скорости, ни ускорения, то пропускаем расчёт
+    //             if((entity.Speed.x != 0 || entity.Speed.y != 0 || entity.Speed.z != 0)
+    //                     || (entity.Acceleration.x != 0 || entity.Acceleration.y != 0 || entity.Acceleration.z != 0))
+    //             {
+    //                 Pos::Object &eSpeed = entity.Speed;
+
+    //                 // Ограничение на 256 м/с
+    //                 static constexpr int32_t MAX_SPEED_PER_SECOND = 256*Pos::Object_t::BS;
+    //                 {
+    //                     uint32_t linearSpeed = std::sqrt(eSpeed.x*eSpeed.x + eSpeed.y*eSpeed.y + eSpeed.z*eSpeed.z);
+
+    //                     if(linearSpeed > MAX_SPEED_PER_SECOND) {
+    //                         eSpeed *= MAX_SPEED_PER_SECOND;
+    //                         eSpeed /= linearSpeed;
+    //                     }
+
+    //                     Pos::Object &eAcc = entity.Acceleration;
+    //                     linearSpeed = std::sqrt(eAcc.x*eAcc.x + eAcc.y*eAcc.y + eAcc.z*eAcc.z);
+
+    //                     if(linearSpeed > MAX_SPEED_PER_SECOND/2) {
+    //                         eAcc *= MAX_SPEED_PER_SECOND/2;
+    //                         eAcc /= linearSpeed;
+    //                     }
+    //                 }
+
+    //                 // Потенциальное изменение позиции сущности в пустой области
+    //                 // vt+(at^2)/2 = (v+at/2)*t = (Скорость + Ускорение/2*dtime)*dtime
+    //                 Pos::Object dpos = (eSpeed + entity.Acceleration/2*dTimeMul/dTimeDiv)*dTimeMul/dTimeDiv;
+    //                 // Стартовая и конечная позиции
+    //                 Pos::Object &startPos = entity.Pos, endPos = entity.Pos + dpos;
+    //                 // Новая скорость
+    //                 Pos::Object nSpeed = entity.Speed + entity.Acceleration*dTimeMul/dTimeDiv;
+
+    //                 // Зона расчёта коллизии
+    //                 AABB collideZone = {startPos, endPos};
+    //                 collideZone.sortMinMax();
+    //                 collideZone.VecMin -= Pos::Object(entity.ABBOX.x, entity.ABBOX.y, entity.ABBOX.z)/2+Pos::Object(1);
+    //                 collideZone.VecMax += Pos::Object(entity.ABBOX.x, entity.ABBOX.y, entity.ABBOX.z)/2+Pos::Object(1);
+
+    //                 // Сбор ближайших коробок
+    //                 std::vector<CollisionAABB> Boxes;
+
+    //                 {
+    //                     glm::ivec3 beg = collideZone.VecMin >> 20, end = (collideZone.VecMax + 0xfffff) >> 20;
+
+    //                     for(; beg.z <= end.z; beg.z++)
+    //                     for(; beg.y <= end.y; beg.y++)
+    //                     for(; beg.x <= end.x; beg.x++) {
+    //                         Pos::GlobalRegion rPos(beg.x, beg.y, beg.z);
+    //                         auto iterChunk = wobj.Regions.find(rPos);
+    //                         if(iterChunk == wobj.Regions.end())
+    //                             continue;
+
+    //                         iterChunk->second->getCollideBoxes(rPos, collideZone, Boxes);
+    //                     }
+    //                 }
+
+    //                 // Коробка сущности
+    //                 AABB entityAABB = entity.aabbAtPos();
+
+    //                 // Симулируем физику
+    //                 // Оставшееся время симуляции
+    //                 int32_t remainingSimulationTime = dTimeMul;
+    //                 // Оси, по которым было пересечение
+    //                 bool axis[3]; // x y z
+
+    //                 // Симулируем пока не будет просчитано выделенное время
+    //                 while(remainingSimulationTime > 0) {
+    //                     if(nSpeed.x == 0 && nSpeed.y == 0 && nSpeed.z == 0)
+    //                         break; // Скорости больше нет
+
+    //                     entityAABB = entity.aabbAtPos();
+
+    //                     // Ближайшее время пересечения с боксом
+    //                     int32_t minSimulationTime = remainingSimulationTime;
+    //                     // Ближайший бокс в пересечении
+    //                     int nearest_boxindex = -1;
+
+    //                     for(size_t index = 0; index < Boxes.size(); index++) {
+    //                         CollisionAABB &caabb = Boxes[index];
+
+    //                         if(caabb.Skip)
+    //                             continue;
+
+    //                         int32_t delta;
+    //                         if(!entityAABB.collideWithDelta(caabb, nSpeed, delta, axis))
+    //                             continue;
+
+    //                         if(delta > remainingSimulationTime)
+    //                             continue;
+
+    //                         nearest_boxindex = index;
+    //                         minSimulationTime = delta;
+    //                     }
+
+    //                     if(nearest_boxindex == -1) {
+    //                         // Свободный ход
+    //                         startPos += nSpeed*dTimeDiv/minSimulationTime;
+    //                         remainingSimulationTime = 0;
+    //                         break;
+    //                     } else {
+    //                         if(minSimulationTime == 0) {
+    //                             // Уже где-то застряли
+    //                             // Да и хрен бы с этим
+    //                         } else {
+    //                             // Где-то встрянем через minSimulationTime
+    //                             startPos += nSpeed*dTimeDiv/minSimulationTime;
+    //                             remainingSimulationTime -= minSimulationTime;
+
+    //                             nSpeed.x = nSpeed.y = nSpeed.z = 0;
+    //                             break;
+    //                         }
+
+    //                         if(axis[0] == 0) {
+    //                             nSpeed.x = 0;
+    //                         }
+                            
+    //                         if(axis[1] == 0) {
+    //                             nSpeed.y = 0;
+    //                         } 
+                            
+    //                         if(axis[2] == 0) {
+    //                             nSpeed.z = 0;
+    //                         }
+
+    //                         CollisionAABB &caabb = Boxes[nearest_boxindex];
+    //                         caabb.Skip = true;
+    //                     }
+    //                 }
+
+    //                 // Симуляция завершена
+    //             }
+
+    //             // Сущность будет вычищена
+    //             if(entity.NeedRemove) {
+    //                 entity.NeedRemove = false;
+    //                 entity.IsRemoved = true;
+    //             }
+
+    //             // Проверим необходимость перемещения сущности в другой регион
+    //             // Вынести в отдельный этап обновления сервера, иначе будут происходить двойные симуляции
+    //             // сущностей при пересечении регионов/миров
+    //             {
+    //                 Pos::Object temp = entity.Pos >> 20;
+    //                 Pos::GlobalRegion rPos(temp.x, temp.y, temp.z);
+
+    //                 if(rPos != pRegion.first || pWorld.first != entity.WorldId) {
+
+    //                     Region *toRegion = forceGetRegion(entity.WorldId, rPos);
+    //                     RegionEntityId_t newId = toRegion->pushEntity(entity);
+    //                     // toRegion->Entityes[newId].WorldId = Если мир изменился
+
+    //                     if(newId == RegionEntityId_t(-1)) {
+    //                         // В другом регионе нет места
+    //                     } else {
+    //                         entity.IsRemoved = true;
+    //                         // Сообщаем о перемещении сущности
+    //                         for(ContentEventController *cec : region.CECs) {
+    //                             cec->onEntitySwap(pWorld.first, pRegion.first, entityIndex, entity.WorldId, rPos, newId);
+    //                         }
+    //                     }
+    //                 }
+    //             }
+    //         }
+
+    //         // Проверить необходимость перерасчёта вертикальной проходимости света 
+    //         // std::unordered_map<Pos::bvec4u, const LightPrism*> ChangedLightPrism;
+    //         // {
+    //         //     for(int big = 0; big < 64; big++) {
+    //         //         uint64_t bits = region.IsChunkChanged_Voxels[big] | region.IsChunkChanged_Nodes[big];
+
+    //         //         if(!bits)
+    //         //             continue;
+
+    //         //         for(int little = 0; little < 64; little++) {
+    //         //             if(((bits >> little) & 1) == 0)
+    //         //                 continue;
+
+                        
+    //         //         }
+    //         //     }
+    //         // }
+
+    //         // Сбор данных об изменившихся чанках
+    //         std::unordered_map<Pos::bvec4u, const std::vector<VoxelCube>*> ChangedVoxels;
+    //         std::unordered_map<Pos::bvec4u, const Node*> ChangedNodes;
+    //         {
+    //             if(!region.IsChunkChanged_Voxels && !region.IsChunkChanged_Nodes)
+    //                 continue;
+
+    //             for(int index = 0; index < 64; index++) {
+    //                 Pos::bvec4u pos;
+    //                 pos.unpack(index);
+
+    //                 if(((region.IsChunkChanged_Voxels >> index) & 1) == 1) {
+    //                     auto iter = region.Voxels.find(pos);
+    //                     assert(iter != region.Voxels.end());
+    //                     ChangedVoxels[pos] = &iter->second;
+    //                 }
+
+    //                 if(((region.IsChunkChanged_Nodes >> index) & 1) == 1) {
+    //                     ChangedNodes[pos] = (Node*) &region.Nodes[0][0][0][pos.x][pos.y][pos.z];
+    //                 }
+    //             }
+    //         }
+
+    //         // Об изменившихся сущностях
+    //         {
+
+    //         }
+
+    //         if(++region.CEC_NextChunkAndEntityesViewCheck >= region.CECs.size())
+    //             region.CEC_NextChunkAndEntityesViewCheck = 0;
+
+    //         // Пробегаемся по всем наблюдателям
+    //         {
+    //             size_t cecIndex = 0;
+    //             for(ContentEventController *cec : region.CECs) {
+    //                 cecIndex++;
+
+    //                 auto cvwIter = cec->ContentViewState.find(pWorld.first);
+    //                 if(cvwIter == cec->ContentViewState.end())
+    //                     // Мир не отслеживается
+    //                     continue;
+
+
+    //                 const ContentViewWorld &cvw = cvwIter->second;
+    //                 auto chunkBitsetIter = cvw.find(pRegion.first);
+    //                 if(chunkBitsetIter == cvw.end())
+    //                     // Регион не отслеживается
+    //                     continue;
+
+    //                 // Наблюдаемые чанки
+    //                 const std::bitset<64> &chunkBitset = chunkBitsetIter->second;
+
+    //                 // Пересылка изменений в регионе
+    //                 // if(!ChangedLightPrism.empty())
+    //                 //     cec->onChunksUpdate_LightPrism(pWorld.first, pRegion.first, ChangedLightPrism);
+
+    //                 if(!ChangedVoxels.empty())
+    //                     cec->onChunksUpdate_Voxels(pWorld.first, pRegion.first, ChangedVoxels);
+
+    //                 if(!ChangedNodes.empty())
+    //                     cec->onChunksUpdate_Nodes(pWorld.first, pRegion.first, ChangedNodes);
+
+    //                 // Отправка полной информации о новых наблюдаемых чанках
+    //                 {
+    //                         //std::unordered_map<Pos::bvec4u, const LightPrism*> newLightPrism;
+    //                         std::unordered_map<Pos::bvec4u, const std::vector<VoxelCube>*> newVoxels;
+    //                         std::unordered_map<Pos::bvec4u, const Node*> newNodes;
+
+    //                         //newLightPrism.reserve(new_chunkBitset->count());
+    //                         newVoxels.reserve(new_chunkBitset->count());
+    //                         newNodes.reserve(new_chunkBitset->count());
+
+    //                         size_t bitPos = new_chunkBitset->_Find_first();
+    //                         while(bitPos != new_chunkBitset->size()) {
+    //                             Pos::bvec4u chunkPos;
+    //                             chunkPos = bitPos;
+
+    //                             //newLightPrism.insert({chunkPos, &region.Lights[0][0][chunkPos.X][chunkPos.Y][chunkPos.Z]});
+    //                             newVoxels.insert({chunkPos, &region.Voxels[chunkPos]});
+    //                             newNodes.insert({chunkPos, &region.Nodes[0][0][0][chunkPos.x][chunkPos.y][chunkPos.z]});
+
+    //                             bitPos = new_chunkBitset->_Find_next(bitPos);
+    //                         }
+
+    //                         //cec->onChunksUpdate_LightPrism(pWorld.first, pRegion.first, newLightPrism);
+    //                         cec->onChunksUpdate_Voxels(pWorld.first, pRegion.first, newVoxels);
+    //                         cec->onChunksUpdate_Nodes(pWorld.first, pRegion.first, newNodes);
+                        
+    //                 }
+
+    //                 // То, что уже отслеживает наблюдатель
+    //                 const auto &subs = cec->getSubscribed();
+
+    //                 // // Проверка отслеживания сущностей
+    //                 // if(cecIndex-1 == region.CEC_NextChunkAndEntityesViewCheck) {
+    //                 //     std::vector<LocalEntityId_t> newEntityes, lostEntityes;
+    //                 //     for(size_t iter = 0; iter < region.Entityes.size(); iter++) {
+    //                 //         Entity &entity = region.Entityes[iter];
+
+    //                 //         if(entity.IsRemoved)
+    //                 //             continue;
+
+    //                 //         for(const ContentViewCircle &circle : cvc->second) {
+    //                 //             int x = entity.ABBOX.x >> 17;
+    //                 //             int y = entity.ABBOX.y >> 17;
+    //                 //             int z = entity.ABBOX.z >> 17;
+
+    //                 //             uint32_t size = 0;
+    //                 //             if(circle.isIn(entity.Pos, x*x+y*y+z*z))
+    //                 //                 newEntityes.push_back(iter);
+    //                 //         }
+    //                 //     }
+
+    //                 //     std::unordered_set<LocalEntityId_t> newEntityesSet(newEntityes.begin(), newEntityes.end());
+
+    //                 //     {
+    //                 //         auto iterR_W = subs.Entities.find(pWorld.first);
+    //                 //         if(iterR_W == subs.Entities.end())
+    //                 //             // Если мир не отслеживается наблюдателем
+    //                 //             goto doesNotObserveEntityes;
+
+    //                 //         auto iterR_W_R = iterR_W->second.find(pRegion.first);
+    //                 //         if(iterR_W_R == iterR_W->second.end())
+    //                 //             // Если регион не отслеживается наблюдателем
+    //                 //             goto doesNotObserveEntityes;
+
+    //                 //         // Подходят ли уже наблюдаемые сущности под наблюдательные области
+    //                 //         for(LocalEntityId_t eId : iterR_W_R->second) {
+    //                 //             if(eId >= region.Entityes.size()) {
+    //                 //                 lostEntityes.push_back(eId);
+    //                 //                 break;
+    //                 //             }
+
+    //                 //             Entity &entity = region.Entityes[eId];
+
+    //                 //             if(entity.IsRemoved) {
+    //                 //                 lostEntityes.push_back(eId);
+    //                 //                 break;
+    //                 //             }
+
+    //                 //             int x = entity.ABBOX.x >> 17;
+    //                 //             int y = entity.ABBOX.y >> 17;
+    //                 //             int z = entity.ABBOX.z >> 17;
+
+    //                 //             for(const ContentViewCircle &circle : cvc->second) {
+    //                 //                 if(!circle.isIn(entity.Pos, x*x+y*y+z*z))
+    //                 //                     lostEntityes.push_back(eId);
+    //                 //             }
+    //                 //         }
+
+    //                 //         // Удалим чанки которые наблюдатель уже видит
+    //                 //         for(LocalEntityId_t eId : iterR_W_R->second)
+    //                 //             newEntityesSet.erase(eId);
+    //                 //     }
+
+    //                 //     doesNotObserveEntityes:
+
+    //                 //     cec->onEntityEnterLost(pWorld.first, pRegion.first, newEntityesSet, std::unordered_set<LocalEntityId_t>(lostEntityes.begin(), lostEntityes.end()));
+    //                 //     // Отправить полную информацию о новых наблюдаемых сущностях наблюдателю
+    //                 // }
+
+    //                 if(!region.Entityes.empty()) {
+    //                     std::unordered_map<RegionEntityId_t, Entity*> entities;
+    //                     for(size_t iter = 0; iter < region.Entityes.size(); iter++)
+    //                         entities[iter] = &region.Entityes[iter];
+    //                     cec->onEntityUpdates(pWorld.first, pRegion.first, entities);
+    //                 }
+    //             }
+    //         }
+
+
+    //         // Сохраняем регионы
+    //         region.LastSaveTime += CurrentTickDuration;
+
+    //         bool needToUnload = region.CECs.empty() && region.LastSaveTime > 60;
+    //         bool needToSave = region.IsChanged && region.LastSaveTime > 15;
+
+    //         if(needToUnload || needToSave) {
+    //             region.LastSaveTime = 0;
+    //             region.IsChanged = false;
+
+    //             SB_Region data;
+    //             convertChunkVoxelsToRegion(region.Voxels, data.Voxels);
+    //             SaveBackend.World->save(worldStringId, pRegion.first, &data);
+    //         }
+
+    //         // Выгрузим регионы
+    //         if(needToUnload) {
+    //             regionsToRemove.push_back(pRegion.first);
+    //         }
+
+    //         // Сброс информации об изменившихся данных
+    //         region.IsChunkChanged_Voxels = 0;
+    //         region.IsChunkChanged_Nodes = 0;
+    //     }
+
+    //     for(Pos::GlobalRegion regionPos : regionsToRemove) {
+    //         auto iter = wobj.Regions.find(regionPos);
+    //         if(iter == wobj.Regions.end())
+    //             continue;
+
+    //         wobj.Regions.erase(iter);
+    //     }
+
+    //     // Загрузить регионы
+    //     if(wobj.NeedToLoad.empty())
+    //         continue;
+ 
+    //     for(Pos::GlobalRegion &regionPos : wobj.NeedToLoad) {
+    //         if(!SaveBackend.World->isExist(worldStringId, regionPos)) {
+    //             wobj.Regions[regionPos]->IsLoaded = true;
+    //         } else {
+    //             SB_Region data;
+    //             SaveBackend.World->load(worldStringId, regionPos, &data);
+    //             Region &robj = *wobj.Regions[regionPos];
+
+    //             // TODO: Передефайнить идентификаторы нод
+
+    //             convertRegionVoxelsToChunks(data.Voxels, robj.Voxels);
+    //         }
+    //     }
+
+    //     wobj.NeedToLoad.clear();
+    // }
+    
+    // // Проверить отслеживание порталов
 }
 
 void GameServer::stepGlobalStep() {
@@ -706,444 +1084,6 @@ void GameServer::stepSyncContent() {
 
     if(!full.BinFont.empty())
         Content.Font.needResourceResponse(full.BinFont);
-}
-
-void GameServer::stepWorlds() {
-
-    for(auto &pWorld : Expanse.Worlds) {
-        World &wobj = *pWorld.second;
-       
-        assert(pWorld.first == 0 && "Требуется WorldManager");
-
-        std::string worldStringId = "unexisten";
-
-        std::vector<Pos::GlobalRegion> regionsToRemove;
-        for(auto &pRegion : wobj.Regions) {
-            Region &region = *pRegion.second;
-
-            // Позиции исчисляются в целых числах
-            // Вместо умножения на dtime, используется *dTimeMul/dTimeDiv
-            int32_t dTimeDiv = Pos::Object_t::BS;
-            int32_t dTimeMul = dTimeDiv*CurrentTickDuration;
-
-            // Обновить сущностей
-            for(size_t entityIndex = 0; entityIndex < region.Entityes.size(); entityIndex++) {
-                Entity &entity = region.Entityes[entityIndex];
-
-                if(entity.IsRemoved)
-                    continue;
-
-                // Если нет ни скорости, ни ускорения, то пропускаем расчёт
-                // Ускорение свободного падения?
-                if((entity.Speed.x != 0 || entity.Speed.y != 0 || entity.Speed.z != 0)
-                        || (entity.Acceleration.x != 0 || entity.Acceleration.y != 0 || entity.Acceleration.z != 0))
-                {
-                    Pos::Object &eSpeed = entity.Speed;
-
-                    // Ограничение на 256 м/с
-                    static constexpr int32_t MAX_SPEED_PER_SECOND = 256*Pos::Object_t::BS;
-                    {
-                        uint32_t linearSpeed = std::sqrt(eSpeed.x*eSpeed.x + eSpeed.y*eSpeed.y + eSpeed.z*eSpeed.z);
-
-                        if(linearSpeed > MAX_SPEED_PER_SECOND) {
-                            eSpeed *= MAX_SPEED_PER_SECOND;
-                            eSpeed /= linearSpeed;
-                        }
-
-                        Pos::Object &eAcc = entity.Acceleration;
-                        linearSpeed = std::sqrt(eAcc.x*eAcc.x + eAcc.y*eAcc.y + eAcc.z*eAcc.z);
-
-                        if(linearSpeed > MAX_SPEED_PER_SECOND/2) {
-                            eAcc *= MAX_SPEED_PER_SECOND/2;
-                            eAcc /= linearSpeed;
-                        }
-                    }
-
-                    // Потенциальное изменение позиции сущности в пустой области
-                    // vt+(at^2)/2 = (v+at/2)*t = (Скорость + Ускорение/2*dtime)*dtime
-                    Pos::Object dpos = (eSpeed + entity.Acceleration/2*dTimeMul/dTimeDiv)*dTimeMul/dTimeDiv;
-                    // Стартовая и конечная позиции
-                    Pos::Object &startPos = entity.Pos, endPos = entity.Pos + dpos;
-                    // Новая скорость
-                    Pos::Object nSpeed = entity.Speed + entity.Acceleration*dTimeMul/dTimeDiv;
-
-                    // Зона расчёта коллизии
-                    AABB collideZone = {startPos, endPos};
-                    collideZone.sortMinMax();
-                    collideZone.VecMin -= Pos::Object(entity.ABBOX.x, entity.ABBOX.y, entity.ABBOX.z)/2+Pos::Object(1);
-                    collideZone.VecMax += Pos::Object(entity.ABBOX.x, entity.ABBOX.y, entity.ABBOX.z)/2+Pos::Object(1);
-
-                    // Сбор ближайших коробок
-                    std::vector<CollisionAABB> Boxes;
-
-                    {
-                        glm::ivec3 beg = collideZone.VecMin >> 20, end = (collideZone.VecMax + 0xfffff) >> 20;
-
-                        for(; beg.z <= end.z; beg.z++)
-                        for(; beg.y <= end.y; beg.y++)
-                        for(; beg.x <= end.x; beg.x++) {
-                            Pos::GlobalRegion rPos(beg.x, beg.y, beg.z);
-                            auto iterChunk = wobj.Regions.find(rPos);
-                            if(iterChunk == wobj.Regions.end())
-                                continue;
-
-                            iterChunk->second->getCollideBoxes(rPos, collideZone, Boxes);
-                        }
-                    }
-
-                    // Коробка сущности
-                    AABB entityAABB = entity.aabbAtPos();
-
-                    // Симулируем физику
-                    // Оставшееся время симуляции
-                    int32_t remainingSimulationTime = dTimeMul;
-                    // Оси, по которым было пересечение
-                    bool axis[3]; // x y z
-
-                    // Симулируем пока не будет просчитано выделенное время
-                    while(remainingSimulationTime > 0) {
-                        if(nSpeed.x == 0 && nSpeed.y == 0 && nSpeed.z == 0)
-                            break; // Скорости больше нет
-
-                        entityAABB = entity.aabbAtPos();
-
-                        // Ближайшее время пересечения с боксом
-                        int32_t minSimulationTime = remainingSimulationTime;
-                        // Ближайший бокс в пересечении
-                        int nearest_boxindex = -1;
-
-                        for(size_t index = 0; index < Boxes.size(); index++) {
-                            CollisionAABB &caabb = Boxes[index];
-
-                            if(caabb.Skip)
-                                continue;
-
-                            int32_t delta;
-                            if(!entityAABB.collideWithDelta(caabb, nSpeed, delta, axis))
-                                continue;
-
-                            if(delta > remainingSimulationTime)
-                                continue;
-
-                            nearest_boxindex = index;
-                            minSimulationTime = delta;
-                        }
-
-                        if(nearest_boxindex == -1) {
-                            // Свободный ход
-                            startPos += nSpeed*dTimeDiv/minSimulationTime;
-                            remainingSimulationTime = 0;
-                            break;
-                        } else {
-                            if(minSimulationTime == 0) {
-                                // Уже где-то застряли
-                                // Да и хрен бы с этим
-                            } else {
-                                // Где-то встрянем через minSimulationTime
-                                startPos += nSpeed*dTimeDiv/minSimulationTime;
-                                remainingSimulationTime -= minSimulationTime;
-
-                                nSpeed.x = nSpeed.y = nSpeed.z = 0;
-                                break;
-                            }
-
-                            if(axis[0] == 0) {
-                                nSpeed.x = 0;
-                            }
-                            
-                            if(axis[1] == 0) {
-                                nSpeed.y = 0;
-                            } 
-                            
-                            if(axis[2] == 0) {
-                                nSpeed.z = 0;
-                            }
-
-                            CollisionAABB &caabb = Boxes[nearest_boxindex];
-                            caabb.Skip = true;
-                        }
-                    }
-
-                    // Симуляция завершена
-                }
-
-                // Сущность будет вычищена
-                if(entity.NeedRemove) {
-                    entity.NeedRemove = false;
-                    entity.IsRemoved = true;
-                }
-
-                // Проверим необходимость перемещения сущности в другой регион
-                // Вынести в отдельный этап обновления сервера, иначе будут происходить двойные симуляции
-                // сущностей при пересечении регионов/миров
-                {
-                    Pos::Object temp = entity.Pos >> 20;
-                    Pos::GlobalRegion rPos(temp.x, temp.y, temp.z);
-
-                    if(rPos != pRegion.first || pWorld.first != entity.WorldId) {
-
-                        Region *toRegion = forceGetRegion(entity.WorldId, rPos);
-                        RegionEntityId_t newId = toRegion->pushEntity(entity);
-                        // toRegion->Entityes[newId].WorldId = Если мир изменился
-
-                        if(newId == RegionEntityId_t(-1)) {
-                            // В другом регионе нет места
-                        } else {
-                            entity.IsRemoved = true;
-                            // Сообщаем о перемещении сущности
-                            for(ContentEventController *cec : region.CECs) {
-                                cec->onEntitySwap(pWorld.first, pRegion.first, entityIndex, entity.WorldId, rPos, newId);
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Проверить необходимость перерасчёта вертикальной проходимости света 
-            // std::unordered_map<Pos::bvec4u, const LightPrism*> ChangedLightPrism;
-            // {
-            //     for(int big = 0; big < 64; big++) {
-            //         uint64_t bits = region.IsChunkChanged_Voxels[big] | region.IsChunkChanged_Nodes[big];
-
-            //         if(!bits)
-            //             continue;
-
-            //         for(int little = 0; little < 64; little++) {
-            //             if(((bits >> little) & 1) == 0)
-            //                 continue;
-
-                        
-            //         }
-            //     }
-            // }
-
-            // Сбор данных об изменившихся чанках
-            std::unordered_map<Pos::bvec4u, const std::vector<VoxelCube>*> ChangedVoxels;
-            std::unordered_map<Pos::bvec4u, const Node*> ChangedNodes;
-            {
-                if(!region.IsChunkChanged_Voxels && !region.IsChunkChanged_Nodes)
-                    continue;
-
-                for(int index = 0; index < 64; index++) {
-                    Pos::bvec4u pos;
-                    pos.unpack(index);
-
-                    if(((region.IsChunkChanged_Voxels >> index) & 1) == 1) {
-                        auto iter = region.Voxels.find(pos);
-                        assert(iter != region.Voxels.end());
-                        ChangedVoxels[pos] = &iter->second;
-                    }
-
-                    if(((region.IsChunkChanged_Nodes >> index) & 1) == 1) {
-                        ChangedNodes[pos] = (Node*) &region.Nodes[0][0][0][pos.x][pos.y][pos.z];
-                    }
-                }
-            }
-
-            // Об изменившихся сущностях
-            {
-
-            }
-
-            if(++region.CEC_NextChunkAndEntityesViewCheck >= region.CECs.size())
-                region.CEC_NextChunkAndEntityesViewCheck = 0;
-
-            // Пробегаемся по всем наблюдателям
-            {
-                size_t cecIndex = 0;
-                for(ContentEventController *cec : region.CECs) {
-                    cecIndex++;
-
-                    auto cvwIter = cec->ContentViewState.find(pWorld.first);
-                    if(cvwIter == cec->ContentViewState.end())
-                        // Мир не отслеживается
-                        continue;
-
-
-                    const ContentViewWorld &cvw = cvwIter->second;
-                    auto chunkBitsetIter = cvw.find(pRegion.first);
-                    if(chunkBitsetIter == cvw.end())
-                        // Регион не отслеживается
-                        continue;
-
-                    // Наблюдаемые чанки
-                    const std::bitset<64> &chunkBitset = chunkBitsetIter->second;
-
-                    // Пересылка изменений в регионе
-                    // if(!ChangedLightPrism.empty())
-                    //     cec->onChunksUpdate_LightPrism(pWorld.first, pRegion.first, ChangedLightPrism);
-
-                    if(!ChangedVoxels.empty())
-                        cec->onChunksUpdate_Voxels(pWorld.first, pRegion.first, ChangedVoxels);
-
-                    if(!ChangedNodes.empty())
-                        cec->onChunksUpdate_Nodes(pWorld.first, pRegion.first, ChangedNodes);
-
-                    // Отправка полной информации о новых наблюдаемых чанках
-                    {
-                            //std::unordered_map<Pos::bvec4u, const LightPrism*> newLightPrism;
-                            std::unordered_map<Pos::bvec4u, const std::vector<VoxelCube>*> newVoxels;
-                            std::unordered_map<Pos::bvec4u, const Node*> newNodes;
-
-                            //newLightPrism.reserve(new_chunkBitset->count());
-                            newVoxels.reserve(new_chunkBitset->count());
-                            newNodes.reserve(new_chunkBitset->count());
-
-                            size_t bitPos = new_chunkBitset->_Find_first();
-                            while(bitPos != new_chunkBitset->size()) {
-                                Pos::bvec4u chunkPos;
-                                chunkPos = bitPos;
-
-                                //newLightPrism.insert({chunkPos, &region.Lights[0][0][chunkPos.X][chunkPos.Y][chunkPos.Z]});
-                                newVoxels.insert({chunkPos, &region.Voxels[chunkPos]});
-                                newNodes.insert({chunkPos, &region.Nodes[0][0][0][chunkPos.x][chunkPos.y][chunkPos.z]});
-
-                                bitPos = new_chunkBitset->_Find_next(bitPos);
-                            }
-
-                            //cec->onChunksUpdate_LightPrism(pWorld.first, pRegion.first, newLightPrism);
-                            cec->onChunksUpdate_Voxels(pWorld.first, pRegion.first, newVoxels);
-                            cec->onChunksUpdate_Nodes(pWorld.first, pRegion.first, newNodes);
-                        
-                    }
-
-                    // То, что уже отслеживает наблюдатель
-                    const auto &subs = cec->getSubscribed();
-
-                    // // Проверка отслеживания сущностей
-                    // if(cecIndex-1 == region.CEC_NextChunkAndEntityesViewCheck) {
-                    //     std::vector<LocalEntityId_t> newEntityes, lostEntityes;
-                    //     for(size_t iter = 0; iter < region.Entityes.size(); iter++) {
-                    //         Entity &entity = region.Entityes[iter];
-
-                    //         if(entity.IsRemoved)
-                    //             continue;
-
-                    //         for(const ContentViewCircle &circle : cvc->second) {
-                    //             int x = entity.ABBOX.x >> 17;
-                    //             int y = entity.ABBOX.y >> 17;
-                    //             int z = entity.ABBOX.z >> 17;
-
-                    //             uint32_t size = 0;
-                    //             if(circle.isIn(entity.Pos, x*x+y*y+z*z))
-                    //                 newEntityes.push_back(iter);
-                    //         }
-                    //     }
-
-                    //     std::unordered_set<LocalEntityId_t> newEntityesSet(newEntityes.begin(), newEntityes.end());
-
-                    //     {
-                    //         auto iterR_W = subs.Entities.find(pWorld.first);
-                    //         if(iterR_W == subs.Entities.end())
-                    //             // Если мир не отслеживается наблюдателем
-                    //             goto doesNotObserveEntityes;
-
-                    //         auto iterR_W_R = iterR_W->second.find(pRegion.first);
-                    //         if(iterR_W_R == iterR_W->second.end())
-                    //             // Если регион не отслеживается наблюдателем
-                    //             goto doesNotObserveEntityes;
-
-                    //         // Подходят ли уже наблюдаемые сущности под наблюдательные области
-                    //         for(LocalEntityId_t eId : iterR_W_R->second) {
-                    //             if(eId >= region.Entityes.size()) {
-                    //                 lostEntityes.push_back(eId);
-                    //                 break;
-                    //             }
-
-                    //             Entity &entity = region.Entityes[eId];
-
-                    //             if(entity.IsRemoved) {
-                    //                 lostEntityes.push_back(eId);
-                    //                 break;
-                    //             }
-
-                    //             int x = entity.ABBOX.x >> 17;
-                    //             int y = entity.ABBOX.y >> 17;
-                    //             int z = entity.ABBOX.z >> 17;
-
-                    //             for(const ContentViewCircle &circle : cvc->second) {
-                    //                 if(!circle.isIn(entity.Pos, x*x+y*y+z*z))
-                    //                     lostEntityes.push_back(eId);
-                    //             }
-                    //         }
-
-                    //         // Удалим чанки которые наблюдатель уже видит
-                    //         for(LocalEntityId_t eId : iterR_W_R->second)
-                    //             newEntityesSet.erase(eId);
-                    //     }
-
-                    //     doesNotObserveEntityes:
-
-                    //     cec->onEntityEnterLost(pWorld.first, pRegion.first, newEntityesSet, std::unordered_set<LocalEntityId_t>(lostEntityes.begin(), lostEntityes.end()));
-                    //     // Отправить полную информацию о новых наблюдаемых сущностях наблюдателю
-                    // }
-
-                    if(!region.Entityes.empty()) {
-                        std::unordered_map<RegionEntityId_t, Entity*> entities;
-                        for(size_t iter = 0; iter < region.Entityes.size(); iter++)
-                            entities[iter] = &region.Entityes[iter];
-                        cec->onEntityUpdates(pWorld.first, pRegion.first, entities);
-                    }
-                }
-            }
-
-
-            // Сохраняем регионы
-            region.LastSaveTime += CurrentTickDuration;
-
-            bool needToUnload = region.CECs.empty() && region.LastSaveTime > 60;
-            bool needToSave = region.IsChanged && region.LastSaveTime > 15;
-
-            if(needToUnload || needToSave) {
-                region.LastSaveTime = 0;
-                region.IsChanged = false;
-
-                SB_Region data;
-                convertChunkVoxelsToRegion(region.Voxels, data.Voxels);
-                SaveBackend.World->save(worldStringId, pRegion.first, &data);
-            }
-
-            // Выгрузим регионы
-            if(needToUnload) {
-                regionsToRemove.push_back(pRegion.first);
-            }
-
-            // Сброс информации об изменившихся данных
-            region.IsChunkChanged_Voxels = 0;
-            region.IsChunkChanged_Nodes = 0;
-        }
-
-        for(Pos::GlobalRegion regionPos : regionsToRemove) {
-            auto iter = wobj.Regions.find(regionPos);
-            if(iter == wobj.Regions.end())
-                continue;
-
-            wobj.Regions.erase(iter);
-        }
-
-        // Загрузить регионы
-        if(wobj.NeedToLoad.empty())
-            continue;
- 
-        for(Pos::GlobalRegion &regionPos : wobj.NeedToLoad) {
-            if(!SaveBackend.World->isExist(worldStringId, regionPos)) {
-                wobj.Regions[regionPos]->IsLoaded = true;
-            } else {
-                SB_Region data;
-                SaveBackend.World->load(worldStringId, regionPos, &data);
-                Region &robj = *wobj.Regions[regionPos];
-
-                // TODO: Передефайнить идентификаторы нод
-
-                convertRegionVoxelsToChunks(data.Voxels, robj.Voxels);
-            }
-        }
-
-        wobj.NeedToLoad.clear();
-    }
-    
-    // Проверить отслеживание порталов
-
 }
 
 

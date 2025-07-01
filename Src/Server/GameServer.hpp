@@ -72,8 +72,6 @@ class GameServer : public AsyncObject {
 
     struct {
         std::vector<std::unique_ptr<ContentEventController>> CECs;
-        // Индекс игрока, у которого в следующем такте будет пересмотрен ContentEventController->ContentViewCircles
-        uint16_t CEC_NextRebuildViewCircles = 0, CEC_NextCheckRegions = 0;
         ServerTime AfterStartTime = {0, 0};
 
     } Game;
@@ -192,7 +190,8 @@ private:
     void stepGeneratorAndLuaAsync(IWorldSaveBackend::TickSyncInfo_Out db);
 
     /*
-        Получить пакеты с игроков
+        Пакеты игроков получает асинхронный поток в RemoteClient
+        Остаётся только обработать распаршенные пакеты 
     */
 
     void stepPlayerProceed();

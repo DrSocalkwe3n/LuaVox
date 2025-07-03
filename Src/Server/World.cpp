@@ -18,16 +18,20 @@ void World::onUpdate(GameServer *server, float dtime) {
     
 }
 
-void World::onCEC_RegionsEnter(ContentEventController *cec, const std::vector<Pos::GlobalRegion> &enter) {
+std::vector<Pos::GlobalRegion> World::onCEC_RegionsEnter(ContentEventController *cec, const std::vector<Pos::GlobalRegion> &enter) {
+    std::vector<Pos::GlobalRegion> out;
+    
     for(const Pos::GlobalRegion &pos : enter) {
-        std::unique_ptr<Region> &region = Regions[pos];
-        if(!region) {
-            region = std::make_unique<Region>();
-            NeedToLoad.push_back(pos);
+        auto iterRegion = Regions.find(pos);
+        if(iterRegion == Regions.end()) {
+            out.push_back(pos);
         }
 
-        region->CECs.push_back(cec);
+        iterRegion->second->CECs.push_back(cec);
+        // Отправить клиенту информацию о чанках и сущностях
     }
+
+    return out;
 }
 
 void World::onCEC_RegionsLost(ContentEventController *cec, const std::vector<Pos::GlobalRegion> &lost) {

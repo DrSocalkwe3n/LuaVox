@@ -145,13 +145,9 @@ public:
     ~World();
 
     /*
-        Обновить регионы
-    */
-    void onUpdate(GameServer *server, float dtime);
-
-    /*
         Подписывает игрока на отслеживаемые им регионы
         Возвращает список не загруженных регионов, на которые соответственно игрока не получилось подписать
+        При подписи происходит отправка всех чанков и сущностей региона
     */
     std::vector<Pos::GlobalRegion> onCEC_RegionsEnter(ContentEventController *cec, const std::vector<Pos::GlobalRegion> &enter);
     void onCEC_RegionsLost(ContentEventController *cec, const std::vector<Pos::GlobalRegion> &lost); 
@@ -167,6 +163,16 @@ public:
         std::vector<Entity> Entityes;
     };
     void pushRegions(std::vector<std::pair<Pos::GlobalRegion, RegionIn>>);
+
+
+    /*
+        Проверка использования регионов, 
+    */
+    void onUpdate(GameServer *server, float dtime);
+
+    /*
+
+    */
 
     DefWorldId_t getDefId() const { return DefId; }
 };

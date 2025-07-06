@@ -55,32 +55,6 @@ struct ServerTime {
     uint32_t Seconds : 24, Sub : 8;
 };
 
-struct VoxelCube {
-    union {
-        struct {
-            DefVoxelId_t VoxelId : 24, Meta : 8;
-        };
-
-        DefVoxelId_t Data = 0;
-    };
-
-    Pos::bvec256u Left, Right; // TODO: заменить на позицию и размер
-
-    auto operator<=>(const VoxelCube& other) const {
-        if (auto cmp = Left <=> other.Left; cmp != 0)
-            return cmp;
-
-        if (auto cmp = Right <=> other.Right; cmp != 0)
-            return cmp;
-
-        return Data <=> other.Data;
-    }
-
-    bool operator==(const VoxelCube& other) const {
-        return Left == other.Left && Right == other.Right && Data == other.Data;
-    }
-};
-
 struct VoxelCube_Region {
     union {
         struct {
@@ -105,15 +79,6 @@ struct VoxelCube_Region {
     bool operator==(const VoxelCube_Region& other) const {
         return Left == other.Left && Right == other.Right && Data == other.Data;
     }
-};
-
-struct Node {
-    union {
-        struct {
-            DefNodeId_t NodeId : 24, Meta : 8;
-        };
-        DefNodeId_t Data;
-    };
 };
 
 struct AABB {
@@ -382,8 +347,8 @@ inline void convertChunkVoxelsToRegion(const std::unordered_map<Pos::bvec4u, std
         for (const auto& cube : voxels) {
             regions.push_back({
                 cube.VoxelId, cube.Meta,
-                Pos::bvec1024u(left.x+cube.Left.x, left.y+cube.Left.y, left.z+cube.Left.z),
-                Pos::bvec1024u(left.x+cube.Right.x, left.y+cube.Right.y, left.z+cube.Right.z)
+                Pos::bvec1024u(left.x+cube.Pos.x, left.y+cube.Pos.y, left.z+cube.Pos.z),
+                Pos::bvec1024u(left.x+cube.Pos.x+cube.Size.x, left.y+cube.Pos.y+cube.Size.y, left.z+cube.Pos.z+cube.Size.z)
             });
         }
     }

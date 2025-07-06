@@ -85,13 +85,13 @@ public:
                         aabbInfo.VecMin.set(axis, aabbInfo.VecMin[axis] & ~0xff00);
                     aabbInfo.VecMax = aabbInfo.VecMin;
 
-                    aabbInfo.VecMin.x |= int(cube.Left.x) << 6;
-                    aabbInfo.VecMin.y |= int(cube.Left.y) << 6;
-                    aabbInfo.VecMin.z |= int(cube.Left.z) << 6;
+                    aabbInfo.VecMin.x |= int(cube.Pos.x) << 6;
+                    aabbInfo.VecMin.y |= int(cube.Pos.y) << 6;
+                    aabbInfo.VecMin.z |= int(cube.Pos.z) << 6;
 
-                    aabbInfo.VecMax.x |= int(cube.Right.x) << 6;
-                    aabbInfo.VecMax.y |= int(cube.Right.y) << 6;
-                    aabbInfo.VecMax.z |= int(cube.Right.z) << 6;
+                    aabbInfo.VecMax.x |= int(cube.Pos.x+cube.Size.x+1) << 6;
+                    aabbInfo.VecMax.y |= int(cube.Pos.y+cube.Size.y+1) << 6;
+                    aabbInfo.VecMax.z |= int(cube.Pos.z+cube.Size.z+1) << 6;
 
                     if(aabb.isCollideWith(aabbInfo)) {
                         aabbInfo = {
@@ -149,8 +149,8 @@ public:
         Возвращает список не загруженных регионов, на которые соответственно игрока не получилось подписать
         При подписи происходит отправка всех чанков и сущностей региона
     */
-    std::vector<Pos::GlobalRegion> onCEC_RegionsEnter(ContentEventController *cec, const std::vector<Pos::GlobalRegion> &enter);
-    void onCEC_RegionsLost(ContentEventController *cec, const std::vector<Pos::GlobalRegion> &lost); 
+    std::vector<Pos::GlobalRegion> onCEC_RegionsEnter(ContentEventController *cec, const std::vector<Pos::GlobalRegion> &enter, WorldId_t wId);
+    void onCEC_RegionsLost(ContentEventController *cec, const std::vector<Pos::GlobalRegion>& lost); 
     struct SaveUnloadInfo {
         std::vector<Pos::GlobalRegion> ToUnload;
         std::vector<std::pair<Pos::GlobalRegion, SB_Region_In>> ToSave;

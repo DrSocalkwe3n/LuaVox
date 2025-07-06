@@ -67,9 +67,13 @@ void RemoteClient::shutdown(EnumDisconnect type, const std::string reason) {
     LOG.info() << "Игрок '" << Username << "' отключился " << info;
 }
 
-void RemoteClient::prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk chunkPos, 
-    const std::vector<VoxelCube>* voxels)
+bool RemoteClient::maybe_prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_voxels,
+    const std::vector<DefVoxelId_t>& uniq_sorted_defines)
 {
+    bool lock = ResUses.RefChunkLock.exchange(1);
+    if(lock)
+        return false;
+
     /*
         Обновить зависимости
         Запросить недостающие
@@ -80,39 +84,23 @@ void RemoteClient::prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk
         newTypes, /* Новые типы вокселей */
         lostTypes /* Потерянные типы вокселей */;
 
-    // Обновить зависимости вокселей
-    std::vector<DefVoxelId_t> v;
-    if(voxels) {
-        v.reserve(voxels->size());
-        for(const VoxelCube& value : *voxels) {
-            v.push_back(value.VoxelId);
-        }
-
-        std::sort(v.begin(), v.end());
-        auto last = std::unique(v.begin(), v.end());
-        v.erase(last, v.end());
-
-        // В v отсортированный список уникальных вокселей в чанке
-    
-
-        // Отметим использование этих вокселей
-        for(const DefVoxelId_t& id : v) {
-            auto iter = ResUses.DefVoxel.find(id);
-            if(iter == ResUses.DefVoxel.end()) {
-                // Новый тип
-                newTypes.push_back(id);
-                ResUses.DefVoxel[id] = 1;
-            } else {
-                // Увеличиваем счётчик
-                iter->second++;
-            }
+    // Отметим использование этих вокселей
+    for(const DefVoxelId_t& id : uniq_sorted_defines) {
+        auto iter = ResUses.DefVoxel.find(id);
+        if(iter == ResUses.DefVoxel.end()) {
+            // Новый тип
+            newTypes.push_back(id);
+            ResUses.DefVoxel[id] = 1;
+        } else {
+            // Увеличиваем счётчик
+            iter->second++;
         }
     }
 
-    // Исключим зависимости предыдущей версии чанка
     auto iterWorld = ResUses.RefChunk.find(worldId);
-    assert(iterWorld != ResUses.RefChunk.end());
     Pos::bvec4u lChunk = (chunkPos & 0xf);
+
+    if(iterWorld != ResUses.RefChunk.end())
     // Исключим зависимости предыдущей версии чанка
     {
         auto iterRegion = iterWorld->second.find(chunkPos);
@@ -128,9 +116,12 @@ void RemoteClient::prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk
                 }
             }
         }
+    } else {
+        ResUses.RefChunk[worldId] = {};
+        iterWorld = ResUses.RefChunk.find(worldId);
     }
 
-    iterWorld->second[chunkPos][lChunk.pack()].Voxel = v;
+    iterWorld->second[chunkPos][lChunk.pack()].Voxel = uniq_sorted_defines;
 
     if(!newTypes.empty()) {
         // Добавляем новые типы в запрос
@@ -146,46 +137,44 @@ void RemoteClient::prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk
         }
     }
 
-    // TODO: отправить чанк
+    checkPacketBorder(1+4+8+2+4+compressed_voxels.size());
+    NextPacket << (uint8_t) ToClient::L1::Content
+        << (uint8_t) ToClient::L2Content::ChunkVoxels
+        << worldId << chunkPos.pack() << uint32_t(compressed_voxels.size());
+    NextPacket.write((const std::byte*) compressed_voxels.data(), compressed_voxels.size());
+
+    ResUses.RefChunkLock.exchange(0);
+    return true;
 }
 
-void RemoteClient::prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, const Node* nodes) {
+bool RemoteClient::maybe_prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_nodes,
+    const std::vector<DefNodeId_t>& uniq_sorted_defines)
+{
+    bool lock = ResUses.RefChunkLock.exchange(1);
+    if(lock)
+        return false;
+
     std::vector<DefNodeId_t>
         newTypes, /* Новые типы нод */
         lostTypes /* Потерянные типы нод */;
 
-    // Обновить зависимости нод
-    std::vector<DefNodeId_t> n;
-    {
-        n.reserve(16*16*16);
-        for(size_t iter = 0; iter < 16*16*16; iter++) {
-            n.push_back(nodes[iter].NodeId);
-        }
-
-        std::sort(n.begin(), n.end());
-        auto last = std::unique(n.begin(), n.end());
-        n.erase(last, n.end());
-
-        // В n отсортированный список уникальных нод в чанке
-    
-        // Отметим использование этих нод
-        for(const DefNodeId_t& id : n) {
-            auto iter = ResUses.DefNode.find(id);
-            if(iter == ResUses.DefNode.end()) {
-                // Новый тип
-                newTypes.push_back(id);
-                ResUses.DefNode[id] = 1;
-            } else {
-                // Увеличиваем счётчик
-                iter->second++;
-                LOG.debug() << "id = " << id << ' ' << iter->second;
-            }
+    // Отметим использование этих нод
+    for(const DefNodeId_t& id : uniq_sorted_defines) {
+        auto iter = ResUses.DefNode.find(id);
+        if(iter == ResUses.DefNode.end()) {
+            // Новый тип
+            newTypes.push_back(id);
+            ResUses.DefNode[id] = 1;
+        } else {
+            // Увеличиваем счётчик
+            iter->second++;
         }
     }
 
     auto iterWorld = ResUses.RefChunk.find(worldId);
-    assert(iterWorld != ResUses.RefChunk.end());
     Pos::bvec4u lChunk = (chunkPos & 0xf);
+
+    if(iterWorld != ResUses.RefChunk.end())
     // Исключим зависимости предыдущей версии чанка
     {
         auto iterRegion = iterWorld->second.find(chunkPos);
@@ -201,9 +190,12 @@ void RemoteClient::prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk 
                 }
             }
         }
+    } else {
+        ResUses.RefChunk[worldId] = {};
+        iterWorld = ResUses.RefChunk.find(worldId);
     }
 
-    iterWorld->second[chunkPos][lChunk.pack()].Node = n;
+    iterWorld->second[chunkPos][lChunk.pack()].Node = uniq_sorted_defines;
 
     if(!newTypes.empty()) {
         // Добавляем новые типы в запрос
@@ -219,8 +211,14 @@ void RemoteClient::prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk 
         }
     }
 
-    // TODO: отправить чанк
-    LOG.debug() << "Увидели " << chunkPos.x << ' ' << chunkPos.y << ' ' << chunkPos.z;
+    checkPacketBorder(1+4+8+4+compressed_nodes.size());
+    NextPacket << (uint8_t) ToClient::L1::Content
+        << (uint8_t) ToClient::L2Content::ChunkNodes
+        << worldId << chunkPos.pack() << uint32_t(compressed_nodes.size());
+    NextPacket.write((const std::byte*) compressed_nodes.data(), compressed_nodes.size());
+
+    ResUses.RefChunkLock.exchange(0);
+    return true;
 }
 
 void RemoteClient::prepareRegionRemove(WorldId_t worldId, Pos::GlobalRegion regionPos) {

@@ -151,11 +151,6 @@ public:
     // Фильтровать не отслеживаемые миры
     void onWorldUpdate(WorldId_t worldId, World *worldObj);
 
-    // Нужно фильтровать неотслеживаемые чанки
-    void onChunksUpdate_Voxels(WorldId_t worldId, Pos::GlobalRegion regionPos, const std::unordered_map<Pos::bvec4u, const std::vector<VoxelCube>*> &chunks);
-    void onChunksUpdate_Nodes(WorldId_t worldId, Pos::GlobalRegion regionPos, const std::unordered_map<Pos::bvec4u, const Node*> &chunks);
-    //void onChunksUpdate_LightPrism(WorldId_t worldId, Pos::GlobalRegion regionPos, const std::unordered_map<Pos::bvec4u, const LightPrism*> &chunks);
-
     void onEntityEnterLost(WorldId_t worldId, Pos::GlobalRegion regionPos, const std::unordered_set<RegionEntityId_t> &enter, const std::unordered_set<RegionEntityId_t> &lost);
     void onEntitySwap(ServerEntityId_t prevId, ServerEntityId_t newId);
     void onEntityUpdates(WorldId_t worldId, Pos::GlobalRegion regionPos, const std::unordered_map<RegionEntityId_t, Entity*> &entities);

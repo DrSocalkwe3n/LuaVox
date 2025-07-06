@@ -44,60 +44,6 @@ void ContentEventController::onWorldUpdate(WorldId_t worldId, World *worldObj)
     Remote->prepareWorldUpdate(worldId, worldObj);
 }
 
-void ContentEventController::onChunksUpdate_Voxels(WorldId_t worldId, Pos::GlobalRegion regionPos, 
-    const std::unordered_map<Pos::bvec4u, const std::vector<VoxelCube>*>& chunks)
-{
-    auto pWorld = ContentViewState.Regions.find(worldId);
-    if(pWorld == ContentViewState.Regions.end())
-        return;
-
-    if(!std::binary_search(pWorld->second.begin(), pWorld->second.end(), regionPos))
-        return;
-
-    for(auto pChunk : chunks) {
-        Pos::GlobalChunk chunkPos = (Pos::GlobalChunk(regionPos) << 2) + pChunk.first;
-        Remote->prepareChunkUpdate_Voxels(worldId, chunkPos, pChunk.second);
-    }
-}
-
-void ContentEventController::onChunksUpdate_Nodes(WorldId_t worldId, Pos::GlobalRegion regionPos, 
-    const std::unordered_map<Pos::bvec4u, const Node*> &chunks)
-{
-    auto pWorld = ContentViewState.Regions.find(worldId);
-    if(pWorld == ContentViewState.Regions.end())
-        return;
-
-    if(!std::binary_search(pWorld->second.begin(), pWorld->second.end(), regionPos))
-        return;
-
-    for(auto pChunk : chunks) {
-        Pos::GlobalChunk chunkPos = (Pos::GlobalChunk(regionPos) << 2) + Pos::GlobalChunk(pChunk.first);
-        Remote->prepareChunkUpdate_Nodes(worldId, chunkPos, pChunk.second);
-    }
-}
-
-// void ContentEventController::onChunksUpdate_LightPrism(WorldId_t worldId, Pos::GlobalRegion regionPos, 
-//     const std::unordered_map<Pos::bvec4u, const LightPrism*> &chunks)
-// {
-//     auto pWorld = ContentViewState.find(worldId);
-//     if(pWorld == ContentViewState.end())
-//         return;
-
-//     auto pRegion = pWorld->second.find(regionPos);
-//     if(pRegion == pWorld->second.end())
-//         return;
-
-//     const std::bitset<4096> &chunkBitset = pRegion->second;
-
-//     for(auto pChunk : chunks) {
-//         if(!chunkBitset.test(pChunk.first))
-//             continue;
-
-//         Pos::GlobalChunk chunkPos = regionPos.toChunk(pChunk.first);
-//         Remote->prepareChunkUpdate_LightPrism(worldId, chunkPos, pChunk.second);
-//     }
-// }
-
 void ContentEventController::onEntityEnterLost(WorldId_t worldId, Pos::GlobalRegion regionPos, 
     const std::unordered_set<RegionEntityId_t> &enter, const std::unordered_set<RegionEntityId_t> &lost)
 {

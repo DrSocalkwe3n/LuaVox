@@ -43,9 +43,12 @@ struct VoxelCube {
     Pos::bvec256u Left, Size;
 };
 
-struct Node {
-    DefNodeId_t NodeId;
-    uint8_t Rotate : 6;
+union Node {
+    struct {
+        DefNodeId_t NodeId : 24, Meta : 8;
+    };
+
+    DefNodeId_t Data;
 };
 
 // 16 метров ребро
@@ -54,7 +57,7 @@ struct Chunk {
     // Кубы вокселей в чанке
     std::vector<VoxelCube> Voxels;
     // Ноды
-    std::unordered_map<Pos::bvec16u, Node> Nodes;
+    Node Nodes[16][16][16];
     // Ограничения прохождения света, идущего от солнца (от верха карты до верхней плоскости чанка)
     // LightPrism Lights[16][16];
 };
@@ -86,7 +89,7 @@ public:
     virtual void onContentDefinesLost(std::unordered_map<EnumDefContent, std::vector<ResourceId_t>>) = 0;
 
     // Сообщаем об изменившихся чанках
-    virtual void onChunksChange(WorldId_t worldId, const std::unordered_set<Pos::GlobalChunk> &changeOrAddList, const std::unordered_set<Pos::GlobalChunk> &remove) = 0;
+    virtual void onChunksChange(WorldId_t worldId, const std::unordered_set<Pos::GlobalChunk> &changeOrAddList, const std::unordered_set<Pos::GlobalRegion> &remove) = 0;
     // Установить позицию для камеры
     virtual void setCameraPos(WorldId_t worldId, Pos::Object pos, glm::quat quat) = 0;
 
@@ -94,7 +97,7 @@ public:
 };
 
 struct Region {
-    std::unordered_map<Pos::bvec16u, Chunk> Chunks;
+    Chunk Chunks[4][4][4];
 };
 
 struct World {

@@ -1,9 +1,13 @@
 #pragma once
 
+#include "Common/Net.hpp"
+#include <algorithm>
 #include <cstdint>
 #include <glm/ext.hpp>
+#include <initializer_list>
 #include <memory>
 #include <type_traits>
+#include <vector>
 
 
 namespace LV {
@@ -421,6 +425,61 @@ using PortalId_t = ResourceId_t;
 // struct LightPrism {
 //     uint8_t R : 2, G : 2, B : 2;
 // };
+
+
+
+struct VoxelCube {
+    union {
+        struct {
+            DefVoxelId_t VoxelId : 24, Meta : 8;
+        };
+
+        DefVoxelId_t Data = 0;
+    };
+
+    Pos::bvec256u Pos, Size; // Размер+1, 0 это единичный размер
+
+    auto operator<=>(const VoxelCube& other) const {
+        if (auto cmp = Pos <=> other.Pos; cmp != 0)
+            return cmp;
+
+        if (auto cmp = Size <=> other.Size; cmp != 0)
+            return cmp;
+
+        return Data <=> other.Data;
+    }
+
+    bool operator==(const VoxelCube& other) const {
+        return Pos == other.Pos && Size == other.Size && Data == other.Data;
+    }
+};
+
+struct CompressedVoxels {
+    std::u8string Compressed;
+    // Уникальный сортированный список идентификаторов вокселей
+    std::vector<DefVoxelId_t> Defines;
+};
+
+CompressedVoxels compressVoxels(const std::vector<VoxelCube>& voxels, bool fast = true);
+std::vector<VoxelCube> unCompressVoxels(const std::u8string& compressed);
+
+struct Node {
+    union {
+        struct {
+            DefNodeId_t NodeId : 24, Meta : 8;
+        };
+        DefNodeId_t Data;
+    };
+};
+
+struct CompressedNodes {
+    std::u8string Compressed;
+    // Уникальный сортированный список идентификаторов нод
+    std::vector<DefNodeId_t> Defines;
+};
+
+CompressedNodes compressNodes(const Node* nodes, bool fast = true);
+void unCompressNodes(const std::u8string& compressed, Node* ptr);
 
 }
 

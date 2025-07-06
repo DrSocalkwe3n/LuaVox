@@ -33,81 +33,77 @@ public:
         return Dir / worldId / std::to_string(regionPos.x) / std::to_string(regionPos.y) / std::to_string(regionPos.z);
     }
 
-    virtual bool isAsync() { return false; };
-
-    virtual bool isExist(std::string worldId, Pos::GlobalRegion regionPos) {
-        return fs::exists(getPath(worldId, regionPos));
+    virtual TickSyncInfo_Out tickSync(TickSyncInfo_In &&data) override {
+        TickSyncInfo_Out out;
+        out.NotExisten = std::move(data.Load);
+        return out;
     }
 
-    virtual void load(std::string worldId, Pos::GlobalRegion regionPos, SB_Region *data) {
-        std::ifstream fd(getPath(worldId, regionPos));
-        js::object jobj = js::parse(fd).as_object();
+    virtual void changePreloadDistance(uint8_t value) override {
 
-        {
-            js::array &jaVoxels = jobj.at("Voxels").as_array();
-            for(js::value &jvVoxel : jaVoxels) {
-                js::object &joVoxel = jvVoxel.as_object();
-                VoxelCube_Region cube;
-                cube.Data = joVoxel.at("Data").as_uint64();
-                cube.Left.x = joVoxel.at("LeftX").as_uint64();
-                cube.Left.y = joVoxel.at("LeftY").as_uint64();
-                cube.Left.z = joVoxel.at("LeftZ").as_uint64();
-                cube.Right.x = joVoxel.at("RightX").as_uint64();
-                cube.Right.y = joVoxel.at("RightY").as_uint64();
-                cube.Right.z = joVoxel.at("RightZ").as_uint64();
-                data->Voxels.push_back(cube);
-            }
-        }
-
-        {
-            js::object &joVoxelMap = jobj.at("VoxelsMap").as_object();
-            for(js::key_value_pair &jkvp : joVoxelMap) {
-                data->VoxelsMap[std::stoul(jkvp.key())] = jkvp.value().as_string();
-            }
-        }
     }
 
-    virtual void save(std::string worldId, Pos::GlobalRegion regionPos, const SB_Region *data) {
-        js::object jobj;
+    // virtual void load(std::string worldId, Pos::GlobalRegion regionPos, SB_Region *data) {
+    //     std::ifstream fd(getPath(worldId, regionPos));
+    //     js::object jobj = js::parse(fd).as_object();
 
-        {
-            js::array jaVoxels;
-            for(const VoxelCube_Region &cube : data->Voxels) {
-                js::object joVoxel;
-                joVoxel["Data"] = cube.Data;
-                joVoxel["LeftX"] = cube.Left.x;
-                joVoxel["LeftY"] = cube.Left.y;
-                joVoxel["LeftZ"] = cube.Left.z;
-                joVoxel["RightX"] = cube.Right.x;
-                joVoxel["RightY"] = cube.Right.y;
-                joVoxel["RightZ"] = cube.Right.z;
-                jaVoxels.push_back(std::move(joVoxel));
-            }
+    //     {
+    //         js::array &jaVoxels = jobj.at("Voxels").as_array();
+    //         for(js::value &jvVoxel : jaVoxels) {
+    //             js::object &joVoxel = jvVoxel.as_object();
+    //             VoxelCube_Region cube;
+    //             cube.Data = joVoxel.at("Data").as_uint64();
+    //             cube.Left.x = joVoxel.at("LeftX").as_uint64();
+    //             cube.Left.y = joVoxel.at("LeftY").as_uint64();
+    //             cube.Left.z = joVoxel.at("LeftZ").as_uint64();
+    //             cube.Right.x = joVoxel.at("RightX").as_uint64();
+    //             cube.Right.y = joVoxel.at("RightY").as_uint64();
+    //             cube.Right.z = joVoxel.at("RightZ").as_uint64();
+    //             data->Voxels.push_back(cube);
+    //         }
+    //     }
 
-            jobj["Voxels"] = std::move(jaVoxels);
-        }
+    //     {
+    //         js::object &joVoxelMap = jobj.at("VoxelsMap").as_object();
+    //         for(js::key_value_pair &jkvp : joVoxelMap) {
+    //             data->VoxelsMap[std::stoul(jkvp.key())] = jkvp.value().as_string();
+    //         }
+    //     }
+    // }
 
-        {
-            js::object joVoxelMap;
-            for(const auto &pair : data->VoxelsMap) {
-                joVoxelMap[std::to_string(pair.first)] = pair.second;
-            }
+    // virtual void save(std::string worldId, Pos::GlobalRegion regionPos, const SB_Region *data) {
+    //     js::object jobj;
 
-            jobj["VoxelsMap"] = std::move(joVoxelMap);
-        }
+    //     {
+    //         js::array jaVoxels;
+    //         for(const VoxelCube_Region &cube : data->Voxels) {
+    //             js::object joVoxel;
+    //             joVoxel["Data"] = cube.Data;
+    //             joVoxel["LeftX"] = cube.Left.x;
+    //             joVoxel["LeftY"] = cube.Left.y;
+    //             joVoxel["LeftZ"] = cube.Left.z;
+    //             joVoxel["RightX"] = cube.Right.x;
+    //             joVoxel["RightY"] = cube.Right.y;
+    //             joVoxel["RightZ"] = cube.Right.z;
+    //             jaVoxels.push_back(std::move(joVoxel));
+    //         }
 
-        fs::create_directories(getPath(worldId, regionPos).parent_path());
-        std::ofstream fd(getPath(worldId, regionPos));
-        fd << js::serialize(jobj);
-    }
+    //         jobj["Voxels"] = std::move(jaVoxels);
+    //     }
 
-    virtual void remove(std::string worldId, Pos::GlobalRegion regionPos) {
-        fs::remove(getPath(worldId, regionPos));
-    }
+    //     {
+    //         js::object joVoxelMap;
+    //         for(const auto &pair : data->VoxelsMap) {
+    //             joVoxelMap[std::to_string(pair.first)] = pair.second;
+    //         }
 
-    virtual void remove(std::string worldId) {
-        fs::remove_all(Dir / worldId);
-    }
+    //         jobj["VoxelsMap"] = std::move(joVoxelMap);
+    //     }
+
+    //     fs::create_directories(getPath(worldId, regionPos).parent_path());
+    //     std::ofstream fd(getPath(worldId, regionPos));
+    //     fd << js::serialize(jobj);
+    // }
 };
 
 class PSB_Filesystem : public IPlayerSaveBackend {
@@ -163,35 +159,37 @@ public:
 
     virtual bool isAsync() { return false; };
 
-    virtual bool isExist(std::string playerId) {
-        return fs::exists(getPath(playerId));
+    virtual coro<bool> isExist(std::string useranme) override {
+        co_return fs::exists(getPath(useranme));
     }
 
-    virtual void rename(std::string fromPlayerId, std::string toPlayerId) {
-        fs::rename(getPath(fromPlayerId), getPath(toPlayerId));
+    virtual coro<> rename(std::string prevUsername, std::string newUsername) override {
+        fs::rename(getPath(prevUsername), getPath(newUsername));
+        co_return;
     }
 
-    virtual void load(std::string playerId, SB_Auth *data) {
-        std::ifstream fd(getPath(playerId));
+    virtual coro<bool> load(std::string useranme, SB_Auth& data) override {
+        std::ifstream fd(getPath(useranme));
         js::object jobj = js::parse(fd).as_object();
 
-        data->Id = jobj.at("Id").as_uint64();
-        data->PasswordHash = jobj.at("PasswordHash").as_string();
+        data.Id = jobj.at("Id").as_uint64();
+        data.PasswordHash = jobj.at("PasswordHash").as_string();
     }
 
-    virtual void save(std::string playerId, const SB_Auth *data) {
+    virtual coro<> save(std::string playerId, const SB_Auth& data) override {
         js::object jobj;
 
-        jobj["Id"] = data->Id;
-        jobj["PasswordHash"] = data->PasswordHash;
+        jobj["Id"] = data.Id;
+        jobj["PasswordHash"] = data.PasswordHash;
 
         fs::create_directories(getPath(playerId).parent_path());
         std::ofstream fd(getPath(playerId));
         fd << js::serialize(jobj);
     }
 
-    virtual void remove(std::string playerId) {
-        fs::remove(getPath(playerId));
+    virtual coro<> remove(std::string username) override {
+        fs::remove(getPath(username));
+        co_return;
     }
 };
 

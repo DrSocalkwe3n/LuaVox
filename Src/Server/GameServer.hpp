@@ -4,6 +4,7 @@
 #include <Common/Lockable.hpp>
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/io_context.hpp>
+#include <condition_variable>
 #include <filesystem>
 #include "RemoteClient.hpp"
 #include "Server/Abstract.hpp"
@@ -116,12 +117,78 @@ class GameServer : public AsyncObject {
         std::unique_ptr<IModStorageSaveBackend> ModStorage;
     } SaveBackend;
 
+    enum class EnumBackingScenario {
+        ChunksChanges // Сжатие изменённых чанков и отправка клиентам
+    };
+
+    /*
+        Обязательно между тактами
+            После окончания такта пул копирует изменённые чанки 
+            - синхронизация сбора в stepDatabaseSync - 
+            сжимает их и отправляет клиентам
+            - синхронизация в начале stepPlayerProceed -
+            ^ к этому моменту все данные должны быть отправлены
+            Далее при подписании на новые регионы они будут добавлены в пул на обработку
+
+        Генерация шума
+            OpenCL или пул
+
+        Конвертация ресурсов игры, их хранение в кеше и загрузка в память для отправки клиентам
+            io_uring или последовательное чтение
+        
+        Исполнение асинхронного луа
+            Пул для постоянной работы и синхронизации времени с главным потоком
+
+        Сжатие/расжатие регионов в базе
+            Локальный поток должен собирать ключи профилей для базы
+            Остальное внутри базы
+    */
+    struct Backing_t {
+        TOS::Logger LOG = "Backing";
+        bool NeedShutdown = false;
+        std::vector<std::thread> Threads;
+        std::mutex Mutex;
+        std::atomic_int Run = 0;
+        std::condition_variable Symaphore;
+        std::unordered_map<WorldId_t, std::unique_ptr<World>> *Worlds;
+
+        void start() {
+            std::lock_guard<std::mutex> lock(Mutex);
+            Run = Threads.size();
+            Symaphore.notify_all();
+        }
+
+        void end() {
+            std::unique_lock<std::mutex> lock(Mutex);
+            Symaphore.wait(lock, [&](){ return Run == 0 || NeedShutdown; });
+        }
+
+        void stop() {
+            {
+                std::unique_lock<std::mutex> lock(Mutex);
+                NeedShutdown = true;
+                Symaphore.notify_all();
+            }
+
+            for(std::thread& thread : Threads)
+                thread.join();
+        }
+
+        void run(int id);
+    } Backing;
+
 public:
     GameServer(asio::io_context &ioc, fs::path worldPath)
         : AsyncObject(ioc),
           Content(ioc, nullptr, nullptr, nullptr, nullptr, nullptr)
     {
         init(worldPath);
+
+        Backing.Threads.resize(4);
+        Backing.Worlds = &Expanse.Worlds;
+        for(size_t iter = 0; iter < Backing.Threads.size(); iter++) {
+            Backing.Threads[iter] = std::thread(Backing.Run, &Backing, iter);
+        }
     }
 
     virtual ~GameServer();
@@ -211,6 +278,7 @@ private:
     /*
         Обработка запросов двоичных ресурсов и определений
         Отправка пакетов игрокам
+        Запуск задачи ChunksChanges
     */
     void stepSyncContent();
 };

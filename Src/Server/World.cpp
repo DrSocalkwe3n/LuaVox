@@ -1,4 +1,6 @@
 #include "World.hpp"
+#include "TOSLib.hpp"
+#include <memory>
 
 
 namespace LV::Server {
@@ -14,22 +16,39 @@ World::~World() {
 
 }
 
-void World::onUpdate(GameServer *server, float dtime) {
-    
-}
-
-std::vector<Pos::GlobalRegion> World::onCEC_RegionsEnter(ContentEventController *cec, const std::vector<Pos::GlobalRegion> &enter) {
+std::vector<Pos::GlobalRegion> World::onCEC_RegionsEnter(ContentEventController *cec, const std::vector<Pos::GlobalRegion>& enter, WorldId_t wId) {
     std::vector<Pos::GlobalRegion> out;
+
+    TOS::Logger("Test").debug() << "Start";
     
     for(const Pos::GlobalRegion &pos : enter) {
         auto iterRegion = Regions.find(pos);
         if(iterRegion == Regions.end()) {
             out.push_back(pos);
+            continue;
         }
 
-        iterRegion->second->CECs.push_back(cec);
+        auto &region = *iterRegion->second;
+        region.CECs.push_back(cec);
         // Отправить клиенту информацию о чанках и сущностях
+        std::unordered_map<Pos::bvec4u, const std::vector<VoxelCube>*> voxels;
+        std::unordered_map<Pos::bvec4u, const Node*> nodes;
+
+        for(auto& [key, value] : region.Voxels) {
+            voxels[key] = &value;
+        }
+
+        for(int z = 0; z < 4; z++)
+            for(int y = 0; y < 4; y++)
+                for(int x = 0; x < 4; x++) {
+                    nodes[Pos::bvec4u(x, y, z)] = (const Node*) &region.Nodes[0][0][0][x][y][z];
+                }
+
+        cec->onChunksUpdate_Voxels(wId, pos, voxels);
+        cec->onChunksUpdate_Nodes(wId, pos, nodes);
     }
+
+    TOS::Logger("Test").debug() << "End";
 
     return out;
 }
@@ -48,6 +67,28 @@ void World::onCEC_RegionsLost(ContentEventController *cec, const std::vector<Pos
             }
         }
     }
+}
+
+World::SaveUnloadInfo World::onStepDatabaseSync() {
+    return {};
+}
+
+void World::pushRegions(std::vector<std::pair<Pos::GlobalRegion, RegionIn>> regions) {
+    for(auto& [key, value] : regions) {
+        Region &region = *(Regions[key] = std::make_unique<Region>());
+        region.Voxels = std::move(value.Voxels);
+
+        Node *ptr = (Node*) region.Nodes;
+        for(std::array<Node, 16*16*16>& nodes : value.Nodes) {
+            
+            std::copy(nodes.data(), nodes.data()+16*16*16, ptr);
+            ptr += 16*16*16;
+        }
+    }
+}
+
+void World::onUpdate(GameServer *server, float dtime) {
+    
 }
 
 }

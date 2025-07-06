@@ -7,6 +7,7 @@
 #include "Common/Packets.hpp"
 #include "Server/ContentEventController.hpp"
 #include <Common/Abstract.hpp>
+#include <atomic>
 #include <bitset>
 #include <initializer_list>
 #include <set>
@@ -264,6 +265,7 @@ class RemoteClient {
             std::vector<DefVoxelId_t> Voxel;
             std::vector<DefNodeId_t> Node;
         };
+        std::atomic_bool RefChunkLock = 0;
         std::map<WorldId_t, std::map<Pos::GlobalRegion, std::array<ChunkRef, 4*4*4>>> RefChunk;
         struct RefWorld_t {
             DefWorldId_t Profile;
@@ -314,15 +316,24 @@ public:
         Socket.pushPackets(simplePackets, smartPackets);
     }
 
-    // Функции подготавливают пакеты к отправке
+    /*
+        Сервер собирает изменения миров, сжимает их и раздаёт на отправку игрокам
+    
+    */
 
+    // Функции подготавливают пакеты к отправке
     // Отслеживаемое игроком использование контента
+
+    // maybe созданны для использования в многопотоке, если ресурс сейчас занят вернёт false, потом нужно повторить запрос
     // В зоне видимости добавился чанк или изменились его воксели
-    void prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::vector<VoxelCube>* voxels);
+    bool maybe_prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_voxels,
+        const std::vector<DefVoxelId_t>& uniq_sorted_defines);
     // В зоне видимости добавился чанк или изменились его ноды
-    void prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, const Node* nodes);
-    void prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::unordered_map<Pos::bvec16u, Node> &nodes);
-    //void prepareChunkUpdate_LightPrism(WorldId_t worldId, Pos::GlobalChunk chunkPos, const LightPrism *lights);
+    bool maybe_prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_nodes,
+        const std::vector<DefNodeId_t>& uniq_sorted_defines);
+    // void prepareChunkUpdate_LightPrism(WorldId_t worldId, Pos::GlobalChunk chunkPos, const LightPrism *lights);
+
+
     // Регион удалён из зоны видимости
     void prepareRegionRemove(WorldId_t worldId, Pos::GlobalRegion regionPos);
 

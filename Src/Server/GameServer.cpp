@@ -11,22 +11,60 @@
 #include <glm/geometric.hpp>
 #include <iterator>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include "SaveBackends/Filesystem.hpp"
 #include "Server/SaveBackend.hpp"
 #include "Server/World.hpp"
+#include "TOSLib.hpp"
 #include "glm/gtc/noise.hpp"
 
 namespace LV::Server {
 
 GameServer::~GameServer() {
     shutdown("on ~GameServer");
+    Backing.NeedShutdown = true;
+    Backing.Symaphore.notify_all();
+
     RunThread.join();
     WorkDeadline.cancel();
     UseLock.wait_no_use();
+
+    Backing.stop();
+
     LOG.info() << "Сервер уничтожен";
+}
+
+void GameServer::Backing_t::run(int id) {
+    LOG.debug() << "Старт фонового потока " << id;
+
+    try {
+        while(true) {
+            {
+                std::unique_lock<std::mutex> lock(Mutex);
+                Symaphore.wait(lock, [&](){ return Run != 0 || NeedShutdown; });
+                if(NeedShutdown) {
+                    LOG.debug() << "Завершение выполнения фонового потока " << id;
+                }
+            }
+
+            // Работа
+
+            {
+                std::unique_lock<std::mutex> lock(Mutex);
+                Run--;
+                Symaphore.notify_all();
+            }
+        }
+    } catch(const std::exception& exc) {
+        std::unique_lock<std::mutex> lock(Mutex);
+        NeedShutdown = true;
+        LOG.error() << "Ошибка выполнения фонового потока " << id << ":\n" << exc.what();
+    }
+
+    Symaphore.notify_all();
 }
 
 static thread_local std::vector<ContentViewCircle> TL_Circles;
@@ -356,6 +394,8 @@ void GameServer::stepConnections() {
         lock->clear();
     }
 
+    Backing.end();
+
     // Отключение игроков
     for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
         // Убрать отключившихся
@@ -425,7 +465,7 @@ IWorldSaveBackend::TickSyncInfo_Out GameServer::stepDatabaseSync() {
                 auto iterWorld = Expanse.Worlds.find(worldId);
                 assert(iterWorld != Expanse.Worlds.end());
 
-                std::vector<Pos::GlobalRegion> notLoaded = iterWorld->second->onCEC_RegionsEnter(cec.get(), regions);
+                std::vector<Pos::GlobalRegion> notLoaded = iterWorld->second->onCEC_RegionsEnter(cec.get(), regions, worldId);
                 if(!notLoaded.empty()) {
                     // Добавляем к списку на загрузку
                     std::vector<Pos::GlobalRegion> &tl = toDB.Load[worldId];
@@ -483,6 +523,9 @@ void GameServer::stepGeneratorAndLuaAsync(IWorldSaveBackend::TickSyncInfo_Out db
     for(auto& [worldId, regions] : db.NotExisten) {
         auto &r = calculatedNoise[worldId];
         for(Pos::GlobalRegion pos : regions) {
+            if(IsGoingShutdown)
+                break;
+
             r.emplace_back();
             std::get<0>(r.back()) = pos;
             auto &region = std::get<1>(r.back());
@@ -494,10 +537,13 @@ void GameServer::stepGeneratorAndLuaAsync(IWorldSaveBackend::TickSyncInfo_Out db
             for(int z = 0; z < 64; z++)
             for(int y = 0; y < 64; y++)
             for(int x = 0; x < 64; x++, ptr++) {
-                *ptr = glm::perlin(glm::dvec3(posNode.x+x, posNode.y+y, posNode.z+z));
+                *ptr = TOS::genRand(); //glm::perlin(glm::vec3(posNode.x+x, posNode.y+y, posNode.z+z));
             }
         }
     }
+
+    if(IsGoingShutdown)
+        return;
 
     std::unordered_map<WorldId_t, std::vector<std::pair<Pos::GlobalRegion, World::RegionIn>>> toLoadRegions;
 
@@ -565,7 +611,7 @@ void GameServer::stepGeneratorAndLuaAsync(IWorldSaveBackend::TickSyncInfo_Out db
 
         iterWorld->second->pushRegions(std::move(regions));
         for(auto& [cec, poses] : toSubscribe) {
-            iterWorld->second->onCEC_RegionsEnter(cec, poses);
+            iterWorld->second->onCEC_RegionsEnter(cec, poses, worldId);
         }
     }
 }
@@ -1067,6 +1113,8 @@ void GameServer::stepSyncContent() {
     for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
         full.insert(cec->Remote->pushPreparedPackets());
     }
+
+    Backing.start();
 
     full.uniq();
 

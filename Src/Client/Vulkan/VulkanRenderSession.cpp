@@ -611,14 +611,14 @@ void VulkanRenderSession::onContentDefinesLost(std::unordered_map<EnumDefContent
 
 }
 
-void VulkanRenderSession::onChunksChange(WorldId_t worldId, const std::unordered_set<Pos::GlobalChunk> &changeOrAddList, const std::unordered_set<Pos::GlobalChunk> &remove) {
+void VulkanRenderSession::onChunksChange(WorldId_t worldId, const std::unordered_set<Pos::GlobalChunk>& changeOrAddList, const std::unordered_set<Pos::GlobalRegion>& remove) {
 auto &table = External.ChunkVoxelMesh[worldId];
 
     for(Pos::GlobalChunk pos : changeOrAddList) {
         Pos::GlobalRegion rPos = pos >> 4;
         Pos::bvec16u cPos = pos & 0xf;
 
-        const auto &voxels = ServerSession->Data.Worlds[worldId].Regions[rPos].Chunks[cPos].Voxels;
+        const auto &voxels = ServerSession->Data.Worlds[worldId].Regions[rPos].Chunks[cPos.x][cPos.y][cPos.z].Voxels;
 
         if(voxels.empty()) {
             auto iter = table.find(pos);
@@ -639,10 +639,14 @@ auto &table = External.ChunkVoxelMesh[worldId];
         }
     }
 
-    for(Pos::GlobalChunk pos : remove) {
-        auto iter = table.find(pos);
-        if(iter != table.end())
-            table.erase(iter);
+    for(Pos::GlobalRegion pos : remove) {
+        for(int z = 0; z < 4; z++)
+        for(int y = 0; y < 4; y++)
+        for(int x = 0; x < 4; x++) {
+            auto iter = table.find((Pos::GlobalChunk(pos) << 2) + Pos::GlobalChunk(x, y, z));
+            if(iter != table.end())
+                table.erase(iter);
+        }
     }
 
     if(table.empty())

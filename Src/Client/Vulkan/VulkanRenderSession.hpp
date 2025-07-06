@@ -155,7 +155,7 @@ public:
     virtual void onBinaryResourceLost(std::unordered_map<EnumBinResource, std::vector<ResourceId_t>>) override;
     virtual void onContentDefinesAdd(std::unordered_map<EnumDefContent, std::unordered_map<ResourceId_t, std::u8string>>) override;
     virtual void onContentDefinesLost(std::unordered_map<EnumDefContent, std::vector<ResourceId_t>>) override;
-    virtual void onChunksChange(WorldId_t worldId, const std::unordered_set<Pos::GlobalChunk> &changeOrAddList, const std::unordered_set<Pos::GlobalChunk> &remove) override;
+    virtual void onChunksChange(WorldId_t worldId, const std::unordered_set<Pos::GlobalChunk>& changeOrAddList, const std::unordered_set<Pos::GlobalRegion>& remove) override;
     virtual void setCameraPos(WorldId_t worldId, Pos::Object pos, glm::quat quat) override;
 
     glm::mat4 calcViewMatrix(glm::quat quat, glm::vec3 camOffset = glm::vec3(0)) {

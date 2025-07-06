@@ -29,11 +29,23 @@ struct PP_Content_ChunkVoxels : public ParsedPacket {
     {}
 };
 
-struct PP_Content_ChunkRemove : public ParsedPacket {
+struct PP_Content_ChunkNodes : public ParsedPacket {
     WorldId_t Id;
     Pos::GlobalChunk Pos;
+    Node Nodes[16][16][16];
 
-    PP_Content_ChunkRemove(ToClient::L1 l1, uint8_t l2, WorldId_t id, Pos::GlobalChunk pos)
+    PP_Content_ChunkNodes(ToClient::L1 l1, uint8_t l2, WorldId_t id, Pos::GlobalChunk pos, Node* nodes)
+        : ParsedPacket(l1, l2), Id(id), Pos(pos)
+    {
+        std::copy(nodes, nodes+16*16*16, (Node*) Nodes);
+    }
+};
+
+struct PP_Content_RegionRemove : public ParsedPacket {
+    WorldId_t Id;
+    Pos::GlobalRegion Pos;
+
+    PP_Content_RegionRemove(ToClient::L1 l1, uint8_t l2, WorldId_t id, Pos::GlobalRegion pos)
         : ParsedPacket(l1, l2), Id(id), Pos(pos)
     {}
 };
@@ -252,7 +264,7 @@ void ServerSession::atFreeDrawTime(GlobalTime gTime, float dTime) {
     Speed += glm::vec3(0, 1, 0)*float(Keys.SPACE)*mltpl;
 
     {
-        std::unordered_map<WorldId_t, std::tuple<std::unordered_set<Pos::GlobalChunk>, std::unordered_set<Pos::GlobalChunk>>> changeOrAddList_removeList;
+        std::unordered_map<WorldId_t, std::tuple<std::unordered_set<Pos::GlobalChunk>, std::unordered_set<Pos::GlobalRegion>>> changeOrAddList_removeList;
 
         // Пакеты
         ParsedPacket *pack;
@@ -264,19 +276,26 @@ void ServerSession::atFreeDrawTime(GlobalTime gTime, float dTime) {
                     Pos::GlobalRegion rPos = p.Pos >> 2;
                     Pos::bvec4u cPos = p.Pos & 0x3;
 
-                    Data.Worlds[p.Id].Regions[rPos].Chunks[cPos].Voxels = std::move(p.Cubes);
+                    Data.Worlds[p.Id].Regions[rPos].Chunks[cPos.x][cPos.y][cPos.z].Voxels = std::move(p.Cubes);
 
                     auto &pair = changeOrAddList_removeList[p.Id];
                     std::get<0>(pair).insert(p.Pos);
-                } else if(l2 == ToClient::L2Content::RemoveChunk) {
-                    PP_Content_ChunkRemove &p = *dynamic_cast<PP_Content_ChunkRemove*>(pack);
-
+                } else if(l2 == ToClient::L2Content::ChunkNodes) {
+                    PP_Content_ChunkNodes &p = *dynamic_cast<PP_Content_ChunkNodes*>(pack);
                     Pos::GlobalRegion rPos = p.Pos >> 2;
                     Pos::bvec4u cPos = p.Pos & 0x3;
-                    auto &obj = Data.Worlds[p.Id].Regions[rPos].Chunks;
-                    auto iter = obj.find(cPos);
-                    if(iter != obj.end())
-                        obj.erase(iter);
+
+                    Node *nodes = (Node*) Data.Worlds[p.Id].Regions[rPos].Chunks[cPos.x][cPos.y][cPos.z].Nodes;
+                    std::copy((const Node*)p.Nodes, ((const Node*) p.Nodes)+16*16*16, nodes);
+                    auto &pair = changeOrAddList_removeList[p.Id];
+                    std::get<0>(pair).insert(p.Pos);
+                } else if(l2 == ToClient::L2Content::RemoveRegion) {
+                    PP_Content_RegionRemove &p = *dynamic_cast<PP_Content_RegionRemove*>(pack);
+
+                    auto &regions = Data.Worlds[p.Id].Regions;
+                    auto obj = regions.find(p.Pos);
+                    assert(obj != regions.end());
+                    regions.erase(obj);
 
                     auto &pair = changeOrAddList_removeList[p.Id];
                     std::get<1>(pair).insert(p.Pos);
@@ -514,11 +533,6 @@ coro<> ServerSession::rP_Content(Net::AsyncSocket &sock) {
         pos.unpack(co_await sock.read<Pos::GlobalChunk::Pack>());
 
         std::vector<VoxelCube> cubes(co_await sock.read<uint16_t>());
-        uint16_t debugCubesCount = cubes.size();
-        if(debugCubesCount > 1) {
-            int g = 0;
-            g++;
-        }
 
         for(size_t iter = 0; iter < cubes.size(); iter++) {
             VoxelCube &cube = cubes[iter];
@@ -545,19 +559,39 @@ coro<> ServerSession::rP_Content(Net::AsyncSocket &sock) {
     }
 
     case ToClient::L2Content::ChunkNodes:
-    
+    {
+        WorldId_t wcId = co_await sock.read<WorldId_t>();
+        Pos::GlobalChunk pos;
+        pos.unpack(co_await sock.read<Pos::GlobalChunk::Pack>());
+        std::array<Node, 16*16*16> nodes;
+
+        for(Node& node : nodes) {
+            node.Data = co_await sock.read<DefNodeId_t>();
+        }
+
+        PP_Content_ChunkNodes *packet = new PP_Content_ChunkNodes(
+            ToClient::L1::Content,
+            (uint8_t) ToClient::L2Content::ChunkVoxels,
+            wcId,
+            pos,
+            nodes.data()
+        );
+
+        while(!NetInputPackets.push(packet));
+
         co_return;
+    }
     case ToClient::L2Content::ChunkLightPrism:
 
         co_return;
-    case ToClient::L2Content::RemoveChunk: {
+    case ToClient::L2Content::RemoveRegion: {
         WorldId_t wcId = co_await sock.read<uint8_t>();
         Pos::GlobalChunk pos;
-        pos.unpack(co_await sock.read<Pos::GlobalChunk::Pack>());
+        pos.unpack(co_await sock.read<Pos::GlobalRegion::Pack>());
 
-        PP_Content_ChunkRemove *packet = new PP_Content_ChunkRemove(
+        PP_Content_RegionRemove *packet = new PP_Content_RegionRemove(
             ToClient::L1::Content,
-            (uint8_t) ToClient::L2Content::RemoveChunk,
+            (uint8_t) ToClient::L2Content::RemoveRegion,
             wcId,
             pos
         );

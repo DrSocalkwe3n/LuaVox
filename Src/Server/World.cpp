@@ -16,7 +16,7 @@ World::~World() {
 
 }
 
-std::vector<Pos::GlobalRegion> World::onCEC_RegionsEnter(ContentEventController *cec, const std::vector<Pos::GlobalRegion>& enter, WorldId_t wId) {
+std::vector<Pos::GlobalRegion> World::onCEC_RegionsEnter(std::shared_ptr<ContentEventController> cec, const std::vector<Pos::GlobalRegion>& enter) {
     std::vector<Pos::GlobalRegion> out;
 
     TOS::Logger("Test").debug() << "Start";
@@ -30,6 +30,7 @@ std::vector<Pos::GlobalRegion> World::onCEC_RegionsEnter(ContentEventController 
 
         auto &region = *iterRegion->second;
         region.CECs.push_back(cec);
+        region.NewCECs.push_back(cec);
         // Отправить клиенту информацию о чанках и сущностях
         std::unordered_map<Pos::bvec4u, const std::vector<VoxelCube>*> voxels;
         std::unordered_map<Pos::bvec4u, const Node*> nodes;
@@ -44,8 +45,7 @@ std::vector<Pos::GlobalRegion> World::onCEC_RegionsEnter(ContentEventController 
                     nodes[Pos::bvec4u(x, y, z)] = (const Node*) &region.Nodes[0][0][0][x][y][z];
                 }
 
-        cec->onChunksUpdate_Voxels(wId, pos, voxels);
-        cec->onChunksUpdate_Nodes(wId, pos, nodes);
+        
     }
 
     TOS::Logger("Test").debug() << "End";
@@ -53,13 +53,13 @@ std::vector<Pos::GlobalRegion> World::onCEC_RegionsEnter(ContentEventController 
     return out;
 }
 
-void World::onCEC_RegionsLost(ContentEventController *cec, const std::vector<Pos::GlobalRegion> &lost) {
+void World::onCEC_RegionsLost(std::shared_ptr<ContentEventController> cec, const std::vector<Pos::GlobalRegion> &lost) {
     for(const Pos::GlobalRegion &pos : lost) {
         auto region = Regions.find(pos);
         if(region == Regions.end())
             continue;
 
-        std::vector<ContentEventController*> &CECs = region->second->CECs;
+        std::vector<std::shared_ptr<ContentEventController>> &CECs = region->second->CECs;
         for(size_t iter = 0; iter < CECs.size(); iter++) {
             if(CECs[iter] == cec) {
                 CECs.erase(CECs.begin()+iter);

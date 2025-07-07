@@ -25,7 +25,7 @@ public:
     Node Nodes[16][16][16][4][4][4];
 
     std::vector<Entity> Entityes;
-    std::vector<ContentEventController*> CECs;
+    std::vector<std::shared_ptr<ContentEventController>> CECs, NewCECs;
     // Используется для прорежения количества проверок на наблюдаемые чанки и сущности
     // В одно обновление региона - проверка одного наблюдателя
     uint16_t CEC_NextChunkAndEntityesViewCheck = 0;
@@ -149,8 +149,8 @@ public:
         Возвращает список не загруженных регионов, на которые соответственно игрока не получилось подписать
         При подписи происходит отправка всех чанков и сущностей региона
     */
-    std::vector<Pos::GlobalRegion> onCEC_RegionsEnter(ContentEventController *cec, const std::vector<Pos::GlobalRegion> &enter, WorldId_t wId);
-    void onCEC_RegionsLost(ContentEventController *cec, const std::vector<Pos::GlobalRegion>& lost); 
+    std::vector<Pos::GlobalRegion> onCEC_RegionsEnter(std::shared_ptr<ContentEventController> cec, const std::vector<Pos::GlobalRegion> &enter);
+    void onCEC_RegionsLost(std::shared_ptr<ContentEventController> cec, const std::vector<Pos::GlobalRegion>& lost); 
     struct SaveUnloadInfo {
         std::vector<Pos::GlobalRegion> ToUnload;
         std::vector<std::pair<Pos::GlobalRegion, SB_Region_In>> ToSave;

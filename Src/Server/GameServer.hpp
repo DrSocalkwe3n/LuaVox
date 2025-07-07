@@ -72,7 +72,7 @@ class GameServer : public AsyncObject {
     } Content;
 
     struct {
-        std::vector<std::unique_ptr<ContentEventController>> CECs;
+        std::vector<std::shared_ptr<ContentEventController>> CECs;
         ServerTime AfterStartTime = {0, 0};
 
     } Game;
@@ -117,10 +117,6 @@ class GameServer : public AsyncObject {
         std::unique_ptr<IModStorageSaveBackend> ModStorage;
     } SaveBackend;
 
-    enum class EnumBackingScenario {
-        ChunksChanges // Сжатие изменённых чанков и отправка клиентам
-    };
-
     /*
         Обязательно между тактами
             После окончания такта пул копирует изменённые чанки 
@@ -143,24 +139,29 @@ class GameServer : public AsyncObject {
             Локальный поток должен собирать ключи профилей для базы
             Остальное внутри базы
     */
-    struct Backing_t {
-        TOS::Logger LOG = "Backing";
+    struct BackingChunkPressure_t {
+        TOS::Logger LOG = "BackingChunkPressure";
         bool NeedShutdown = false;
         std::vector<std::thread> Threads;
         std::mutex Mutex;
-        std::atomic_int Run = 0;
+        int RunCollect = 0, RunCompress = 0;
         std::condition_variable Symaphore;
         std::unordered_map<WorldId_t, std::unique_ptr<World>> *Worlds;
 
-        void start() {
+        void startCollectChanges() {
             std::lock_guard<std::mutex> lock(Mutex);
-            Run = Threads.size();
+            RunCompress = RunCollect = Threads.size();
             Symaphore.notify_all();
         }
 
-        void end() {
+        void endCollectChanges() {
             std::unique_lock<std::mutex> lock(Mutex);
-            Symaphore.wait(lock, [&](){ return Run == 0 || NeedShutdown; });
+            Symaphore.wait(lock, [&](){ return RunCollect == 0 || NeedShutdown; });
+        }
+
+        void endWithResults() {
+            std::unique_lock<std::mutex> lock(Mutex);
+            Symaphore.wait(lock, [&](){ return RunCompress == 0 || NeedShutdown; });
         }
 
         void stop() {
@@ -187,7 +188,7 @@ public:
         Backing.Threads.resize(4);
         Backing.Worlds = &Expanse.Worlds;
         for(size_t iter = 0; iter < Backing.Threads.size(); iter++) {
-            Backing.Threads[iter] = std::thread(Backing.Run, &Backing, iter);
+            Backing.Threads[iter] = std::thread(&BackingChunkPressure_t::run, &Backing, iter);
         }
     }
 

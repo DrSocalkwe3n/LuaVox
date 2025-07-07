@@ -8,6 +8,7 @@
 #include "Common/Packets.hpp"
 #include <TOSLib.hpp>
 #include <boost/asio/io_context.hpp>
+#include <filesystem>
 #include <memory>
 #include <boost/lockfree/spsc_queue.hpp>
 #include <Client/ResourceCache.hpp>
@@ -66,6 +67,7 @@ public:
         assert(Socket.get());
 
         try {
+            fs::create_directories("Cache");
             CHDB = CacheHandlerBasic::Create(ioc, "Cache");
 
             // Отправка информации о загруженном кеше

@@ -37,24 +37,259 @@ GameServer::~GameServer() {
     LOG.info() << "Сервер уничтожен";
 }
 
-void GameServer::Backing_t::run(int id) {
+void GameServer::BackingChunkPressure_t::run(int id) {
     LOG.debug() << "Старт фонового потока " << id;
 
     try {
         while(true) {
             {
                 std::unique_lock<std::mutex> lock(Mutex);
-                Symaphore.wait(lock, [&](){ return Run != 0 || NeedShutdown; });
+                Symaphore.wait(lock, [&](){ return RunCollect != 0 || NeedShutdown; });
                 if(NeedShutdown) {
                     LOG.debug() << "Завершение выполнения фонового потока " << id;
+                    break;
                 }
             }
 
-            // Работа
+            // Сбор данных
+            size_t pullSize = Threads.size();
+            size_t counter = 0;
 
+            struct Dump {
+                std::vector<std::shared_ptr<ContentEventController>> CECs, NewCECs;
+                std::unordered_map<Pos::bvec4u, std::vector<VoxelCube>> Voxels;
+                std::unordered_map<Pos::bvec4u, std::array<Node, 16*16*16>> Nodes;
+                uint64_t IsChunkChanged_Nodes, IsChunkChanged_Voxels;
+            };
+
+            std::vector<std::pair<WorldId_t, std::vector<std::pair<Pos::GlobalRegion, Dump>>>> dump;
+
+            for(const auto& [worldId, world] : *Worlds) {
+                const auto &worldObj = *world;
+                std::vector<std::pair<Pos::GlobalRegion, Dump>> dumpWorld;
+
+                for(const auto& [regionPos, region] : worldObj.Regions) {
+                    auto& regionObj = *region;
+                    if(counter++ % pullSize != 0) {
+                        counter %= pullSize;
+                        continue;
+                    }
+
+                    Dump dumpRegion;
+
+                    dumpRegion.IsChunkChanged_Voxels = regionObj.IsChunkChanged_Voxels;
+                    regionObj.IsChunkChanged_Voxels = 0;
+                    dumpRegion.IsChunkChanged_Nodes = regionObj.IsChunkChanged_Nodes;
+                    regionObj.IsChunkChanged_Nodes = 0;
+                    
+                    if(!regionObj.NewCECs.empty()) {
+                        dumpRegion.NewCECs = std::move(regionObj.NewCECs);
+                        dumpRegion.Voxels = regionObj.Voxels;
+
+                        for(int z = 0; z < 4; z++)
+                            for(int y = 0; y < 4; y++)
+                                for(int x = 0; x < 4; x++) 
+                            {
+                                auto &toPtr = dumpRegion.Nodes[Pos::bvec4u(x, y, z).pack()];
+                                const Node *fromPtr = (const Node*) &regionObj.Nodes[0][0][0][x][y][z];
+                                std::copy(fromPtr, fromPtr+16*16*16, toPtr.data());
+                            }
+                    } else {
+                        if(regionObj.IsChunkChanged_Voxels) {
+                            for(int index = 0; index < 64; index++) {
+                                if((regionObj.IsChunkChanged_Voxels >> index) & 0x1)
+                                    continue;
+
+                                Pos::bvec4u chunkPos;
+                                chunkPos.unpack(index);
+
+                                auto voxelIter = regionObj.Voxels.find(chunkPos);
+                                if(voxelIter != regionObj.Voxels.end()) {
+                                    dumpRegion.Voxels[chunkPos] = voxelIter->second;
+                                } else {
+                                    dumpRegion.Voxels[chunkPos] = {};
+                                }
+                            }
+                        }
+
+                        if(regionObj.IsChunkChanged_Nodes) {
+                            for(int index = 0; index < 64; index++) {
+                                if((regionObj.IsChunkChanged_Nodes >> index) & 0x1)
+                                    continue;
+
+                                Pos::bvec4u chunkPos;
+                                chunkPos.unpack(index);
+
+                                auto &toPtr = dumpRegion.Nodes[chunkPos];
+                                const Node *fromPtr = (const Node*) &regionObj.Nodes[0][0][0][chunkPos.x][chunkPos.y][chunkPos.z];
+                                std::copy(fromPtr, fromPtr+16*16*16, toPtr.data());
+                            }
+                        }
+                    }
+
+                    if(!dumpRegion.CECs.empty()) {
+                        dumpWorld.push_back({regionPos, std::move(dumpRegion)});
+                    }
+                }
+
+                if(!dumpWorld.empty()) {
+                    dump.push_back({worldId, std::move(dumpWorld)});
+                }
+            }
+
+            // Синхронизация
             {
                 std::unique_lock<std::mutex> lock(Mutex);
-                Run--;
+                RunCollect--;
+                Symaphore.notify_all();
+            }
+
+            // Сжатие и отправка игрокам
+            struct PostponedV {
+                WorldId_t WorldId;
+                Pos::GlobalChunk Chunk;
+                CompressedVoxels Data;
+            };
+
+            struct PostponedN {
+                WorldId_t WorldId;
+                Pos::GlobalChunk Chunk;
+                CompressedNodes Data;
+            };
+
+            std::list<std::pair<PostponedV, std::vector<ContentEventController*>>> postponedVoxels;
+            std::list<std::pair<PostponedN, std::vector<ContentEventController*>>> postponedNodes;
+
+            std::vector<ContentEventController*> cecs;
+
+            for(auto& [worldId, world] : dump) {
+                for(auto& [regionPos, region] : world) {
+                    for(auto& [chunkPos, chunk] : region.Voxels) {
+                        CompressedVoxels cmp = compressVoxels(chunk);
+                        Pos::GlobalChunk chunkPosR = (Pos::GlobalChunk(regionPos) << 2) + chunkPos;
+
+                        for(auto& ptr : region.NewCECs) {
+                            bool accepted = ptr->Remote->maybe_prepareChunkUpdate_Voxels(worldId, 
+                                    chunkPosR, cmp.Compressed, cmp.Defines);
+                            if(!accepted) {
+                                cecs.push_back(ptr.get());
+                            }
+                        }
+
+                        if((region.IsChunkChanged_Voxels >> chunkPos.pack()) & 0x1) {
+                            for(auto& ptr : region.CECs) {
+                                bool skip = false;
+                                for(auto& ptr2 : region.CECs) {
+                                    if(ptr == ptr2) {
+                                        skip = true;
+                                        break;
+                                    }
+                                }
+
+                                if(skip)
+                                    continue;
+
+                                bool accepted = ptr->Remote->maybe_prepareChunkUpdate_Voxels(worldId, 
+                                        chunkPosR, cmp.Compressed, cmp.Defines);
+                                if(!accepted) {
+                                    cecs.push_back(ptr.get());
+                                }
+                            }
+                        }
+
+                        if(!cecs.empty()) {
+                            postponedVoxels.push_back({{worldId, chunkPosR, std::move(cmp)}, cecs});
+                            cecs.clear();
+                        }
+                    }
+
+                    for(auto& [chunkPos, chunk] : region.Nodes) {
+                        CompressedNodes cmp = compressNodes(chunk.data());
+                        Pos::GlobalChunk chunkPosR = (Pos::GlobalChunk(regionPos) << 2) + chunkPos;
+
+                        for(auto& ptr : region.NewCECs) {
+                            bool accepted = ptr->Remote->maybe_prepareChunkUpdate_Nodes(worldId, 
+                                    chunkPosR, cmp.Compressed, cmp.Defines);
+                            if(!accepted) {
+                                cecs.push_back(ptr.get());
+                            }
+                        }
+
+                        if((region.IsChunkChanged_Nodes >> chunkPos.pack()) & 0x1) {
+                            for(auto& ptr : region.CECs) {
+                                bool skip = false;
+                                for(auto& ptr2 : region.CECs) {
+                                    if(ptr == ptr2) {
+                                        skip = true;
+                                        break;
+                                    }
+                                }
+
+                                if(skip)
+                                    continue;
+
+                                bool accepted = ptr->Remote->maybe_prepareChunkUpdate_Nodes(worldId, 
+                                        chunkPosR, cmp.Compressed, cmp.Defines);
+                                if(!accepted) {
+                                    cecs.push_back(ptr.get());
+                                }
+                            }
+                        }
+
+                        if(!cecs.empty()) {
+                            postponedNodes.push_back({{worldId, chunkPosR, std::move(cmp)}, cecs});
+                            cecs.clear();
+                        }
+                    }
+                }
+            }
+
+            while(!postponedVoxels.empty() || !postponedNodes.empty()) {
+                {
+                    auto begin = postponedVoxels.begin(), end = postponedVoxels.end();
+                    while(begin != end) {
+                        auto& [worldId, chunkPos, cmp] = begin->first;
+                        for(ContentEventController* cec : begin->second) {
+                            bool accepted = cec->Remote->maybe_prepareChunkUpdate_Voxels(worldId, chunkPos, cmp.Compressed, cmp.Defines);
+                            if(!accepted)
+                                cecs.push_back(cec);
+                        }
+
+                        if(cecs.empty()) {
+                            begin = postponedVoxels.erase(begin);
+                        } else {
+                            begin->second = cecs;
+                            cecs.clear();
+                            begin++;
+                        }
+                    }
+                }
+
+                {
+                    auto begin = postponedNodes.begin(), end = postponedNodes.end();
+                    while(begin != end) {
+                        auto& [worldId, chunkPos, cmp] = begin->first;
+                        for(ContentEventController* cec : begin->second) {
+                            bool accepted = cec->Remote->maybe_prepareChunkUpdate_Nodes(worldId, chunkPos, cmp.Compressed, cmp.Defines);
+                            if(!accepted)
+                                cecs.push_back(cec);
+                        }
+
+                        if(cecs.empty()) {
+                            begin = postponedNodes.erase(begin);
+                        } else {
+                            begin->second = cecs;
+                            cecs.clear();
+                            begin++;
+                        }
+                    }
+                }
+            }
+
+            // Синхронизация
+            {
+                std::unique_lock<std::mutex> lock(Mutex);
+                RunCompress--;
                 Symaphore.notify_all();
             }
         }
@@ -328,7 +563,7 @@ void GameServer::run() {
 
         if(IsGoingShutdown) {
             // Отключить игроков
-            for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
+            for(std::shared_ptr<ContentEventController> &cec : Game.CECs) {
                 cec->Remote->shutdown(EnumDisconnect::ByInterface, ShutdownReason);
             }
 
@@ -394,10 +629,10 @@ void GameServer::stepConnections() {
         lock->clear();
     }
 
-    Backing.end();
+    Backing.endCollectChanges();
 
     // Отключение игроков
-    for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
+    for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
         // Убрать отключившихся
         if(!cec->Remote->isConnected()) {
             // Отписываем наблюдателя от миров
@@ -405,7 +640,7 @@ void GameServer::stepConnections() {
                 auto wIter = Expanse.Worlds.find(wPair.first);
                 assert(wIter != Expanse.Worlds.end());
 
-                wIter->second->onCEC_RegionsLost(cec.get(), wPair.second);
+                wIter->second->onCEC_RegionsLost(cec, wPair.second);
             }
 
             std::string username = cec->Remote->Username;
@@ -417,7 +652,7 @@ void GameServer::stepConnections() {
 
     // Вычистить невалидные ссылки на игроков
     Game.CECs.erase(std::remove_if(Game.CECs.begin(), Game.CECs.end(),
-            [](const std::unique_ptr<ContentEventController>& ptr) { return !ptr; }), 
+            [](const std::shared_ptr<ContentEventController>& ptr) { return !ptr; }), 
         Game.CECs.end());
 }
 
@@ -428,7 +663,7 @@ void GameServer::stepModInitializations() {
 IWorldSaveBackend::TickSyncInfo_Out GameServer::stepDatabaseSync() {
     IWorldSaveBackend::TickSyncInfo_In toDB;
     
-    for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
+    for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
         assert(cec);
         // Пересчитать зоны наблюдения
         if(cec->CrossedBorder) {
@@ -465,7 +700,7 @@ IWorldSaveBackend::TickSyncInfo_Out GameServer::stepDatabaseSync() {
                 auto iterWorld = Expanse.Worlds.find(worldId);
                 assert(iterWorld != Expanse.Worlds.end());
 
-                std::vector<Pos::GlobalRegion> notLoaded = iterWorld->second->onCEC_RegionsEnter(cec.get(), regions, worldId);
+                std::vector<Pos::GlobalRegion> notLoaded = iterWorld->second->onCEC_RegionsEnter(cec, regions);
                 if(!notLoaded.empty()) {
                     // Добавляем к списку на загрузку
                     std::vector<Pos::GlobalRegion> &tl = toDB.Load[worldId];
@@ -478,7 +713,7 @@ IWorldSaveBackend::TickSyncInfo_Out GameServer::stepDatabaseSync() {
                 auto iterWorld = Expanse.Worlds.find(worldId);
                 assert(iterWorld != Expanse.Worlds.end());
 
-                iterWorld->second->onCEC_RegionsLost(cec.get(), regions);
+                iterWorld->second->onCEC_RegionsLost(cec, regions);
             }
         }
     }
@@ -596,7 +831,7 @@ void GameServer::stepGeneratorAndLuaAsync(IWorldSaveBackend::TickSyncInfo_Out db
             newRegions.push_back(pos);
         std::sort(newRegions.begin(), newRegions.end());
 
-        std::unordered_map<ContentEventController*, std::vector<Pos::GlobalRegion>> toSubscribe;
+        std::unordered_map<std::shared_ptr<ContentEventController>, std::vector<Pos::GlobalRegion>> toSubscribe;
         
         for(auto& cec : Game.CECs) {
             auto iterViewWorld = cec->ContentViewState.Regions.find(worldId);
@@ -605,13 +840,13 @@ void GameServer::stepGeneratorAndLuaAsync(IWorldSaveBackend::TickSyncInfo_Out db
 
             for(auto& pos : iterViewWorld->second) {
                 if(std::binary_search(newRegions.begin(), newRegions.end(), pos))
-                    toSubscribe[cec.get()].push_back(pos);
+                    toSubscribe[cec].push_back(pos);
             }
         }
 
         iterWorld->second->pushRegions(std::move(regions));
         for(auto& [cec, poses] : toSubscribe) {
-            iterWorld->second->onCEC_RegionsEnter(cec, poses, worldId);
+            iterWorld->second->onCEC_RegionsEnter(cec, poses);
         }
     }
 }
@@ -1071,7 +1306,7 @@ void GameServer::stepSyncContent() {
     Content.Texture.update(CurrentTickDuration);
     if(Content.Texture.hasPreparedInformation()) {
         auto table = Content.Texture.takePreparedInformation();
-        for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
+        for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
             cec->Remote->informateBinTexture(table);
         }
     }
@@ -1079,7 +1314,7 @@ void GameServer::stepSyncContent() {
     Content.Animation.update(CurrentTickDuration);
     if(Content.Animation.hasPreparedInformation()) {
         auto table = Content.Animation.takePreparedInformation();
-        for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
+        for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
             cec->Remote->informateBinAnimation(table);
         }
     }
@@ -1087,7 +1322,7 @@ void GameServer::stepSyncContent() {
     Content.Model.update(CurrentTickDuration);
     if(Content.Model.hasPreparedInformation()) {
         auto table = Content.Model.takePreparedInformation();
-        for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
+        for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
             cec->Remote->informateBinModel(table);
         }
     }
@@ -1095,7 +1330,7 @@ void GameServer::stepSyncContent() {
     Content.Sound.update(CurrentTickDuration);
     if(Content.Sound.hasPreparedInformation()) {
         auto table = Content.Sound.takePreparedInformation();
-        for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
+        for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
             cec->Remote->informateBinSound(table);
         }
     }
@@ -1103,18 +1338,18 @@ void GameServer::stepSyncContent() {
     Content.Font.update(CurrentTickDuration);
     if(Content.Font.hasPreparedInformation()) {
         auto table = Content.Font.takePreparedInformation();
-        for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
+        for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
             cec->Remote->informateBinFont(table);
         }
     }
 
     // Сбор запросов на ресурсы и профили + отправка пакетов игрокам
     ResourceRequest full;
-    for(std::unique_ptr<ContentEventController> &cec : Game.CECs) {
+    for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
         full.insert(cec->Remote->pushPreparedPackets());
     }
 
-    Backing.start();
+    Backing.startCollectChanges();
 
     full.uniq();
 

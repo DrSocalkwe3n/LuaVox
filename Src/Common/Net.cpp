@@ -43,6 +43,9 @@ AsyncSocket::~AsyncSocket() {
 }
 
 void AsyncSocket::pushPackets(std::vector<Packet> *simplePackets, std::vector<SmartPacket> *smartPackets) {
+    if(simplePackets->empty() && (!smartPackets || smartPackets->empty()))
+        return;
+
     boost::unique_lock lock(SendPackets.Mtx);
 
     if(Socket.is_open() 

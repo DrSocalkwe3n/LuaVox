@@ -456,8 +456,8 @@ CompressedNodes compressNodes_byte(const Node* nodes) {
 
 
     // Количество байт на идентификатор в сыром виде
-    uint8_t bytes_raw_profile = std::ceil(std::log2(maxValueProfile)/8);
-    assert(bytes_raw_profile >= 1 && bytes_raw_profile <= 3);
+    uint8_t bytes_raw_profile = std::ceil(std::log2(maxValueProfile+1)/8);
+    assert(bytes_raw_profile >= 0 && bytes_raw_profile <= 3);
     // Количество байт на индекс
     uint8_t bytes_indices_profile = std::ceil(std::log2(profiles.size())/8);
     assert(bytes_indices_profile >= 1 && bytes_indices_profile <= 2);
@@ -473,7 +473,8 @@ CompressedNodes compressNodes_byte(const Node* nodes) {
         compressed.push_back((profiles.size() >> 16) & 0xff);
 
         for(DefNodeId_t id : profiles) {
-            compressed.push_back(id & 0xff);
+            if(bytes_raw_profile > 0)
+                compressed.push_back(id & 0xff);
             if(bytes_raw_profile > 1)
                 compressed.push_back((id >> 8) & 0xff);
             if(bytes_raw_profile > 2)
@@ -495,7 +496,8 @@ CompressedNodes compressNodes_byte(const Node* nodes) {
         for(size_t iter = 0; iter < 16*16*16; iter++) {
             const Node &node = nodes[iter];
 
-            compressed.push_back(node.NodeId & 0xff);
+            if(bytes_raw_profile > 0)
+                compressed.push_back(node.NodeId & 0xff);
             if(bytes_raw_profile > 1)
                 compressed.push_back((node.NodeId >> 8) & 0xff);
             if(bytes_raw_profile > 2)
@@ -553,7 +555,7 @@ CompressedNodes compressNodes_bit(const Node* nodes) {
 
 
     // Количество бит на идентификатор в сыром виде
-    uint8_t bits_raw_profile = std::ceil(std::log2(maxValueProfile));
+    uint8_t bits_raw_profile = std::ceil(std::log2(maxValueProfile+1));
     assert(bits_raw_profile >= 1 && bits_raw_profile <= 24);
     // Количество бит на индекс
     uint8_t bits_indices_profile = std::ceil(std::log2(profiles.size()));
@@ -575,7 +577,7 @@ CompressedNodes compressNodes_bit(const Node* nodes) {
     write(bits_indices_profile, 4);
 
     // Количество бит на идентификатор в сыром виде
-    uint8_t bits_raw_meta = std::ceil(std::log2(maxValueMeta));
+    uint8_t bits_raw_meta = std::ceil(std::log2(maxValueMeta+1));
     assert(bits_raw_meta >= 1 && bits_raw_meta <= 8);
     // Количество бит на индекс
     uint8_t bits_indices_meta = std::ceil(std::log2(meta.size()));
@@ -655,8 +657,10 @@ void unCompressNodes_byte(const std::u8string& compressed, Node* ptr) {
         profiles.resize(read() | (read() << 8) | (read() << 16));
 
         for(size_t iter = 0; iter < profiles.size(); iter++) {
-            DefNodeId_t id = read();
-
+            DefNodeId_t id = 0;
+            
+            if(bytes_raw_profile > 0)
+                id = read();
             if(bytes_raw_profile > 1)
                 id |= read() << 8;
             if(bytes_raw_profile > 2)
@@ -677,8 +681,10 @@ void unCompressNodes_byte(const std::u8string& compressed, Node* ptr) {
         for(size_t iter = 0; iter < 16*16*16; iter++) {
             Node &node = ptr[iter];
 
-            node.NodeId = read();
+            node.NodeId = 0;
 
+            if(bytes_raw_profile > 0)
+                node.NodeId = read();
             if(bytes_raw_profile > 1)
                 node.NodeId |= read() << 8;
             if(bytes_raw_profile > 2)

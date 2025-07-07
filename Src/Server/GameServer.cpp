@@ -23,22 +23,42 @@
 
 namespace LV::Server {
 
+GameServer::GameServer(asio::io_context &ioc, fs::path worldPath)
+    : AsyncObject(ioc),
+        Content(ioc, nullptr, nullptr, nullptr, nullptr, nullptr)
+{
+    init(worldPath);
+
+    BackingChunkPressure.Threads.resize(1);
+    BackingChunkPressure.Worlds = &Expanse.Worlds;
+    for(size_t iter = 0; iter < BackingChunkPressure.Threads.size(); iter++) {
+        BackingChunkPressure.Threads[iter] = std::thread(&BackingChunkPressure_t::run, &BackingChunkPressure, iter);
+    }
+
+    BackingNoiseGenerator.Threads.resize(1);
+    for(size_t iter = 0; iter < BackingNoiseGenerator.Threads.size(); iter++) {
+        BackingNoiseGenerator.Threads[iter] = std::thread(&BackingNoiseGenerator_t::run, &BackingNoiseGenerator, iter);
+    }
+}
+    
 GameServer::~GameServer() {
     shutdown("on ~GameServer");
-    Backing.NeedShutdown = true;
-    Backing.Symaphore.notify_all();
+    BackingChunkPressure.NeedShutdown = true;
+    BackingChunkPressure.Symaphore.notify_all();
+    BackingNoiseGenerator.NeedShutdown = true;
 
     RunThread.join();
     WorkDeadline.cancel();
     UseLock.wait_no_use();
 
-    Backing.stop();
+    BackingChunkPressure.stop();
+    BackingNoiseGenerator.stop();
 
     LOG.info() << "Сервер уничтожен";
 }
 
 void GameServer::BackingChunkPressure_t::run(int id) {
-    LOG.debug() << "Старт фонового потока " << id;
+    LOG.debug() << "Старт потока " << id;
 
     try {
         while(true) {
@@ -46,7 +66,7 @@ void GameServer::BackingChunkPressure_t::run(int id) {
                 std::unique_lock<std::mutex> lock(Mutex);
                 Symaphore.wait(lock, [&](){ return RunCollect != 0 || NeedShutdown; });
                 if(NeedShutdown) {
-                    LOG.debug() << "Завершение выполнения фонового потока " << id;
+                    LOG.debug() << "Завершение выполнения потока " << id;
                     break;
                 }
             }
@@ -83,6 +103,7 @@ void GameServer::BackingChunkPressure_t::run(int id) {
                     regionObj.IsChunkChanged_Nodes = 0;
                     
                     if(!regionObj.NewCECs.empty()) {
+                        dumpRegion.CECs = regionObj.CECs;
                         dumpRegion.NewCECs = std::move(regionObj.NewCECs);
                         dumpRegion.Voxels = regionObj.Voxels;
 
@@ -296,10 +317,56 @@ void GameServer::BackingChunkPressure_t::run(int id) {
     } catch(const std::exception& exc) {
         std::unique_lock<std::mutex> lock(Mutex);
         NeedShutdown = true;
-        LOG.error() << "Ошибка выполнения фонового потока " << id << ":\n" << exc.what();
+        LOG.error() << "Ошибка выполнения потока " << id << ":\n" << exc.what();
     }
 
     Symaphore.notify_all();
+}
+
+void GameServer::BackingNoiseGenerator_t::run(int id) {
+
+    LOG.debug() << "Старт потока " << id;
+
+    try {
+        while(true) {
+            if(NeedShutdown) {
+                LOG.debug() << "Завершение выполнения потока " << id;
+                break;
+            }
+
+            if(Input.get_read().empty())
+                TOS::Time::sleep3(50);
+
+            NoiseKey key;
+
+            {
+                auto lock = Input.lock();
+                if(lock->empty())
+                    continue;
+
+                key = lock->front();
+                lock->pop();
+            }
+
+            Pos::GlobalNode posNode = key.RegionPos;
+            posNode <<= 6;
+
+            std::array<float, 64*64*64> data;
+            float *ptr = &data[0];
+
+            for(int z = 0; z < 64; z++)
+                for(int y = 0; y < 64; y++)
+                for(int x = 0; x < 64; x++, ptr++) {
+                    *ptr = TOS::genRand(); //glm::perlin(glm::vec3(posNode.x+x, posNode.y+y, posNode.z+z));
+                }
+
+            Output.lock()->push_back({key, std::move(data)});
+        }
+    } catch(const std::exception& exc) {
+        NeedShutdown = true;
+        LOG.error() << "Ошибка выполнения потока " << id << ":\n" << exc.what();
+    }
+
 }
 
 static thread_local std::vector<ContentViewCircle> TL_Circles;
@@ -596,6 +663,16 @@ void GameServer::run() {
         stepGlobalStep();
         stepSyncContent();
 
+        // Прочие моменты
+        if(!IsGoingShutdown) {
+            if(BackingChunkPressure.NeedShutdown
+                || BackingNoiseGenerator.NeedShutdown)
+            {
+                LOG.error() << "Ошибка работы одного из модулей";
+                IsGoingShutdown = true;
+            }
+        }
+
         // Сон или подгонка длительности такта при высоких нагрузках
         std::chrono::steady_clock::time_point atTickEnd = std::chrono::steady_clock::now();
         float currentWastedTime = double((atTickEnd-atTickStart).count() * std::chrono::steady_clock::duration::period::num) / std::chrono::steady_clock::duration::period::den;
@@ -629,7 +706,7 @@ void GameServer::stepConnections() {
         lock->clear();
     }
 
-    Backing.endCollectChanges();
+    BackingChunkPressure.endCollectChanges();
 
     // Отключение игроков
     for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
@@ -664,6 +741,7 @@ IWorldSaveBackend::TickSyncInfo_Out GameServer::stepDatabaseSync() {
     IWorldSaveBackend::TickSyncInfo_In toDB;
     
     for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
+        break;
         assert(cec);
         // Пересчитать зоны наблюдения
         if(cec->CrossedBorder) {
@@ -754,55 +832,28 @@ void GameServer::stepGeneratorAndLuaAsync(IWorldSaveBackend::TickSyncInfo_Out db
 
 
     // Синхронизация с генератором шума
-    std::unordered_map<WorldId_t, std::vector<std::pair<Pos::GlobalRegion, std::array<float, 64*64*64>>>> calculatedNoise;
-    for(auto& [worldId, regions] : db.NotExisten) {
-        auto &r = calculatedNoise[worldId];
-        for(Pos::GlobalRegion pos : regions) {
-            if(IsGoingShutdown)
-                break;
-
-            r.emplace_back();
-            std::get<0>(r.back()) = pos;
-            auto &region = std::get<1>(r.back());
-            Pos::GlobalNode posNode = pos;
-            posNode <<= 6;
-
-            float *ptr = &region[0];
-
-            for(int z = 0; z < 64; z++)
-            for(int y = 0; y < 64; y++)
-            for(int x = 0; x < 64; x++, ptr++) {
-                *ptr = TOS::genRand(); //glm::perlin(glm::vec3(posNode.x+x, posNode.y+y, posNode.z+z));
-            }
-        }
-    }
-
-    if(IsGoingShutdown)
-        return;
+    std::vector<std::pair<BackingNoiseGenerator_t::NoiseKey, std::array<float, 64*64*64>>> calculatedNoise = BackingNoiseGenerator.tickSync(std::move(db.NotExisten));
 
     std::unordered_map<WorldId_t, std::vector<std::pair<Pos::GlobalRegion, World::RegionIn>>> toLoadRegions;
 
     // Синхронизация с контроллером асинхронных обработчиков луа
     // 2.2 и 3.1
     // Обработка шума
-    for(auto& [WorldId_t, regions] : calculatedNoise) {
-        auto &list = toLoadRegions[WorldId_t];
-        
-        for(auto& [pos, noise] : regions) {
-            auto &obj = list.emplace_back(pos, World::RegionIn()).second;
-            
-            float *ptr = &noise[0];
+    for(auto& [key, region] : calculatedNoise) {
+        LOG.debug() << "Сгенерирован " << key.WId << ' ' << key.RegionPos.x << ' ' 
+            << key.RegionPos.y << ' ' << key.RegionPos.z;
 
-            for(int z = 0; z < 64; z++)
-            for(int y = 0; y < 64; y++)
-            for(int x = 0; x < 64; x++, ptr++) {
-                DefVoxelId_t id = *ptr > 0.5 ? 1 : 0;
-                Pos::bvec64u nodePos(x, y, z);
-                auto &node = obj.Nodes[Pos::bvec4u(nodePos >> 4).pack()][Pos::bvec16u(nodePos & 0xf).pack()];
-                node.NodeId = id;
-                node.Meta = 0;
-            }
+        auto &obj = toLoadRegions[key.WId].emplace_back(key.RegionPos, World::RegionIn()).second;
+        float *ptr = &region[0];
 
+        for(int z = 0; z < 64; z++)
+        for(int y = 0; y < 64; y++)
+        for(int x = 0; x < 64; x++, ptr++) {
+            DefVoxelId_t id = *ptr > 0.5 ? 1 : 0;
+            Pos::bvec64u nodePos(x, y, z);
+            auto &node = obj.Nodes[Pos::bvec4u(nodePos >> 4).pack()][Pos::bvec16u(nodePos & 0xf).pack()];
+            node.NodeId = id;
+            node.Meta = 0;
         }
     }
 
@@ -1349,7 +1400,7 @@ void GameServer::stepSyncContent() {
         full.insert(cec->Remote->pushPreparedPackets());
     }
 
-    Backing.startCollectChanges();
+    BackingChunkPressure.startCollectChanges();
 
     full.uniq();
 

@@ -6,10 +6,12 @@
 #include <boost/asio/io_context.hpp>
 #include <condition_variable>
 #include <filesystem>
+#include "Common/Abstract.hpp"
 #include "RemoteClient.hpp"
 #include "Server/Abstract.hpp"
 #include <TOSLib.hpp>
 #include <memory>
+#include <queue>
 #include <set>
 #include <thread>
 #include <unordered_map>
@@ -119,12 +121,6 @@ class GameServer : public AsyncObject {
 
     /*
         Обязательно между тактами
-            После окончания такта пул копирует изменённые чанки 
-            - синхронизация сбора в stepDatabaseSync - 
-            сжимает их и отправляет клиентам
-            - синхронизация в начале stepPlayerProceed -
-            ^ к этому моменту все данные должны быть отправлены
-            Далее при подписании на новые регионы они будут добавлены в пул на обработку
 
         Генерация шума
             OpenCL или пул
@@ -138,6 +134,16 @@ class GameServer : public AsyncObject {
         Сжатие/расжатие регионов в базе
             Локальный поток должен собирать ключи профилей для базы
             Остальное внутри базы
+    */
+
+    /*
+        Отправка изменений чанков клиентам
+
+            После окончания такта пул копирует изменённые чанки 
+            - синхронизация сбора в stepDatabaseSync - 
+            сжимает их и отправляет клиентам
+            - синхронизация в начале stepPlayerProceed -
+            ^ к этому моменту все данные должны быть отправлены в RemoteClient
     */
     struct BackingChunkPressure_t {
         TOS::Logger LOG = "BackingChunkPressure";
@@ -176,24 +182,51 @@ class GameServer : public AsyncObject {
         }
 
         void run(int id);
-    } Backing;
+    } BackingChunkPressure;
+
+    struct BackingNoiseGenerator_t {
+        struct NoiseKey {
+            WorldId_t WId;
+            Pos::GlobalRegion RegionPos;
+        };
+
+        TOS::Logger LOG = "BackingNoiseGenerator";
+        bool NeedShutdown = false;
+        std::vector<std::thread> Threads;
+        TOS::SpinlockObject<std::queue<NoiseKey>> Input;
+        TOS::SpinlockObject<std::vector<std::pair<NoiseKey, std::array<float, 64*64*64>>>> Output;
+
+        void stop() {
+            NeedShutdown = true;
+
+            for(std::thread& thread : Threads)
+                thread.join();
+        }
+
+        void run(int id);
+
+        std::vector<std::pair<NoiseKey, std::array<float, 64*64*64>>>
+        tickSync(std::unordered_map<WorldId_t, std::vector<Pos::GlobalRegion>> &&input) {
+            {
+                auto lock = Input.lock();
+                
+                for(auto& [worldId, region] : input) {
+                    for(auto& regionPos : region)
+                        lock->push({worldId, regionPos});
+                }
+            }
+
+            auto lock = Output.lock();
+            std::vector<std::pair<NoiseKey, std::array<float, 64*64*64>>> out = std::move(*lock);
+            lock->reserve(8000);
+
+            return std::move(out);
+        }
+    } BackingNoiseGenerator;
 
 public:
-    GameServer(asio::io_context &ioc, fs::path worldPath)
-        : AsyncObject(ioc),
-          Content(ioc, nullptr, nullptr, nullptr, nullptr, nullptr)
-    {
-        init(worldPath);
-
-        Backing.Threads.resize(4);
-        Backing.Worlds = &Expanse.Worlds;
-        for(size_t iter = 0; iter < Backing.Threads.size(); iter++) {
-            Backing.Threads[iter] = std::thread(&BackingChunkPressure_t::run, &Backing, iter);
-        }
-    }
-
+    GameServer(asio::io_context &ioc, fs::path worldPath);
     virtual ~GameServer();
-
 
     void shutdown(const std::string reason) {
         if(ShutdownReason.empty())

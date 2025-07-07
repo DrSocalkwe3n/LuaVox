@@ -33,24 +33,6 @@ struct GlobalTime {
     }
 };
 
-struct VoxelCube {
-    union {
-        struct {
-            DefVoxelId_t VoxelId : 24, Meta : 8;
-        };
-        DefVoxelId_t Data;
-    };
-    Pos::bvec256u Left, Size;
-};
-
-union Node {
-    struct {
-        DefNodeId_t NodeId : 24, Meta : 8;
-    };
-
-    DefNodeId_t Data;
-};
-
 // 16 метров ребро
 // 256 вокселей ребро
 struct Chunk {

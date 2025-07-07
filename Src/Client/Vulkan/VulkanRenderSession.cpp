@@ -2,6 +2,7 @@
 #include "Client/Abstract.hpp"
 #include "Client/Vulkan/Vulkan.hpp"
 #include "Common/Abstract.hpp"
+#include "TOSLib.hpp"
 #include "assets.hpp"
 #include "glm/ext/matrix_transform.hpp"
 #include "glm/trigonometric.hpp"
@@ -198,10 +199,10 @@ void VulkanRenderSession::init(Vulkan *instance) {
         int width, height;
         bool hasAlpha;
         for(const char *path : {
-                "grass.png", 
-                "tropical_rainforest_wood.png", 
-                "willow_wood.png", 
-                "xnether_blue_wood.png",
+                //"tropical_rainforest_wood.png",
+                "grass.png",
+                "willow_wood.png",
+                //"xnether_blue_wood.png",
                 "xnether_purple_wood.png"
         }) {
             ByteBuffer image = VK::loadPNG(getResource(std::string("textures/") + path)->makeStream().Stream, width, height, hasAlpha);
@@ -612,7 +613,7 @@ void VulkanRenderSession::onContentDefinesLost(std::unordered_map<EnumDefContent
 }
 
 void VulkanRenderSession::onChunksChange(WorldId_t worldId, const std::unordered_set<Pos::GlobalChunk>& changeOrAddList, const std::unordered_set<Pos::GlobalRegion>& remove) {
-auto &table = External.ChunkVoxelMesh[worldId];
+    auto &table = External.ChunkVoxelMesh[worldId];
 
     for(Pos::GlobalChunk pos : changeOrAddList) {
         Pos::GlobalRegion rPos = pos >> 4;
@@ -625,7 +626,9 @@ auto &table = External.ChunkVoxelMesh[worldId];
             if(iter != table.end())
                 table.erase(iter);
         } else {
+            Logger("Test").debug() << voxels.size();
             std::vector<VoxelVertexPoint> vertexs = generateMeshForVoxelChunks(voxels);
+            Logger("Test").debug() << vertexs.size();
 
             if(!vertexs.empty()) {
                 auto &buffer = table[pos] = std::make_unique<Buffer>(VkInst, vertexs.size()*sizeof(VoxelVertexPoint));
@@ -743,9 +746,9 @@ std::vector<VoxelVertexPoint> VulkanRenderSession::generateMeshForVoxelChunks(co
     
     for(const VoxelCube &cube : cubes) {
         out.emplace_back(
-            cube.Left.x,
-            cube.Left.y,
-            cube.Left.z,
+            cube.Pos.x,
+            cube.Pos.y,
+            cube.Pos.z,
             0,
             0, 0,
             cube.Size.x,
@@ -756,9 +759,9 @@ std::vector<VoxelVertexPoint> VulkanRenderSession::generateMeshForVoxelChunks(co
         );
 
         out.emplace_back(
-            cube.Left.x,
-            cube.Left.y,
-            cube.Left.z,
+            cube.Pos.x,
+            cube.Pos.y,
+            cube.Pos.z,
             1,
             0, 0,
             cube.Size.x,
@@ -769,9 +772,9 @@ std::vector<VoxelVertexPoint> VulkanRenderSession::generateMeshForVoxelChunks(co
         );
 
         out.emplace_back(
-            cube.Left.x,
-            cube.Left.y,
-            cube.Left.z,
+            cube.Pos.x,
+            cube.Pos.y,
+            cube.Pos.z,
             2,
             0, 0,
             cube.Size.z,
@@ -782,9 +785,9 @@ std::vector<VoxelVertexPoint> VulkanRenderSession::generateMeshForVoxelChunks(co
         );
 
         out.emplace_back(
-            cube.Left.x,
-            cube.Left.y+cube.Size.y+1,
-            cube.Left.z,
+            cube.Pos.x,
+            cube.Pos.y+cube.Size.y+1,
+            cube.Pos.z,
             3,
             0, 0,
             cube.Size.x,
@@ -795,9 +798,9 @@ std::vector<VoxelVertexPoint> VulkanRenderSession::generateMeshForVoxelChunks(co
         );
 
         out.emplace_back(
-            cube.Left.x,
-            cube.Left.y,
-            cube.Left.z+cube.Size.z+1,
+            cube.Pos.x,
+            cube.Pos.y,
+            cube.Pos.z+cube.Size.z+1,
             4,
             0, 0,
             cube.Size.x,
@@ -808,9 +811,9 @@ std::vector<VoxelVertexPoint> VulkanRenderSession::generateMeshForVoxelChunks(co
         );
 
         out.emplace_back(
-            cube.Left.x+cube.Size.x+1,
-            cube.Left.y,
-            cube.Left.z,
+            cube.Pos.x+cube.Size.x+1,
+            cube.Pos.y,
+            cube.Pos.z,
             5,
             0, 0,
             cube.Size.z,

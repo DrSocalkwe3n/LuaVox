@@ -93,6 +93,11 @@ Vulkan::Vulkan(asio::io_context &ioc)
 			LOG.error() << "Vulkan::run: " << exc.what();
 		}
 
+		try {
+			if(Graphics.Window)
+				glfwSetWindowAttrib(Graphics.Window, GLFW_VISIBLE, false);
+		} catch(...) {}
+
 		try { Game.RSession = nullptr; } catch(const std::exception &exc) {
 			LOG.error() << "Game.RSession = nullptr: " << exc.what();
 		}
@@ -3832,7 +3837,7 @@ void AtlasImage::atlasChangeTextureData(uint16_t id, const uint32_t *rgba)
 	InfoSubTexture *info = const_cast<InfoSubTexture*>(atlasGetTextureInfo(id));
 
 	auto iter = CachedData.find(id);
-	// Если есть данные в кэше, то меняем их
+	// Если есть данные в кеше, то меняем их
 	if(iter != CachedData.end())
 	{
 		if(iter->second.size() == 0)

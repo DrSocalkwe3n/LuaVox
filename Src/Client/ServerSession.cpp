@@ -34,10 +34,9 @@ struct PP_Content_ChunkNodes : public ParsedPacket {
     Pos::GlobalChunk Pos;
     Node Nodes[16][16][16];
 
-    PP_Content_ChunkNodes(ToClient::L1 l1, uint8_t l2, WorldId_t id, Pos::GlobalChunk pos, Node* nodes)
+    PP_Content_ChunkNodes(ToClient::L1 l1, uint8_t l2, WorldId_t id, Pos::GlobalChunk pos)
         : ParsedPacket(l1, l2), Id(id), Pos(pos)
     {
-        std::copy(nodes, nodes+16*16*16, (Node*) Nodes);
     }
 };
 
@@ -281,14 +280,14 @@ void ServerSession::atFreeDrawTime(GlobalTime gTime, float dTime) {
                     auto &pair = changeOrAddList_removeList[p.Id];
                     std::get<0>(pair).insert(p.Pos);
                 } else if(l2 == ToClient::L2Content::ChunkNodes) {
-                    PP_Content_ChunkNodes &p = *dynamic_cast<PP_Content_ChunkNodes*>(pack);
-                    Pos::GlobalRegion rPos = p.Pos >> 2;
-                    Pos::bvec4u cPos = p.Pos & 0x3;
+                    // PP_Content_ChunkNodes &p = *dynamic_cast<PP_Content_ChunkNodes*>(pack);
+                    // Pos::GlobalRegion rPos = p.Pos >> 2;
+                    // Pos::bvec4u cPos = p.Pos & 0x3;
 
-                    Node *nodes = (Node*) Data.Worlds[p.Id].Regions[rPos].Chunks[cPos.x][cPos.y][cPos.z].Nodes;
-                    std::copy((const Node*)p.Nodes, ((const Node*) p.Nodes)+16*16*16, nodes);
-                    auto &pair = changeOrAddList_removeList[p.Id];
-                    std::get<0>(pair).insert(p.Pos);
+                    // Node *nodes = (Node*) Data.Worlds[p.Id].Regions[rPos].Chunks[cPos.x][cPos.y][cPos.z].Nodes;
+                    // std::copy((const Node*) p.Nodes, ((const Node*) p.Nodes)+16*16*16, nodes);
+                    // auto &pair = changeOrAddList_removeList[p.Id];
+                    // std::get<0>(pair).insert(p.Pos);
                 } else if(l2 == ToClient::L2Content::RemoveRegion) {
                     PP_Content_RegionRemove &p = *dynamic_cast<PP_Content_RegionRemove*>(pack);
 
@@ -532,25 +531,17 @@ coro<> ServerSession::rP_Content(Net::AsyncSocket &sock) {
         Pos::GlobalChunk pos;
         pos.unpack(co_await sock.read<Pos::GlobalChunk::Pack>());
 
-        std::vector<VoxelCube> cubes(co_await sock.read<uint16_t>());
-
-        for(size_t iter = 0; iter < cubes.size(); iter++) {
-            VoxelCube &cube = cubes[iter];
-            cube.Data = co_await sock.read<DefVoxelId_t>();
-            cube.Left.x = co_await sock.read<uint8_t>();
-            cube.Left.y = co_await sock.read<uint8_t>();
-            cube.Left.z = co_await sock.read<uint8_t>();
-            cube.Size.x = co_await sock.read<uint8_t>();
-            cube.Size.y = co_await sock.read<uint8_t>();
-            cube.Size.z = co_await sock.read<uint8_t>();
-        }
+        uint32_t compressedSize = co_await sock.read<uint32_t>();
+        assert(compressedSize <= std::pow(2, 24));
+        std::u8string compressed(compressedSize, '\0');
+        co_await sock.read((std::byte*) compressed.data(), compressedSize); 
 
         PP_Content_ChunkVoxels *packet = new PP_Content_ChunkVoxels(
             ToClient::L1::Content,
             (uint8_t) ToClient::L2Content::ChunkVoxels,
             wcId,
             pos,
-            std::move(cubes)
+            unCompressVoxels(compressed)
         );
 
         while(!NetInputPackets.push(packet));
@@ -563,20 +554,21 @@ coro<> ServerSession::rP_Content(Net::AsyncSocket &sock) {
         WorldId_t wcId = co_await sock.read<WorldId_t>();
         Pos::GlobalChunk pos;
         pos.unpack(co_await sock.read<Pos::GlobalChunk::Pack>());
-        std::array<Node, 16*16*16> nodes;
 
-        for(Node& node : nodes) {
-            node.Data = co_await sock.read<DefNodeId_t>();
-        }
+        uint32_t compressedSize = co_await sock.read<uint32_t>();
+        assert(compressedSize <= std::pow(2, 24));
+        std::u8string compressed(compressedSize, '\0');
+        co_await sock.read((std::byte*) compressed.data(), compressedSize); 
 
         PP_Content_ChunkNodes *packet = new PP_Content_ChunkNodes(
             ToClient::L1::Content,
-            (uint8_t) ToClient::L2Content::ChunkVoxels,
+            (uint8_t) ToClient::L2Content::ChunkNodes,
             wcId,
-            pos,
-            nodes.data()
+            pos
         );
 
+        unCompressNodes(compressed, (Node*) packet->Nodes);
+        
         while(!NetInputPackets.push(packet));
 
         co_return;

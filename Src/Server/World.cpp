@@ -19,8 +19,6 @@ World::~World() {
 std::vector<Pos::GlobalRegion> World::onCEC_RegionsEnter(std::shared_ptr<ContentEventController> cec, const std::vector<Pos::GlobalRegion>& enter) {
     std::vector<Pos::GlobalRegion> out;
 
-    TOS::Logger("Test").debug() << "Start";
-    
     for(const Pos::GlobalRegion &pos : enter) {
         auto iterRegion = Regions.find(pos);
         if(iterRegion == Regions.end()) {
@@ -47,8 +45,6 @@ std::vector<Pos::GlobalRegion> World::onCEC_RegionsEnter(std::shared_ptr<Content
 
         
     }
-
-    TOS::Logger("Test").debug() << "End";
 
     return out;
 }

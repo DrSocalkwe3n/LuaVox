@@ -137,7 +137,7 @@ bool RemoteClient::maybe_prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::Globa
         }
     }
 
-    checkPacketBorder(1+4+8+2+4+compressed_voxels.size());
+    checkPacketBorder(4+4+8+2+4+compressed_voxels.size());
     NextPacket << (uint8_t) ToClient::L1::Content
         << (uint8_t) ToClient::L2Content::ChunkVoxels
         << worldId << chunkPos.pack() << uint32_t(compressed_voxels.size());
@@ -211,7 +211,7 @@ bool RemoteClient::maybe_prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::Global
         }
     }
 
-    checkPacketBorder(1+4+8+4+compressed_nodes.size());
+    checkPacketBorder(4+4+8+4+compressed_nodes.size());
     NextPacket << (uint8_t) ToClient::L1::Content
         << (uint8_t) ToClient::L2Content::ChunkNodes
         << worldId << chunkPos.pack() << uint32_t(compressed_nodes.size());

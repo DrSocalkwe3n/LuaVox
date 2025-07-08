@@ -73,7 +73,8 @@ void VulkanRenderSession::init(Vulkan *instance) {
     if(!DescriptorPool) {
         std::vector<VkDescriptorPoolSize> pool_sizes = {
           {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
-          {VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 3}
+          {VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 3},
+          {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3}
         };
 
         VkDescriptorPoolCreateInfo descriptor_pool = {};
@@ -616,8 +617,8 @@ void VulkanRenderSession::onChunksChange(WorldId_t worldId, const std::unordered
     auto &table = External.ChunkVoxelMesh[worldId];
 
     for(Pos::GlobalChunk pos : changeOrAddList) {
-        Pos::GlobalRegion rPos = pos >> 4;
-        Pos::bvec16u cPos = pos & 0xf;
+        Pos::GlobalRegion rPos = pos >> 2;
+        Pos::bvec4u cPos = pos & 0x3;
 
         auto &buffers = table[pos];
 
@@ -884,7 +885,7 @@ std::vector<NodeVertexStatic> VulkanRenderSession::generateMeshForNodeChunks(con
 
             v.Tex = nodes[x][y][z].NodeId;
 
-            if((y+1) < 16 || nodes[x][y+1][z].NodeId != 0) {
+            if((y+1) >= 16 || nodes[x][y+1][z].NodeId == 0) {
                 v.FX = 135+x*16;
                 v.FY = 135+y*16+16;
                 v.FZ = 135+z*16;
@@ -892,28 +893,192 @@ std::vector<NodeVertexStatic> VulkanRenderSession::generateMeshForNodeChunks(con
                 v.TV = 0;
                 out.push_back(v);
 
-                v.FX += 15;
+                v.FX += 16;
                 v.TU = 65535;
                 out.push_back(v);
 
-                v.FZ += 15;
+                v.FZ += 16;
                 v.TV = 65535;
                 out.push_back(v);
 
                 v.FX = 135+x*16;
-                v.FY = 135+y*16+16;
                 v.FZ = 135+z*16;
                 v.TU = 0;
                 v.TV = 0;
                 out.push_back(v);
 
-                v.FX += 15;
-                v.FZ += 15;
+                v.FX += 16;
+                v.FZ += 16;
                 v.TV = 65535;
                 v.TU = 65535;
                 out.push_back(v);
 
-                v.FX -= 15;
+                v.FX -= 16;
+                v.TU = 0;
+                out.push_back(v);
+            }
+
+            if((y-1) < 0 || nodes[x][y-1][z].NodeId == 0) {
+                v.FX = 135+x*16;
+                v.FY = 135+y*16;
+                v.FZ = 135+z*16;
+                v.TU = 0;
+                v.TV = 0;
+                out.push_back(v);
+
+                v.FZ += 16;
+                v.TV = 65535;
+                out.push_back(v);
+
+                v.FX += 16;
+                v.TU = 65535;
+                out.push_back(v);
+
+                v.FX = 135+x*16;
+                v.FZ = 135+z*16;
+                v.TU = 0;
+                v.TV = 0;
+                out.push_back(v);
+
+                v.FX += 16;
+                v.FZ += 16;
+                v.TV = 65535;
+                v.TU = 65535;
+                out.push_back(v);
+
+                v.FZ -= 16;
+                v.TV = 0;
+                out.push_back(v);
+            }
+
+            if((x+1) >= 16 || nodes[x+1][y][z].NodeId == 0) {
+                v.FX = 135+x*16+16;
+                v.FY = 135+y*16;
+                v.FZ = 135+z*16;
+                v.TU = 0;
+                v.TV = 0;
+                out.push_back(v);
+
+                v.FZ += 16;
+                v.TV = 65535;
+                out.push_back(v);
+
+                v.FY += 16;
+                v.TU = 65535;
+                out.push_back(v);
+
+                v.FY = 135+y*16;
+                v.FZ = 135+z*16;
+                v.TU = 0;
+                v.TV = 0;
+                out.push_back(v);
+
+                v.FY += 16;
+                v.FZ += 16;
+                v.TV = 65535;
+                v.TU = 65535;
+                out.push_back(v);
+
+                v.FZ -= 16;
+                v.TV = 0;
+                out.push_back(v);
+            }
+
+            if((x-1) < 0 || nodes[x-1][y][z].NodeId == 0) {
+                v.FX = 135+x*16;
+                v.FY = 135+y*16;
+                v.FZ = 135+z*16;
+                v.TU = 0;
+                v.TV = 0;
+                out.push_back(v);
+
+                v.FY += 16;
+                v.TU = 65535;
+                out.push_back(v);
+
+                v.FZ += 16;
+                v.TV = 65535;
+                out.push_back(v);
+
+                v.FY = 135+y*16;
+                v.FZ = 135+z*16;
+                v.TU = 0;
+                v.TV = 0;
+                out.push_back(v);
+
+                v.FY += 16;
+                v.FZ += 16;
+                v.TV = 65535;
+                v.TU = 65535;
+                out.push_back(v);
+
+                v.FY -= 16;
+                v.TU = 0;
+                out.push_back(v);
+            }
+
+            if((z+1) >= 16 || nodes[x][y][z+1].NodeId == 0) {
+                v.FX = 135+x*16;
+                v.FY = 135+y*16;
+                v.FZ = 135+z*16+16;
+                v.TU = 0;
+                v.TV = 0;
+                out.push_back(v);
+
+                v.FY += 16;
+                v.TU = 65535;
+                out.push_back(v);
+
+                v.FX += 16;
+                v.TV = 65535;
+                out.push_back(v);
+
+                v.FX = 135+x*16;
+                v.FY = 135+y*16;
+                v.TU = 0;
+                v.TV = 0;
+                out.push_back(v);
+
+                v.FX += 16;
+                v.FY += 16;
+                v.TV = 65535;
+                v.TU = 65535;
+                out.push_back(v);
+
+                v.FY -= 16;
+                v.TU = 0;
+                out.push_back(v);
+            }
+
+            if((z-1) < 0 || nodes[x][y][z-1].NodeId == 0) {
+                v.FX = 135+x*16;
+                v.FY = 135+y*16;
+                v.FZ = 135+z*16;
+                v.TU = 0;
+                v.TV = 0;
+                out.push_back(v);
+
+                v.FX += 16;
+                v.TV = 65535;
+                out.push_back(v);
+
+                v.FY += 16;
+                v.TU = 65535;
+                out.push_back(v);
+
+                v.FX = 135+x*16;
+                v.FY = 135+y*16;
+                v.TU = 0;
+                v.TV = 0;
+                out.push_back(v);
+
+                v.FX += 16;
+                v.FY += 16;
+                v.TV = 65535;
+                v.TU = 65535;
+                out.push_back(v);
+
+                v.FX -= 16;
                 v.TV = 0;
                 out.push_back(v);
             }

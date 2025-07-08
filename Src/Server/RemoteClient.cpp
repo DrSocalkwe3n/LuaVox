@@ -74,6 +74,9 @@ bool RemoteClient::maybe_prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::Globa
     if(lock)
         return false;
 
+    Pos::bvec4u localChunk = chunkPos & 0x3;
+    Pos::GlobalRegion regionPos = chunkPos >> 2;
+
     /*
         Обновить зависимости
         Запросить недостающие
@@ -98,7 +101,6 @@ bool RemoteClient::maybe_prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::Globa
     }
 
     auto iterWorld = ResUses.RefChunk.find(worldId);
-    Pos::bvec4u lChunk = (chunkPos & 0xf);
 
     if(iterWorld != ResUses.RefChunk.end())
     // Исключим зависимости предыдущей версии чанка
@@ -106,7 +108,7 @@ bool RemoteClient::maybe_prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::Globa
         auto iterRegion = iterWorld->second.find(chunkPos);
         if(iterRegion != iterWorld->second.end()) {
             // Уменьшим счётчик зависимостей
-            for(const DefVoxelId_t& id : iterRegion->second[lChunk.pack()].Voxel) {
+            for(const DefVoxelId_t& id : iterRegion->second[localChunk.pack()].Voxel) {
                 auto iter = ResUses.DefVoxel.find(id);
                 assert(iter != ResUses.DefVoxel.end()); // Воксель должен быть в зависимостях
                 if(--iter->second == 0) {
@@ -121,7 +123,7 @@ bool RemoteClient::maybe_prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::Globa
         iterWorld = ResUses.RefChunk.find(worldId);
     }
 
-    iterWorld->second[chunkPos][lChunk.pack()].Voxel = uniq_sorted_defines;
+    iterWorld->second[regionPos][localChunk.pack()].Voxel = uniq_sorted_defines;
 
     if(!newTypes.empty()) {
         // Добавляем новые типы в запрос
@@ -154,6 +156,9 @@ bool RemoteClient::maybe_prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::Global
     if(lock)
         return false;
 
+    Pos::bvec4u localChunk = chunkPos & 0x3;
+    Pos::GlobalRegion regionPos = chunkPos >> 2;
+
     std::vector<DefNodeId_t>
         newTypes, /* Новые типы нод */
         lostTypes /* Потерянные типы нод */;
@@ -172,7 +177,6 @@ bool RemoteClient::maybe_prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::Global
     }
 
     auto iterWorld = ResUses.RefChunk.find(worldId);
-    Pos::bvec4u lChunk = (chunkPos & 0xf);
 
     if(iterWorld != ResUses.RefChunk.end())
     // Исключим зависимости предыдущей версии чанка
@@ -180,7 +184,7 @@ bool RemoteClient::maybe_prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::Global
         auto iterRegion = iterWorld->second.find(chunkPos);
         if(iterRegion != iterWorld->second.end()) {
             // Уменьшим счётчик зависимостей
-            for(const DefNodeId_t& id : iterRegion->second[lChunk.pack()].Node) {
+            for(const DefNodeId_t& id : iterRegion->second[localChunk.pack()].Node) {
                 auto iter = ResUses.DefNode.find(id);
                 assert(iter != ResUses.DefNode.end()); // Нода должна быть в зависимостях
                 if(--iter->second == 0) {
@@ -195,7 +199,7 @@ bool RemoteClient::maybe_prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::Global
         iterWorld = ResUses.RefChunk.find(worldId);
     }
 
-    iterWorld->second[chunkPos][lChunk.pack()].Node = uniq_sorted_defines;
+    iterWorld->second[regionPos][localChunk.pack()].Node = uniq_sorted_defines;
 
     if(!newTypes.empty()) {
         // Добавляем новые типы в запрос

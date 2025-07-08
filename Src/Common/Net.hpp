@@ -188,9 +188,9 @@ protected:
         tcp::socket Socket;
 
         static constexpr uint32_t 
-            MAX_SIMPLE_PACKETS = 8192, 
+            MAX_SIMPLE_PACKETS = 16384, 
             MAX_SMART_PACKETS = MAX_SIMPLE_PACKETS/4,
-            MAX_PACKETS_SIZE_IN_WAIT = 1 << 24;
+            MAX_PACKETS_SIZE_IN_WAIT = 1 << 26;
 
         struct AsyncContext {
             volatile bool NeedShutdown = false, RunSendShutdowned = false;

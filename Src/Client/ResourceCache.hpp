@@ -127,8 +127,6 @@ public:
 class CacheHandlerBasic : public CacheHandler {
     Logger LOG = "CacheHandlerBasic";
 
-    std::thread ReadThread, ReadWriteThread;
-
     struct DataTask {
         CacheDatabase::HASH Hash;
         std::shared_ptr<std::string> Data;
@@ -143,6 +141,8 @@ class CacheHandlerBasic : public CacheHandler {
     // Список полностью считанных файлов
     SpinlockObject<std::vector<DataTask>> ReadedQueue;
     bool NeedShutdown = false;
+
+    std::thread ReadThread, ReadWriteThread;
 
 public:
     using Ptr = std::shared_ptr<CacheHandlerBasic>;

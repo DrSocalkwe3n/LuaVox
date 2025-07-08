@@ -460,7 +460,7 @@ CompressedNodes compressNodes_byte(const Node* nodes) {
     assert(bytes_raw_profile >= 0 && bytes_raw_profile <= 3);
     // Количество байт на индекс
     uint8_t bytes_indices_profile = std::ceil(std::log2(profiles.size())/8);
-    assert(bytes_indices_profile >= 1 && bytes_indices_profile <= 2);
+    assert(bytes_indices_profile >= 0 && bytes_indices_profile <= 2);
 
     bool indices_profile = 3+bytes_raw_profile*profiles.size()+bytes_indices_profile*16*16*16 < bytes_raw_profile*16*16*16;
 
@@ -486,6 +486,7 @@ CompressedNodes compressNodes_byte(const Node* nodes) {
             const Node &node = nodes[iter];
 
             size_t index = std::binary_search(profiles.begin(), profiles.end(), node.NodeId);
+            
             compressed.push_back(index & 0xff);
             if(bytes_indices_profile > 1)
                 compressed.push_back((index >> 8) & 0xff);

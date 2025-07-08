@@ -280,14 +280,14 @@ void ServerSession::atFreeDrawTime(GlobalTime gTime, float dTime) {
                     auto &pair = changeOrAddList_removeList[p.Id];
                     std::get<0>(pair).insert(p.Pos);
                 } else if(l2 == ToClient::L2Content::ChunkNodes) {
-                    // PP_Content_ChunkNodes &p = *dynamic_cast<PP_Content_ChunkNodes*>(pack);
-                    // Pos::GlobalRegion rPos = p.Pos >> 2;
-                    // Pos::bvec4u cPos = p.Pos & 0x3;
+                    PP_Content_ChunkNodes &p = *dynamic_cast<PP_Content_ChunkNodes*>(pack);
+                    Pos::GlobalRegion rPos = p.Pos >> 2;
+                    Pos::bvec4u cPos = p.Pos & 0x3;
 
-                    // Node *nodes = (Node*) Data.Worlds[p.Id].Regions[rPos].Chunks[cPos.x][cPos.y][cPos.z].Nodes;
-                    // std::copy((const Node*) p.Nodes, ((const Node*) p.Nodes)+16*16*16, nodes);
-                    // auto &pair = changeOrAddList_removeList[p.Id];
-                    // std::get<0>(pair).insert(p.Pos);
+                    Node *nodes = (Node*) Data.Worlds[p.Id].Regions[rPos].Chunks[cPos.x][cPos.y][cPos.z].Nodes;
+                    std::copy((const Node*) p.Nodes, ((const Node*) p.Nodes)+16*16*16, nodes);
+                    auto &pair = changeOrAddList_removeList[p.Id];
+                    std::get<0>(pair).insert(p.Pos);
                 } else if(l2 == ToClient::L2Content::RemoveRegion) {
                     PP_Content_RegionRemove &p = *dynamic_cast<PP_Content_RegionRemove*>(pack);
 

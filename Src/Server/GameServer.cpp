@@ -111,7 +111,7 @@ void GameServer::BackingChunkPressure_t::run(int id) {
                             for(int y = 0; y < 4; y++)
                                 for(int x = 0; x < 4; x++) 
                             {
-                                auto &toPtr = dumpRegion.Nodes[Pos::bvec4u(x, y, z).pack()];
+                                auto &toPtr = dumpRegion.Nodes[Pos::bvec4u(x, y, z)];
                                 const Node *fromPtr = (const Node*) &regionObj.Nodes[0][0][0][x][y][z];
                                 std::copy(fromPtr, fromPtr+16*16*16, toPtr.data());
                             }
@@ -227,7 +227,7 @@ void GameServer::BackingChunkPressure_t::run(int id) {
                     for(auto& [chunkPos, chunk] : region.Nodes) {
                         CompressedNodes cmp = compressNodes(chunk.data());
                         Pos::GlobalChunk chunkPosR = (Pos::GlobalChunk(regionPos) << 2) + chunkPos;
-
+                        
                         for(auto& ptr : region.NewCECs) {
                             bool accepted = ptr->Remote->maybe_prepareChunkUpdate_Nodes(worldId, 
                                     chunkPosR, cmp.Compressed, cmp.Defines);
@@ -845,12 +845,24 @@ void GameServer::stepGeneratorAndLuaAsync(IWorldSaveBackend::TickSyncInfo_Out db
         for(int z = 0; z < 64; z++)
         for(int y = 0; y < 64; y++)
         for(int x = 0; x < 64; x++, ptr++) {
-            DefVoxelId_t id = *ptr > 0.5 ? 1 : 0;
+            // DefVoxelId_t id = *ptr > 0.9 ? 1 : 0;
             Pos::bvec64u nodePos(x, y, z);
             auto &node = obj.Nodes[Pos::bvec4u(nodePos >> 4).pack()][Pos::bvec16u(nodePos & 0xf).pack()];
-            node.NodeId = id;
+            // node.NodeId = id;
+            // node.Meta = 0;
+
+            if(y == (key.RegionPos.y % 64))
+                node.NodeId = 1;
+            else
+                node.NodeId = 0;
+
             node.Meta = 0;
         }
+
+        // Node node;
+        // node.Data = 0;
+        // std::fill((Node*) obj.Nodes.data(), ((Node*) obj.Nodes.data())+64*64*64, node);
+        // obj.Nodes[0][0].NodeId = 1;
     }
 
     // Обработка идентификаторов на стороне луа

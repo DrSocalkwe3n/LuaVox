@@ -211,8 +211,9 @@ class GameServer : public AsyncObject {
                 auto lock = Input.lock();
                 
                 for(auto& [worldId, region] : input) {
-                    for(auto& regionPos : region)
+                    for(auto& regionPos : region) {
                         lock->push({worldId, regionPos});
+                    }
                 }
             }
 

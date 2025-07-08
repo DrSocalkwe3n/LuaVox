@@ -1,6 +1,6 @@
 #version 450
 
-layout(location = 0) in uvec4 Vertex;
+layout(location = 0) in uvec3 Vertex;
 
 layout(location = 0) out GeometryObj {
     vec3 GeoPos;    // Реальная позиция в мире
@@ -16,7 +16,7 @@ layout(push_constant) uniform UniformBufferObject {
 
 // struct NodeVertexStatic {
 //     uint32_t
-//         FX : 9, FY : 9, FZ : 9, // Позиция -112 ~ 369 / 16
+//         FX : 9, FY : 9, FZ : 9, // Позиция 15 -120 ~ 240 360 15 / 16
 //         N1 : 4,                 // Не занято
 //         LS : 1,                 // Масштаб карты освещения (1м/16 или 1м)
 //         Tex : 18,               // Текстура
@@ -27,9 +27,9 @@ layout(push_constant) uniform UniformBufferObject {
 void main()
 {
     vec4 baseVec = ubo.model*vec4(
-        float(Vertex.x & 0x1ff) / 16.f - 7,
-        float((Vertex.x >> 9) & 0x1ff) / 16.f - 7,
-        float((Vertex.x >> 18) & 0x1ff) / 16.f - 7,
+        float(Vertex.x & 0x1ff) / 16.f - 135/16.f,
+        float((Vertex.x >> 9) & 0x1ff) / 16.f - 135/16.f,
+        float((Vertex.x >> 18) & 0x1ff) / 16.f - 135/16.f,
         1
     );
 

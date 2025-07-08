@@ -741,7 +741,6 @@ IWorldSaveBackend::TickSyncInfo_Out GameServer::stepDatabaseSync() {
     IWorldSaveBackend::TickSyncInfo_In toDB;
     
     for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
-        break;
         assert(cec);
         // Пересчитать зоны наблюдения
         if(cec->CrossedBorder) {
@@ -838,11 +837,8 @@ void GameServer::stepGeneratorAndLuaAsync(IWorldSaveBackend::TickSyncInfo_Out db
 
     // Синхронизация с контроллером асинхронных обработчиков луа
     // 2.2 и 3.1
-    // Обработка шума
+    // Обработка шума на стороне луа
     for(auto& [key, region] : calculatedNoise) {
-        LOG.debug() << "Сгенерирован " << key.WId << ' ' << key.RegionPos.x << ' ' 
-            << key.RegionPos.y << ' ' << key.RegionPos.z;
-
         auto &obj = toLoadRegions[key.WId].emplace_back(key.RegionPos, World::RegionIn()).second;
         float *ptr = &region[0];
 

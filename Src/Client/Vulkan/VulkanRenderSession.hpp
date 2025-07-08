@@ -64,7 +64,7 @@ struct VoxelVertexPoint {
 
 struct NodeVertexStatic {
     uint32_t
-        FX : 9, FY : 9, FZ : 9, // Позиция -112 ~ 369 / 16
+        FX : 9, FY : 9, FZ : 9, // Позиция 15 -120 ~ 240 360 15 / 16
         N1 : 4,                 // Не занято
         LS : 1,                 // Масштаб карты освещения (1м/16 или 1м)
         Tex : 18,               // Текстура
@@ -133,7 +133,11 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
     std::map<BinTextureId_t, uint16_t> ServerToAtlas;
 
     struct {
-        std::unordered_map<WorldId_t, std::unordered_map<Pos::GlobalChunk, std::unique_ptr<Buffer>>> ChunkVoxelMesh;
+        std::unordered_map<WorldId_t, 
+            std::unordered_map<Pos::GlobalChunk, 
+                std::pair<std::unique_ptr<Buffer>, std::unique_ptr<Buffer>> // Voxels, Nodes
+            >
+        > ChunkVoxelMesh;
     } External;
 
     virtual void free(Vulkan *instance) override;
@@ -166,6 +170,7 @@ public:
     void drawWorld(GlobalTime gTime, float dTime, VkCommandBuffer drawCmd);
 
     static std::vector<VoxelVertexPoint> generateMeshForVoxelChunks(const std::vector<VoxelCube> cubes); 
+    static std::vector<NodeVertexStatic> generateMeshForNodeChunks(const Node nodes[16][16][16]); 
 
 private:
     void updateDescriptor_MainAtlas();

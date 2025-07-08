@@ -199,10 +199,10 @@ void VulkanRenderSession::init(Vulkan *instance) {
         int width, height;
         bool hasAlpha;
         for(const char *path : {
-                //"tropical_rainforest_wood.png",
                 "grass.png",
+                "tropical_rainforest_wood.png",
                 "willow_wood.png",
-                //"xnether_blue_wood.png",
+                "xnether_blue_wood.png",
                 "xnether_purple_wood.png"
         }) {
             ByteBuffer image = VK::loadPNG(getResource(std::string("textures/") + path)->makeStream().Stream, width, height, hasAlpha);
@@ -619,26 +619,39 @@ void VulkanRenderSession::onChunksChange(WorldId_t worldId, const std::unordered
         Pos::GlobalRegion rPos = pos >> 4;
         Pos::bvec16u cPos = pos & 0xf;
 
-        const auto &voxels = ServerSession->Data.Worlds[worldId].Regions[rPos].Chunks[cPos.x][cPos.y][cPos.z].Voxels;
+        auto &buffers = table[pos];
 
-        if(voxels.empty()) {
+        const auto &chunk = ServerSession->Data.Worlds[worldId].Regions[rPos].Chunks[cPos.x][cPos.y][cPos.z];
+
+        if(chunk.Voxels.empty()) {
+            std::get<0>(buffers) = nullptr;
+        } else {
+            std::vector<VoxelVertexPoint> vertexs = generateMeshForVoxelChunks(chunk.Voxels);
+
+            if(!vertexs.empty()) {
+                auto &voxels = std::get<0>(buffers);
+                voxels = std::make_unique<Buffer>(VkInst, vertexs.size()*sizeof(VoxelVertexPoint));
+                std::copy(vertexs.data(), vertexs.data()+vertexs.size(), (VoxelVertexPoint*) voxels->mapMemory());
+                voxels->unMapMemory();
+            } else {
+                std::get<0>(buffers) = nullptr;
+            }
+        }
+
+        std::vector<NodeVertexStatic> vertexs2 = generateMeshForNodeChunks(chunk.Nodes);
+        if(vertexs2.empty()) {
+            std::get<1>(buffers) = nullptr;
+        } else {
+            auto &nodes = std::get<1>(buffers);
+            nodes = std::make_unique<Buffer>(VkInst, vertexs2.size()*sizeof(NodeVertexStatic));
+            std::copy(vertexs2.data(), vertexs2.data()+vertexs2.size(), (NodeVertexStatic*) nodes->mapMemory());
+            nodes->unMapMemory();
+        }
+        
+        if(!std::get<0>(buffers) && !std::get<1>(buffers)) {
             auto iter = table.find(pos);
             if(iter != table.end())
                 table.erase(iter);
-        } else {
-            Logger("Test").debug() << voxels.size();
-            std::vector<VoxelVertexPoint> vertexs = generateMeshForVoxelChunks(voxels);
-            Logger("Test").debug() << vertexs.size();
-
-            if(!vertexs.empty()) {
-                auto &buffer = table[pos] = std::make_unique<Buffer>(VkInst, vertexs.size()*sizeof(VoxelVertexPoint));
-                std::copy(vertexs.data(), vertexs.data()+vertexs.size(), (VoxelVertexPoint*) buffer->mapMemory());
-                buffer->unMapMemory();
-            } else {
-                auto iter = table.find(pos);
-                if(iter != table.end())
-                    table.erase(iter);
-            }
         }
     }
 
@@ -725,14 +738,45 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
             glm::mat4 orig = PCO.Model;
 
             for(auto &pair : iterWorld->second) {
-                glm::vec3 cpos(pair.first.x, pair.first.y, pair.first.z);
-                PCO.Model = glm::translate(orig, cpos*16.f);
-                vkBuffer = *pair.second;
+                if(auto& voxels = std::get<0>(pair.second)) {
+                    glm::vec3 cpos(pair.first.x, pair.first.y, pair.first.z);
+                    PCO.Model = glm::translate(orig, cpos*16.f);
+                    vkBuffer = *voxels;
 
-                vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
-                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, offsetof(WorldPCO, Model), sizeof(WorldPCO::Model), &PCO.Model);
-                vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
-                vkCmdDraw(drawCmd, pair.second->getSize() / sizeof(VoxelVertexPoint), 1, 0, 0);
+                    vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
+                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, offsetof(WorldPCO, Model), sizeof(WorldPCO::Model), &PCO.Model);
+                    vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
+                    vkCmdDraw(drawCmd, voxels->getSize() / sizeof(VoxelVertexPoint), 1, 0, 0);
+                }
+            }
+
+            PCO.Model = orig;
+        }
+    }
+
+    vkCmdBindPipeline(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, NodeStaticOpaquePipeline);
+	vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, 0, sizeof(WorldPCO), &PCO);
+    vkCmdBindDescriptorSets(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, 
+        MainAtlas_LightMap_PipelineLayout,  0, 2, 
+        (const VkDescriptorSet[]) {MainAtlasDescriptor, VoxelLightMapDescriptor}, 0, nullptr);
+
+    {
+        auto iterWorld = External.ChunkVoxelMesh.find(WorldId);
+        if(iterWorld != External.ChunkVoxelMesh.end()) {
+            glm::mat4 orig = PCO.Model;
+
+            for(auto &pair : iterWorld->second) {
+                if(auto& nodes = std::get<1>(pair.second)) {
+                    glm::vec3 cpos(pair.first.x, pair.first.y, pair.first.z);
+                    PCO.Model = glm::translate(orig, cpos*16.f);
+                    vkBuffer = *nodes;
+
+                    vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
+                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, offsetof(WorldPCO, Model), sizeof(WorldPCO::Model), &PCO.Model);
+                    vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
+                    vkCmdDraw(drawCmd, nodes->getSize() / sizeof(NodeVertexStatic), 1, 0, 0);
+                }
             }
 
             PCO.Model = orig;
@@ -823,6 +867,57 @@ std::vector<VoxelVertexPoint> VulkanRenderSession::generateMeshForVoxelChunks(co
             0
         );
     }
+
+    return out;
+}
+
+std::vector<NodeVertexStatic> VulkanRenderSession::generateMeshForNodeChunks(const Node nodes[16][16][16]) {
+    std::vector<NodeVertexStatic> out;
+    NodeVertexStatic v;
+
+    for(int z = 0; z < 16; z++)
+        for(int y = 0; y < 16; y++)
+            for(int x = 0; x < 16; x++)
+        {
+            if(nodes[x][y][z].Data == 0)
+                continue;
+
+            v.Tex = nodes[x][y][z].NodeId;
+
+            if((y+1) < 16 || nodes[x][y+1][z].NodeId != 0) {
+                v.FX = 135+x*16;
+                v.FY = 135+y*16+16;
+                v.FZ = 135+z*16;
+                v.TU = 0;
+                v.TV = 0;
+                out.push_back(v);
+
+                v.FX += 15;
+                v.TU = 65535;
+                out.push_back(v);
+
+                v.FZ += 15;
+                v.TV = 65535;
+                out.push_back(v);
+
+                v.FX = 135+x*16;
+                v.FY = 135+y*16+16;
+                v.FZ = 135+z*16;
+                v.TU = 0;
+                v.TV = 0;
+                out.push_back(v);
+
+                v.FX += 15;
+                v.FZ += 15;
+                v.TV = 65535;
+                v.TU = 65535;
+                out.push_back(v);
+
+                v.FX -= 15;
+                v.TV = 0;
+                out.push_back(v);
+            }
+        }
 
     return out;
 }

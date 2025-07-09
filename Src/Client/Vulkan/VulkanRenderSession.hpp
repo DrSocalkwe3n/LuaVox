@@ -7,7 +7,8 @@
 #include <optional>
 #include <unordered_map>
 #include <vulkan/vulkan_core.h>
-
+#include "Abstract.hpp"
+#include "VertexPool.hpp"
 
 /*
     У движка есть один текстурный атлас VK_IMAGE_VIEW_TYPE_2D_ARRAY(RGBA_UINT) и к нему Storage с инфой о положении текстур
@@ -28,6 +29,8 @@
 
 */
 
+
+
 namespace LV::Client::VK {
 
 struct WorldPCO {
@@ -36,41 +39,6 @@ struct WorldPCO {
 
 static_assert(sizeof(WorldPCO) == 128);
 
-/*
-    Воксели рендерятся точками, которые распаковываются в квадратные плоскости
-
-    В чанке по оси 256 вокселей, и 257 позиций вершин (включая дальнюю границу чанка)
-    9 бит на позицию *3 оси = 27 бит
-    Указание материала 16 бит
-*/
-
-struct VoxelVertexPoint {
-    uint32_t 
-        FX : 9, FY : 9, FZ : 9, // Позиция
-        Place : 3,              // Положение распространения xz, xy, zy, и обратные
-        N1 : 1,                 // Не занято
-        LS : 1,                 // Масштаб карты освещения (1м/16 или 1м)
-        TX : 8, TY : 8,         // Размер+1
-        VoxMtl : 16,            // Материал вокселя DefVoxelId_t
-        LU : 14, LV : 14,       // Позиция на карте освещения
-        N2 : 2;                 // Не занято
-};
-
-/*
-    Максимальный размер меша 14^3 м от центра ноды
-    Координатное пространство то же, что и у вокселей + 8 позиций с двух сторон
-    Рисуется полигонами
-*/
-
-struct NodeVertexStatic {
-    uint32_t
-        FX : 9, FY : 9, FZ : 9, // Позиция 15 -120 ~ 240 360 15 / 16
-        N1 : 4,                 // Не занято
-        LS : 1,                 // Масштаб карты освещения (1м/16 или 1м)
-        Tex : 18,               // Текстура
-        N2 : 14,                // Не занято
-        TU : 16, TV : 16;       // UV на текстуре
-};
 
 class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
     VK::Vulkan *VkInst = nullptr;
@@ -87,9 +55,15 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
         Buffer TestQuad;
         std::optional<Buffer> TestVoxel;
 
+
+        VertexPool<VoxelVertexPoint> VertexPool_Voxels;
+        VertexPool<NodeVertexStatic> VertexPool_Nodes;
+
         VulkanContext(Vulkan *vkInst)
             : MainTest(vkInst), LightDummy(vkInst),
-            TestQuad(vkInst, sizeof(NodeVertexStatic)*6)
+                TestQuad(vkInst, sizeof(NodeVertexStatic)*6),
+                VertexPool_Voxels(vkInst),
+                VertexPool_Nodes(vkInst)
         {}
     };
 
@@ -129,13 +103,12 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
         NodeStaticOpaquePipeline = VK_NULL_HANDLE,
         NodeStaticTransparentPipeline = VK_NULL_HANDLE;
 
-
     std::map<BinTextureId_t, uint16_t> ServerToAtlas;
 
     struct {
         std::unordered_map<WorldId_t, 
             std::unordered_map<Pos::GlobalChunk, 
-                std::pair<std::unique_ptr<Buffer>, std::unique_ptr<Buffer>> // Voxels, Nodes
+                std::pair<VertexPool<VoxelVertexPoint>::Pointer, VertexPool<NodeVertexStatic>::Pointer> // Voxels, Nodes
             >
         > ChunkVoxelMesh;
     } External;

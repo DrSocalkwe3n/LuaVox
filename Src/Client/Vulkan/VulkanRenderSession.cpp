@@ -625,28 +625,19 @@ void VulkanRenderSession::onChunksChange(WorldId_t worldId, const std::unordered
         const auto &chunk = ServerSession->Data.Worlds[worldId].Regions[rPos].Chunks[cPos.x][cPos.y][cPos.z];
 
         if(chunk.Voxels.empty()) {
-            std::get<0>(buffers) = nullptr;
+            VKCTX->VertexPool_Voxels.dropVertexs(std::get<0>(buffers));
         } else {
             std::vector<VoxelVertexPoint> vertexs = generateMeshForVoxelChunks(chunk.Voxels);
-
-            if(!vertexs.empty()) {
-                auto &voxels = std::get<0>(buffers);
-                voxels = std::make_unique<Buffer>(VkInst, vertexs.size()*sizeof(VoxelVertexPoint));
-                std::copy(vertexs.data(), vertexs.data()+vertexs.size(), (VoxelVertexPoint*) voxels->mapMemory());
-                voxels->unMapMemory();
-            } else {
-                std::get<0>(buffers) = nullptr;
-            }
+            auto &voxels = std::get<0>(buffers);
+            VKCTX->VertexPool_Voxels.relocate(voxels, std::move(vertexs));
         }
 
         std::vector<NodeVertexStatic> vertexs2 = generateMeshForNodeChunks(chunk.Nodes);
         if(vertexs2.empty()) {
-            std::get<1>(buffers) = nullptr;
+            VKCTX->VertexPool_Nodes.dropVertexs(std::get<1>(buffers));
         } else {
             auto &nodes = std::get<1>(buffers);
-            nodes = std::make_unique<Buffer>(VkInst, vertexs2.size()*sizeof(NodeVertexStatic));
-            std::copy(vertexs2.data(), vertexs2.data()+vertexs2.size(), (NodeVertexStatic*) nodes->mapMemory());
-            nodes->unMapMemory();
+            VKCTX->VertexPool_Nodes.relocate(nodes, std::move(vertexs2));
         }
         
         if(!std::get<0>(buffers) && !std::get<1>(buffers)) {
@@ -661,8 +652,11 @@ void VulkanRenderSession::onChunksChange(WorldId_t worldId, const std::unordered
         for(int y = 0; y < 4; y++)
         for(int x = 0; x < 4; x++) {
             auto iter = table.find((Pos::GlobalChunk(pos) << 2) + Pos::GlobalChunk(x, y, z));
-            if(iter != table.end())
+            if(iter != table.end()) {
+                VKCTX->VertexPool_Voxels.dropVertexs(std::get<0>(iter->second));
+                VKCTX->VertexPool_Nodes.dropVertexs(std::get<1>(iter->second));
                 table.erase(iter);
+            }
         }
     }
 
@@ -680,6 +674,8 @@ void VulkanRenderSession::beforeDraw() {
     if(VKCTX) {
         VKCTX->MainTest.atlasUpdateDynamicData();
         VKCTX->LightDummy.atlasUpdateDynamicData();
+        VKCTX->VertexPool_Voxels.update(VkInst->Graphics.Pool);
+        VKCTX->VertexPool_Nodes.update(VkInst->Graphics.Pool);
     }
 }
 
@@ -742,12 +738,12 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
                 if(auto& voxels = std::get<0>(pair.second)) {
                     glm::vec3 cpos(pair.first.x, pair.first.y, pair.first.z);
                     PCO.Model = glm::translate(orig, cpos*16.f);
-                    vkBuffer = *voxels;
+                    auto [vkBuffer, offset] = VKCTX->VertexPool_Voxels.map(voxels);
 
                     vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
                         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, offsetof(WorldPCO, Model), sizeof(WorldPCO::Model), &PCO.Model);
                     vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
-                    vkCmdDraw(drawCmd, voxels->getSize() / sizeof(VoxelVertexPoint), 1, 0, 0);
+                    vkCmdDraw(drawCmd, voxels.VertexCount, 1, offset, 0);
                 }
             }
 
@@ -771,12 +767,12 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
                 if(auto& nodes = std::get<1>(pair.second)) {
                     glm::vec3 cpos(pair.first.x, pair.first.y, pair.first.z);
                     PCO.Model = glm::translate(orig, cpos*16.f);
-                    vkBuffer = *nodes;
+                    auto [vkBuffer, offset] = VKCTX->VertexPool_Nodes.map(nodes);
 
                     vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
                         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, offsetof(WorldPCO, Model), sizeof(WorldPCO::Model), &PCO.Model);
                     vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
-                    vkCmdDraw(drawCmd, nodes->getSize() / sizeof(NodeVertexStatic), 1, 0, 0);
+                    vkCmdDraw(drawCmd, nodes.VertexCount, 1, offset, 0);
                 }
             }
 

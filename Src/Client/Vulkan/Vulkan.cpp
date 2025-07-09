@@ -2644,6 +2644,7 @@ Buffer::Buffer(Vulkan *instance, VkDeviceSize bufferSize, VkBufferUsageFlags usa
 	vkAllocateMemory(instance->Graphics.Device, &memAlloc, nullptr, &Memory);
 	if(res)
 		MAKE_ERROR("VkHandler: ошибка выделения памяти на устройстве");
+	assert(Memory);
 
 	vkBindBufferMemory(instance->Graphics.Device, Buff, Memory, 0);
 }

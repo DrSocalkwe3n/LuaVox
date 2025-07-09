@@ -22,7 +22,7 @@ public:
     // x y cx cy cz
     //LightPrism Lights[16][16][4][4][4];
 
-    Node Nodes[16][16][16][4][4][4];
+    std::array<std::array<Node, 16*16*16>, 4*4*4> Nodes;
 
     std::vector<Entity> Entityes;
     std::vector<std::shared_ptr<ContentEventController>> CECs, NewCECs;

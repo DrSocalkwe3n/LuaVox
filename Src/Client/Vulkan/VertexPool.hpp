@@ -104,7 +104,7 @@ public:
             return {0, 0, 0};
 
         // Необходимое количество блоков
-        uint16_t blocks = data.size() / size_t(PerBlock);
+        uint16_t blocks = (data.size()+PerBlock-1) / PerBlock;
         assert(blocks <= PerPool);
 
         // Нужно найти пулл в котором будет свободно blocks количество блоков или создать новый
@@ -112,13 +112,17 @@ public:
             Pool &pool = Pools[iterPool];
             size_t pos = pool.Allocation._Find_first();
 
+            if(pos == PerPool)
+                continue;
+
             while(true) {
                 int countEmpty = 1;
                 for(size_t pos2 = pos+1; pos2 < PerPool && pool.Allocation.test(pos2) && countEmpty < blocks; pos2++, countEmpty++);
 
                 if(countEmpty == blocks) {
-                    for(int block = 0; block < blocks; block++)
+                    for(int block = 0; block < blocks; block++) {
                         pool.Allocation.reset(pos+block);
+                    }
 
                     size_t count = data.size();
                     pushData(std::move(data), iterPool, pos);
@@ -244,6 +248,8 @@ public:
                 task.BlockId*sizeof(Vertex)*size_t(PerBlock),
                 task.Data.size()*sizeof(Vertex)
             };
+
+            assert(copyRegion.dstOffset+copyRegion.size < sizeof(Vertex)*PerBlock*PerPool);
 
             vkCmdCopyBuffer(commandBuffer, HostCoherent.getBuffer(), Pools[task.PoolId].DeviceBuff.getBuffer(),
                  1, &copyRegion);

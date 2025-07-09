@@ -40,7 +40,7 @@ std::vector<Pos::GlobalRegion> World::onCEC_RegionsEnter(std::shared_ptr<Content
         for(int z = 0; z < 4; z++)
             for(int y = 0; y < 4; y++)
                 for(int x = 0; x < 4; x++) {
-                    nodes[Pos::bvec4u(x, y, z)] = (const Node*) &region.Nodes[0][0][0][x][y][z];
+                    nodes[Pos::bvec4u(x, y, z)] = region.Nodes[Pos::bvec4u(x, y, z).pack()].data();
                 }
 
         
@@ -73,13 +73,7 @@ void World::pushRegions(std::vector<std::pair<Pos::GlobalRegion, RegionIn>> regi
     for(auto& [key, value] : regions) {
         Region &region = *(Regions[key] = std::make_unique<Region>());
         region.Voxels = std::move(value.Voxels);
-
-        Node *ptr = (Node*) region.Nodes;
-        for(std::array<Node, 16*16*16>& nodes : value.Nodes) {
-            
-            std::copy(nodes.data(), nodes.data()+16*16*16, ptr);
-            ptr += 16*16*16;
-        }
+        region.Nodes = value.Nodes;
     }
 }
 

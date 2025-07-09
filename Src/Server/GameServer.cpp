@@ -112,7 +112,7 @@ void GameServer::BackingChunkPressure_t::run(int id) {
                                 for(int x = 0; x < 4; x++) 
                             {
                                 auto &toPtr = dumpRegion.Nodes[Pos::bvec4u(x, y, z)];
-                                const Node *fromPtr = (const Node*) &regionObj.Nodes[0][0][0][x][y][z];
+                                const Node *fromPtr = regionObj.Nodes[Pos::bvec4u(x, y, z).pack()].data();
                                 std::copy(fromPtr, fromPtr+16*16*16, toPtr.data());
                             }
                     } else {
@@ -142,7 +142,7 @@ void GameServer::BackingChunkPressure_t::run(int id) {
                                 chunkPos.unpack(index);
 
                                 auto &toPtr = dumpRegion.Nodes[chunkPos];
-                                const Node *fromPtr = (const Node*) &regionObj.Nodes[0][0][0][chunkPos.x][chunkPos.y][chunkPos.z];
+                                const Node *fromPtr = regionObj.Nodes[chunkPos.pack()].data();
                                 std::copy(fromPtr, fromPtr+16*16*16, toPtr.data());
                             }
                         }
@@ -752,7 +752,7 @@ IWorldSaveBackend::TickSyncInfo_Out GameServer::stepDatabaseSync() {
             ContentViewCircle cvc;
             cvc.WorldId = oPos.WorldId;
             cvc.Pos = Pos::Object_t::asChunkPos(oPos.ObjectPos);
-            cvc.Range = 2*2;
+            cvc.Range = 2;
 
             std::vector<ContentViewCircle> newCVCs = Expanse.accumulateContentViewCircles(cvc);
             ContentViewInfo newCbg = Expanse_t::makeContentViewInfo(newCVCs);
@@ -842,26 +842,34 @@ void GameServer::stepGeneratorAndLuaAsync(IWorldSaveBackend::TickSyncInfo_Out db
         auto &obj = toLoadRegions[key.WId].emplace_back(key.RegionPos, World::RegionIn()).second;
         float *ptr = &region[0];
 
-        for(int z = 0; z < 64; z++)
-        for(int y = 0; y < 64; y++)
-        for(int x = 0; x < 64; x++, ptr++) {
-            // DefVoxelId_t id = *ptr > 0.9 ? 1 : 0;
-            Pos::bvec64u nodePos(x, y, z);
-            auto &node = obj.Nodes[Pos::bvec4u(nodePos >> 4).pack()][Pos::bvec16u(nodePos & 0xf).pack()];
-            // node.NodeId = id;
-            // node.Meta = 0;
-
-            if(y == (key.RegionPos.y % 64))
-                node.NodeId = 1;
-            else
-                node.NodeId = 0;
-
-            node.Meta = 0;
+        {
+            Node node;
+            node.Data = 0;
+            std::fill((Node*) obj.Nodes.data(), ((Node*) obj.Nodes.data())+64*64*64, node);
         }
 
-        // Node node;
-        // node.Data = 0;
-        // std::fill((Node*) obj.Nodes.data(), ((Node*) obj.Nodes.data())+64*64*64, node);
+        if((key.RegionPos.x == 0 || key.RegionPos.x == 0) && key.RegionPos.y == 0 && key.RegionPos.z == 0) {
+            for(int z = 0; z < 64; z++)
+            for(int y = 0; y < 64; y++)
+            for(int x = 0; x < 64; x++, ptr++) {
+                // DefVoxelId_t id = *ptr > 0.9 ? 1 : 0;
+                Pos::bvec64u nodePos(x, y, z);
+                auto &node = obj.Nodes[Pos::bvec4u(nodePos >> 4).pack()][Pos::bvec16u(nodePos & 0xf).pack()];
+                // node.NodeId = id;
+                // node.Meta = 0;
+
+                if(
+                    (y == 0 && z == 0)
+                    // || (x == 0 && z == 0)
+                    // || (x == 0 && y == 0)
+                ) {
+                    if(x+y+z <= 18)
+                        node.NodeId = (((x+y+z)/3)%3)+1;
+                }
+
+                node.Meta = 0;
+            }
+        }
         // obj.Nodes[0][0].NodeId = 1;
     }
 

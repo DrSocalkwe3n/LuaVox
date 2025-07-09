@@ -5,13 +5,13 @@ layout (triangle_strip, max_vertices = 3) out;
 
 layout(location = 0) in GeometryObj {
     vec3 GeoPos;    // Реальная позиция в мире
-    uint Texture;   // Текстура
+    flat uint Texture;   // Текстура
     vec2 UV;
 } Geometry[];
 
 layout(location = 0) out FragmentObj {
     vec3 GeoPos;    // Реальная позиция в мире
-    uint Texture;   // Текстура
+    flat uint Texture;   // Текстура
     vec2 UV;
 } Fragment;
 

@@ -617,6 +617,12 @@ void VulkanRenderSession::onChunksChange(WorldId_t worldId, const std::unordered
     auto &table = External.ChunkVoxelMesh[worldId];
 
     for(Pos::GlobalChunk pos : changeOrAddList) {
+        if(pos.y < 0) {
+            int g = 0;
+            g++;
+        }
+
+
         Pos::GlobalRegion rPos = pos >> 2;
         Pos::bvec4u cPos = pos & 0x3;
 

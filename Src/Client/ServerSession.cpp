@@ -307,8 +307,14 @@ void ServerSession::atFreeDrawTime(GlobalTime gTime, float dTime) {
         if(RS && !changeOrAddList_removeList.empty()) {
             for(auto &pair : changeOrAddList_removeList) {
                 // Если случится что чанк был изменён и удалён, то исключаем его обновления
-                for(Pos::GlobalChunk removed : std::get<1>(pair.second))
-                    std::get<0>(pair.second).erase(removed);
+                for(Pos::GlobalRegion removed : std::get<1>(pair.second)) {
+                    Pos::GlobalChunk pos = removed << 2;
+                    for(int z = 0; z < 4; z++)
+                        for(int y = 0; y < 4; y++)
+                            for(int x = 0; x < 4; x++) {
+                                std::get<0>(pair.second).erase(pos+Pos::GlobalChunk(x, y, z));
+                            }
+                }
 
                 RS->onChunksChange(pair.first, std::get<0>(pair.second), std::get<1>(pair.second));
             }

@@ -4,7 +4,7 @@ layout(location = 0) in uvec3 Vertex;
 
 layout(location = 0) out GeometryObj {
     vec3 GeoPos;    // Реальная позиция в мире
-    uint Texture;   // Текстура
+    flat uint Texture;   // Текстура
     vec2 UV;
 } Geometry;
 

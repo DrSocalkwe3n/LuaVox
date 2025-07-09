@@ -2,7 +2,7 @@
 
 layout(location = 0) in FragmentObj {
     vec3 GeoPos;    // Реальная позиция в мире
-    uint Texture;   // Текстура
+    flat uint Texture;   // Текстура
     vec2 UV;
 } Fragment;
 

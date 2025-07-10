@@ -61,7 +61,7 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
 
         VulkanContext(Vulkan *vkInst)
             : MainTest(vkInst), LightDummy(vkInst),
-                TestQuad(vkInst, sizeof(NodeVertexStatic)*6),
+                TestQuad(vkInst, sizeof(NodeVertexStatic)*6*3),
                 VertexPool_Voxels(vkInst),
                 VertexPool_Nodes(vkInst)
         {}

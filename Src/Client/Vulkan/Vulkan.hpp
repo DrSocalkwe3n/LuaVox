@@ -1,5 +1,10 @@
 #pragma once
 
+// Cmake
+// #define GLM_FORCE_DEPTH_ZERO_TO_ONE
+#include <glm/ext.hpp>
+static_assert(GLM_CONFIG_CLIP_CONTROL == GLM_CLIP_CONTROL_RH_ZO);
+
 #include "Client/ServerSession.hpp"
 #include "Common/Async.hpp"
 #include <TOSLib.hpp>
@@ -19,14 +24,12 @@
 #include "freetype/freetype.h"
 
 #include <vulkan/vulkan_core.h>
-#include <glm/ext.hpp>
 #include <map>
 #define TOS_VULKAN_NO_VIDEO
 #include <vulkan/vulkan.h>
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
-static_assert(GLM_CONFIG_CLIP_CONTROL == GLM_CLIP_CONTROL_RH_ZO);
 
 #define IMGUI_ENABLE_STB_TEXTEDIT_UNICODE
 

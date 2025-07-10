@@ -5,6 +5,7 @@
 #include "TOSLib.hpp"
 #include "assets.hpp"
 #include "glm/ext/matrix_transform.hpp"
+#include "glm/ext/scalar_constants.hpp"
 #include "glm/trigonometric.hpp"
 #include <cstddef>
 #include <memory>
@@ -219,8 +220,8 @@ void VulkanRenderSession::init(Vulkan *instance) {
 
         /*
         x left -1 ~ right 1
-        y up -1 ~ down 1
-        z far 1 ~ near 0
+        y up 1 ~ down -1
+        z near 0 ~ far -1
 
         glm
 
@@ -228,12 +229,28 @@ void VulkanRenderSession::init(Vulkan *instance) {
 
         {
             NodeVertexStatic *array = (NodeVertexStatic*) VKCTX->TestQuad.mapMemory();
-            array[0] = {112, 114, 50, 0, 0, 0, 0, 0, 0};
-            array[1] = {114, 114, 50, 0, 0, 0, 0, 65535, 0};
-            array[2] = {114, 112, 50, 0, 0, 0, 0, 65535, 65535};
-            array[3] = {112, 114, 50, 0, 0, 0, 0, 0, 0};
-            array[4] = {114, 112, 50, 0, 0, 0, 0, 65535, 65535};
-            array[5] = {112, 112, 50, 0, 0, 0, 0, 0, 65535};
+            array[0] = {135,    135,    135-64, 0, 0, 0, 0, 0,      0};
+            array[1] = {135+16,    135,   135-64, 0, 0, 0, 0, 65535,  0};
+            array[2] = {135+16, 135+16, 135-64, 0, 0, 0, 0, 65535,  65535};
+            array[3] = {135,    135,    135-64, 0, 0, 0, 0, 0,      0};
+            array[4] = {135+16, 135+16, 135-64, 0, 0, 0, 0, 65535,  65535};
+            array[5] = {135, 135+16, 135-64, 0, 0, 0, 0, 0,      65535};
+
+
+            array[6] = {135,    135,    135-64-16, 0, 0, 0, 0, 0,      0};
+            array[7] = {135,    135,   135-64, 0, 0, 0, 0, 65535,  0};
+            array[8] = {135, 135+16, 135-64, 0, 0, 0, 0, 65535,  65535};
+            array[9] = {135,    135,    135-64-16, 0, 0, 0, 0, 0,      0};
+            array[10] = {135, 135+16, 135-64, 0, 0, 0, 0, 65535,  65535};
+            array[11] = {135, 135+16, 135-64-16, 0, 0, 0, 0, 0,      65535};
+
+
+            array[12] = {135,    135,    135-64, 0, 0, 0, 0, 0,      0};
+            array[13] = {135+16,    135,   135-64, 0, 0, 0, 0, 65535,  0};
+            array[14] = {135+16, 135, 135-64-16, 0, 0, 0, 0, 65535,  65535};
+            array[15] = {135,    135,    135-64, 0, 0, 0, 0, 0,      0};
+            array[16] = {135+16, 135, 135-64-16, 0, 0, 0, 0, 65535,  65535};
+            array[17] = {135, 135, 135-64-16, 0, 0, 0, 0, 0,      65535};
             VKCTX->TestQuad.unMapMemory();
         }
 
@@ -414,7 +431,7 @@ void VulkanRenderSession::init(Vulkan *instance) {
             .flags = 0,
             .depthClampEnable = false,
             .rasterizerDiscardEnable = false,
-            .polygonMode = VK_POLYGON_MODE_FILL,
+            .polygonMode = VK_POLYGON_MODE_LINE,
             .cullMode = VK_CULL_MODE_BACK_BIT,
             .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
             .depthBiasEnable = false,
@@ -687,19 +704,110 @@ void VulkanRenderSession::beforeDraw() {
 }
 
 void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuffer drawCmd) {
-    glm::mat4 proj = glm::perspective<float>(glm::radians(75.f), float(VkInst->Screen.Width)/float(VkInst->Screen.Height), 0.5, std::pow(2, 17));
-    
-    for(int i = 0; i < 4; i++) {
-        proj[1][i] *= -1;
-        proj[2][i] *= -1;
-    }
-    
     
     // Сместить в координаты игрока, повернуть относительно взгляда проецировать на экран
     // Изначально взгляд в z-1
-    PCO.ProjView = glm::mat4(1);
-    PCO.ProjView = glm::translate(PCO.ProjView, -glm::vec3(Pos.z, Pos.y, Pos.x)/float(Pos::Object_t::BS));
-    PCO.ProjView = proj*glm::mat4(Quat)*PCO.ProjView;
+    // PCO.ProjView = glm::mat4(1);
+    // PCO.ProjView = glm::translate(PCO.ProjView, -glm::vec3(Pos.x, Pos.y, Pos.z)/float(Pos::Object_t::BS));
+    // PCO.ProjView = proj*glm::mat4(Quat)*PCO.ProjView;
+    // PCO.Model = glm::mat4(1);
+
+    // vkCmdBindPipeline(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, NodeStaticOpaquePipeline);
+	// vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
+    //     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, 0, sizeof(WorldPCO), &PCO);
+    // vkCmdBindDescriptorSets(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, 
+    //     MainAtlas_LightMap_PipelineLayout,  0, 2, 
+    //     (const VkDescriptorSet[]) {MainAtlasDescriptor, VoxelLightMapDescriptor}, 0, nullptr);
+
+    // VkDeviceSize vkOffsets = 0;
+    // VkBuffer vkBuffer = VKCTX->TestQuad;
+    // vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
+
+    // for(int i = 0; i < 16; i++) {
+    //     PCO.Model = glm::rotate(PCO.Model, glm::half_pi<float>()/4, glm::vec3(0, 1, 0));
+    //     vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
+    //         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, 0, sizeof(WorldPCO), &PCO);
+    //     vkCmdDraw(drawCmd, 6, 1, 0, 0);
+    // }
+
+    // PCO.Model = glm::mat4(1);
+
+    // // Проба рендера вокселей
+    // vkCmdBindPipeline(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, VoxelOpaquePipeline);
+	// vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
+    //     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, 0, sizeof(WorldPCO), &PCO);
+    // vkCmdBindDescriptorSets(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, 
+    //     MainAtlas_LightMap_PipelineLayout,  0, 2, 
+    //     (const VkDescriptorSet[]) {MainAtlasDescriptor, VoxelLightMapDescriptor}, 0, nullptr);
+
+    // if(VKCTX->TestVoxel) {
+    //     vkBuffer = *VKCTX->TestVoxel;
+    //     vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
+    //     vkCmdDraw(drawCmd, VKCTX->TestVoxel->getSize() / sizeof(VoxelVertexPoint), 1, 0, 0);
+    // }
+
+    // {
+    //     auto iterWorld = External.ChunkVoxelMesh.find(WorldId);
+    //     if(iterWorld != External.ChunkVoxelMesh.end()) {
+    //         glm::mat4 orig = PCO.Model;
+
+    //         for(auto &pair : iterWorld->second) {
+    //             if(auto& voxels = std::get<0>(pair.second)) {
+    //                 glm::vec3 cpos(pair.first.x, pair.first.y, pair.first.z);
+    //                 PCO.Model = glm::translate(orig, cpos*16.f);
+    //                 auto [vkBuffer, offset] = VKCTX->VertexPool_Voxels.map(voxels);
+
+    //                 vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
+    //                     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, offsetof(WorldPCO, Model), sizeof(WorldPCO::Model), &PCO.Model);
+    //                 vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
+    //                 vkCmdDraw(drawCmd, voxels.VertexCount, 1, offset, 0);
+    //             }
+    //         }
+
+    //         PCO.Model = orig;
+    //     }
+    // }
+
+    // vkCmdBindPipeline(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, NodeStaticOpaquePipeline);
+	// vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
+    //     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, 0, sizeof(WorldPCO), &PCO);
+    // vkCmdBindDescriptorSets(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, 
+    //     MainAtlas_LightMap_PipelineLayout,  0, 2, 
+    //     (const VkDescriptorSet[]) {MainAtlasDescriptor, VoxelLightMapDescriptor}, 0, nullptr);
+
+    // {
+    //     auto iterWorld = External.ChunkVoxelMesh.find(WorldId);
+    //     if(iterWorld != External.ChunkVoxelMesh.end()) {
+    //         glm::mat4 orig = PCO.Model;
+
+    //         for(auto &pair : iterWorld->second) {
+    //             if(auto& nodes = std::get<1>(pair.second)) {
+    //                 glm::vec3 cpos(pair.first.z, pair.first.y, pair.first.x);
+    //                 PCO.Model = glm::translate(orig, cpos*16.f);
+    //                 auto [vkBuffer, offset] = VKCTX->VertexPool_Nodes.map(nodes);
+
+    //                 vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
+    //                     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, offsetof(WorldPCO, Model), sizeof(WorldPCO::Model), &PCO.Model);
+    //                 vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
+    //                 vkCmdDraw(drawCmd, nodes.VertexCount, 1, offset, 0);
+    //             }
+    //         }
+
+    //         PCO.Model = orig;
+    //     }
+    // }
+
+    static float Delta = 0;
+    Delta += dTime;
+
+    glm::mat4 projView = glm::perspective<float>(glm::radians(75.f), float(VkInst->Screen.Width)/float(VkInst->Screen.Height), 0.5, std::pow(2, 17));
+    projView[1][1] *= -1;
+    glm::mat4 rotate = glm::mat4(1);
+    rotate = glm::translate(rotate, {0, 0, -4});
+    rotate = glm::rotate(rotate, Delta/16*(2*glm::pi<float>()), {0, 1, 0});
+    rotate = glm::translate(rotate, {0, 0, 4});
+
+    PCO.ProjView = projView*rotate;
     PCO.Model = glm::mat4(1);
 
     vkCmdBindPipeline(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, NodeStaticOpaquePipeline);
@@ -709,83 +817,11 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
         MainAtlas_LightMap_PipelineLayout,  0, 2, 
         (const VkDescriptorSet[]) {MainAtlasDescriptor, VoxelLightMapDescriptor}, 0, nullptr);
 
-    VkDeviceSize vkOffsets = 0;
     VkBuffer vkBuffer = VKCTX->TestQuad;
-    vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
+    VkDeviceSize vkOffset = 0;
 
-    for(int i = 0; i < 16; i++) {
-        PCO.Model = glm::rotate(PCO.Model, glm::half_pi<float>()/4, glm::vec3(0, 1, 0));
-        vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
-            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, 0, sizeof(WorldPCO), &PCO);
-        vkCmdDraw(drawCmd, 6, 1, 0, 0);
-    }
-
-    PCO.Model = glm::mat4(1);
-
-    // Проба рендера вокселей
-    vkCmdBindPipeline(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, VoxelOpaquePipeline);
-	vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, 0, sizeof(WorldPCO), &PCO);
-    vkCmdBindDescriptorSets(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, 
-        MainAtlas_LightMap_PipelineLayout,  0, 2, 
-        (const VkDescriptorSet[]) {MainAtlasDescriptor, VoxelLightMapDescriptor}, 0, nullptr);
-
-    if(VKCTX->TestVoxel) {
-        vkBuffer = *VKCTX->TestVoxel;
-        vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
-        vkCmdDraw(drawCmd, VKCTX->TestVoxel->getSize() / sizeof(VoxelVertexPoint), 1, 0, 0);
-    }
-
-    {
-        auto iterWorld = External.ChunkVoxelMesh.find(WorldId);
-        if(iterWorld != External.ChunkVoxelMesh.end()) {
-            glm::mat4 orig = PCO.Model;
-
-            for(auto &pair : iterWorld->second) {
-                if(auto& voxels = std::get<0>(pair.second)) {
-                    glm::vec3 cpos(pair.first.x, pair.first.y, pair.first.z);
-                    PCO.Model = glm::translate(orig, cpos*16.f);
-                    auto [vkBuffer, offset] = VKCTX->VertexPool_Voxels.map(voxels);
-
-                    vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
-                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, offsetof(WorldPCO, Model), sizeof(WorldPCO::Model), &PCO.Model);
-                    vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
-                    vkCmdDraw(drawCmd, voxels.VertexCount, 1, offset, 0);
-                }
-            }
-
-            PCO.Model = orig;
-        }
-    }
-
-    vkCmdBindPipeline(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, NodeStaticOpaquePipeline);
-	vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, 0, sizeof(WorldPCO), &PCO);
-    vkCmdBindDescriptorSets(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, 
-        MainAtlas_LightMap_PipelineLayout,  0, 2, 
-        (const VkDescriptorSet[]) {MainAtlasDescriptor, VoxelLightMapDescriptor}, 0, nullptr);
-
-    {
-        auto iterWorld = External.ChunkVoxelMesh.find(WorldId);
-        if(iterWorld != External.ChunkVoxelMesh.end()) {
-            glm::mat4 orig = PCO.Model;
-
-            for(auto &pair : iterWorld->second) {
-                if(auto& nodes = std::get<1>(pair.second)) {
-                    glm::vec3 cpos(pair.first.z, pair.first.y, pair.first.x);
-                    PCO.Model = glm::translate(orig, cpos*16.f);
-                    auto [vkBuffer, offset] = VKCTX->VertexPool_Nodes.map(nodes);
-
-                    vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
-                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, offsetof(WorldPCO, Model), sizeof(WorldPCO::Model), &PCO.Model);
-                    vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
-                    vkCmdDraw(drawCmd, nodes.VertexCount, 1, offset, 0);
-                }
-            }
-
-            PCO.Model = orig;
-        }
-    }
+    vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffset);
+    vkCmdDraw(drawCmd, 6*3, 1, 0, 0);
 }
 
 std::vector<VoxelVertexPoint> VulkanRenderSession::generateMeshForVoxelChunks(const std::vector<VoxelCube> cubes) {

@@ -375,7 +375,7 @@ struct Object_t {
     static glm::vec3 asFloatVec(const Object &obj) { return glm::vec3(float(obj[0])/float(BS), float(obj[1])/float(BS), float(obj[2])/float(BS)); }
     static GlobalNode asNodePos(const Object &obj) { return (GlobalNode) (obj >> BS_Bit); }
     static GlobalChunk asChunkPos(const Object &obj) { return (GlobalChunk) (obj >> BS_Bit >> 4); }
-    static GlobalRegion asRegionsPos(const Object &obj) { return (GlobalRegion) (obj >> BS_Bit >> 8); }
+    static GlobalRegion asRegionsPos(const Object &obj) { return (GlobalRegion) (obj >> BS_Bit >> 6); }
 };
 
 }

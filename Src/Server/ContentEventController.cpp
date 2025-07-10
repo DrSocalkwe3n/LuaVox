@@ -11,6 +11,7 @@ namespace LV::Server {
 ContentEventController::ContentEventController(std::unique_ptr<RemoteClient> &&remote)
     : Remote(std::move(remote))
 {
+    LastPos = Pos = {0, Remote->CameraPos};
 }
 
 uint16_t ContentEventController::getViewRangeBackground() const {
@@ -18,11 +19,11 @@ uint16_t ContentEventController::getViewRangeBackground() const {
 }
 
 ServerObjectPos ContentEventController::getLastPos() const {
-    return {0, Remote->CameraPos};
+    return LastPos;
 }
 
 ServerObjectPos ContentEventController::getPos() const {
-    return {0, Remote->CameraPos};
+    return Pos;
 }
 
 void ContentEventController::removeUnobservable(const ContentViewInfo_Diff& diff) {
@@ -95,6 +96,17 @@ void ContentEventController::onPortalEnterLost(const std::vector<void*> &enter, 
 void ContentEventController::onPortalUpdates(const std::vector<void*> &portals)
 {
 
+}
+
+void ContentEventController::onUpdate() {
+    LastPos = Pos;
+    Pos.ObjectPos = Remote->CameraPos;
+
+    Pos::GlobalRegion r1 = LastPos.ObjectPos >> 12 >> 4 >> 2;
+    Pos::GlobalRegion r2 = Pos.ObjectPos >> 12 >> 4 >> 2;
+    if(r1 != r2) {
+        CrossedBorder = true;
+    }
 }
 
 }

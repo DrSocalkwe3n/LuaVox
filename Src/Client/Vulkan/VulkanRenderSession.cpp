@@ -197,12 +197,18 @@ void VulkanRenderSession::init(Vulkan *instance) {
             return true;
         });
 
+        {
+            uint16_t texId = VKCTX->MainTest.atlasAddTexture(2, 2);
+            uint32_t colors[4] = {0xfffffffful, 0x00fffffful, 0xffffff00ul, 0xff00fffful};
+            VKCTX->MainTest.atlasChangeTextureData(texId, (const uint32_t*) colors);
+        }
+
         int width, height;
         bool hasAlpha;
         for(const char *path : {
                 "grass.png",
-                "tropical_rainforest_wood.png",
                 "willow_wood.png",
+                "tropical_rainforest_wood.png",
                 "xnether_blue_wood.png",
                 "xnether_purple_wood.png"
         }) {
@@ -617,12 +623,6 @@ void VulkanRenderSession::onChunksChange(WorldId_t worldId, const std::unordered
     auto &table = External.ChunkVoxelMesh[worldId];
 
     for(Pos::GlobalChunk pos : changeOrAddList) {
-        if(pos.y < 0) {
-            int g = 0;
-            g++;
-        }
-
-
         Pos::GlobalRegion rPos = pos >> 2;
         Pos::bvec4u cPos = pos & 0x3;
 
@@ -639,6 +639,7 @@ void VulkanRenderSession::onChunksChange(WorldId_t worldId, const std::unordered
         }
 
         std::vector<NodeVertexStatic> vertexs2 = generateMeshForNodeChunks(chunk.Nodes);
+
         if(vertexs2.empty()) {
             VKCTX->VertexPool_Nodes.dropVertexs(std::get<1>(buffers));
         } else {
@@ -697,7 +698,7 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
     // Сместить в координаты игрока, повернуть относительно взгляда проецировать на экран
     // Изначально взгляд в z-1
     PCO.ProjView = glm::mat4(1);
-    PCO.ProjView = glm::translate(PCO.ProjView, -glm::vec3(Pos)/float(Pos::Object_t::BS));
+    PCO.ProjView = glm::translate(PCO.ProjView, -glm::vec3(Pos.z, Pos.y, Pos.x)/float(Pos::Object_t::BS));
     PCO.ProjView = proj*glm::mat4(Quat)*PCO.ProjView;
     PCO.Model = glm::mat4(1);
 
@@ -771,7 +772,7 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
 
             for(auto &pair : iterWorld->second) {
                 if(auto& nodes = std::get<1>(pair.second)) {
-                    glm::vec3 cpos(pair.first.x, pair.first.y, pair.first.z);
+                    glm::vec3 cpos(pair.first.z, pair.first.y, pair.first.x);
                     PCO.Model = glm::translate(orig, cpos*16.f);
                     auto [vkBuffer, offset] = VKCTX->VertexPool_Nodes.map(nodes);
 

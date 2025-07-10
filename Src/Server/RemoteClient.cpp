@@ -237,26 +237,26 @@ void RemoteClient::prepareRegionRemove(WorldId_t worldId, Pos::GlobalRegion regi
         assert(iterWorld != ResUses.RefChunk.end());
 
         auto iterRegion = iterWorld->second.find(regionPos);
-        assert(iterRegion != iterWorld->second.end());
-        
-        for(const auto &iterChunk : iterRegion->second) {
-            for(const DefVoxelId_t& id : iterChunk.Voxel) {
-                auto iter = ResUses.DefVoxel.find(id);
-                assert(iter != ResUses.DefVoxel.end()); // Воксель должен быть в зависимостях
-                if(--iter->second == 0) {
-                    // Вокселя больше нет в зависимостях
-                    lostTypesV.push_back(id);
-                    ResUses.DefVoxel.erase(iter);
+        if(iterRegion != iterWorld->second.end()) {
+            for(const auto &iterChunk : iterRegion->second) {
+                for(const DefVoxelId_t& id : iterChunk.Voxel) {
+                    auto iter = ResUses.DefVoxel.find(id);
+                    assert(iter != ResUses.DefVoxel.end()); // Воксель должен быть в зависимостях
+                    if(--iter->second == 0) {
+                        // Вокселя больше нет в зависимостях
+                        lostTypesV.push_back(id);
+                        ResUses.DefVoxel.erase(iter);
+                    }
                 }
-            }
 
-            for(const DefNodeId_t& id : iterChunk.Node) {
-                auto iter = ResUses.DefNode.find(id);
-                assert(iter != ResUses.DefNode.end()); // Нода должна быть в зависимостях
-                if(--iter->second == 0) {
-                    // Ноды больше нет в зависимостях
-                    lostTypesN.push_back(id);
-                    ResUses.DefNode.erase(iter);
+                for(const DefNodeId_t& id : iterChunk.Node) {
+                    auto iter = ResUses.DefNode.find(id);
+                    assert(iter != ResUses.DefNode.end()); // Нода должна быть в зависимостях
+                    if(--iter->second == 0) {
+                        // Ноды больше нет в зависимостях
+                        lostTypesN.push_back(id);
+                        ResUses.DefNode.erase(iter);
+                    }
                 }
             }
         }
@@ -663,9 +663,12 @@ coro<> RemoteClient::rP_System(Net::AsyncSocket &sock) {
     }
     case ToServer::L2System::Test_CAM_PYR_POS:
     {
-        CameraPos.x = co_await sock.read<decltype(CameraPos.x)>();
-        CameraPos.y = co_await sock.read<decltype(CameraPos.x)>();
-        CameraPos.z = co_await sock.read<decltype(CameraPos.x)>();
+        Pos::Object newPos;
+        newPos.x = co_await sock.read<decltype(CameraPos.x)>();
+        newPos.y = co_await sock.read<decltype(CameraPos.y)>();
+        newPos.z = co_await sock.read<decltype(CameraPos.z)>();
+
+        CameraPos = newPos;
 
         for(int iter = 0; iter < 5; iter++)
             CameraQuat.Data[iter] = co_await sock.read<uint8_t>();

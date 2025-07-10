@@ -10,6 +10,7 @@
 #include "RemoteClient.hpp"
 #include "Server/Abstract.hpp"
 #include <TOSLib.hpp>
+#include <functional>
 #include <memory>
 #include <queue>
 #include <set>
@@ -122,9 +123,6 @@ class GameServer : public AsyncObject {
     /*
         Обязательно между тактами
 
-        Генерация шума
-            OpenCL или пул
-
         Конвертация ресурсов игры, их хранение в кеше и загрузка в память для отправки клиентам
             io_uring или последовательное чтение
         
@@ -184,6 +182,9 @@ class GameServer : public AsyncObject {
         void run(int id);
     } BackingChunkPressure;
 
+    /*
+        Генератор шума
+    */
     struct BackingNoiseGenerator_t {
         struct NoiseKey {
             WorldId_t WId;
@@ -224,6 +225,26 @@ class GameServer : public AsyncObject {
             return std::move(out);
         }
     } BackingNoiseGenerator;
+
+    /*
+        Обработчик асинронного луа
+    */
+    struct BackingAsyncLua_t {
+        TOS::Logger LOG = "BackingAsyncLua";
+        bool NeedShutdown = false;
+        std::vector<std::thread> Threads;
+        TOS::SpinlockObject<std::queue<std::pair<BackingNoiseGenerator_t::NoiseKey, std::array<float, 64*64*64>>>> NoiseIn;
+        TOS::SpinlockObject<std::vector<std::pair<BackingNoiseGenerator_t::NoiseKey, World::RegionIn>>> RegionOut;
+
+        void stop() {
+            NeedShutdown = true;
+
+            for(std::thread& thread : Threads)
+                thread.join();
+        }
+
+        void run(int id);
+    } BackingAsyncLua;
 
 public:
     GameServer(asio::io_context &ioc, fs::path worldPath);

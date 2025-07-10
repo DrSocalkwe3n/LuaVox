@@ -286,6 +286,7 @@ void ServerSession::atFreeDrawTime(GlobalTime gTime, float dTime) {
 
                     Node *nodes = (Node*) Data.Worlds[p.Id].Regions[rPos].Chunks[cPos.x][cPos.y][cPos.z].Nodes;
                     std::copy((const Node*) p.Nodes, ((const Node*) p.Nodes)+16*16*16, nodes);
+                    
                     auto &pair = changeOrAddList_removeList[p.Id];
                     std::get<0>(pair).insert(p.Pos);
                 } else if(l2 == ToClient::L2Content::RemoveRegion) {
@@ -293,11 +294,12 @@ void ServerSession::atFreeDrawTime(GlobalTime gTime, float dTime) {
 
                     auto &regions = Data.Worlds[p.Id].Regions;
                     auto obj = regions.find(p.Pos);
-                    assert(obj != regions.end());
-                    regions.erase(obj);
+                    if(obj != regions.end()) {
+                        regions.erase(obj);
 
-                    auto &pair = changeOrAddList_removeList[p.Id];
-                    std::get<1>(pair).insert(p.Pos);
+                        auto &pair = changeOrAddList_removeList[p.Id];
+                        std::get<1>(pair).insert(p.Pos);
+                    }
                 }
             }
 
@@ -583,7 +585,7 @@ coro<> ServerSession::rP_Content(Net::AsyncSocket &sock) {
 
         co_return;
     case ToClient::L2Content::RemoveRegion: {
-        WorldId_t wcId = co_await sock.read<uint8_t>();
+        WorldId_t wcId = co_await sock.read<WorldId_t>();
         Pos::GlobalChunk pos;
         pos.unpack(co_await sock.read<Pos::GlobalRegion::Pack>());
 

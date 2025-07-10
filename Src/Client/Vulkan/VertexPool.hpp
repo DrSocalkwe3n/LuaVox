@@ -14,6 +14,7 @@ namespace LV::Client::VK {
 
     Получаемые вершины сначала пишутся в общий буфер, потом передаются на устройство
 */
+// Нужна реализация индексного буфера
 template<typename Vertex, uint16_t PerBlock = 1 << 10, uint16_t PerPool = 1 << 12>
 class VertexPool {
     static constexpr size_t HC_Buffer_Size = size_t(PerBlock)*size_t(PerPool);
@@ -63,8 +64,9 @@ private:
             // Пишем в общий буфер, TasksWait
             Vertex *ptr = HCPtr+WritePos;
             std::copy(data.begin(), data.end(), ptr);
+            size_t count = data.size();
             TasksWait.push({std::move(data), WritePos, poolId, blockId});
-            WritePos += data.size();
+            WritePos += count;
         } else {
             // Отложим запись на следующий такт
             TasksPostponed.push(Task(std::move(data), -1, poolId, blockId));
@@ -219,7 +221,9 @@ public:
     void update(VkCommandPool commandPool) {
         if(TasksWait.empty())
             return;
-        
+
+        assert(WritePos);
+                
         VkCommandBufferAllocateInfo allocInfo {
             VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             nullptr,
@@ -239,6 +243,28 @@ public:
         };
 
         vkBeginCommandBuffer(commandBuffer, &beginInfo);
+
+        VkBufferMemoryBarrier barrier = {
+            VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+            nullptr,
+            VK_ACCESS_HOST_WRITE_BIT,
+            VK_ACCESS_TRANSFER_READ_BIT,
+            VK_QUEUE_FAMILY_IGNORED,
+            VK_QUEUE_FAMILY_IGNORED,
+            HostCoherent.getBuffer(),
+            0,
+            WritePos*sizeof(Vertex)
+        };
+
+        vkCmdPipelineBarrier(
+            commandBuffer,
+            VK_PIPELINE_STAGE_HOST_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0,
+            0, nullptr,
+            1, &barrier,
+            0, nullptr
+        );
 
         while(!TasksWait.empty()) {
             Task& task = TasksWait.front();

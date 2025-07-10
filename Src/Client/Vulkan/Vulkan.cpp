@@ -7,6 +7,7 @@
 #include "Client/ServerSession.hpp"
 #include "Common/Async.hpp"
 #include "Common/Net.hpp"
+#include "TOSLib.hpp"
 #include "assets.hpp"
 #include "imgui.h"
 #include <GLFW/glfw3.h>
@@ -216,6 +217,7 @@ void Vulkan::run()
 		} else if (err == VK_SUBOPTIMAL_KHR)
 		{
 			LOGGER.debug() << "VK_SUBOPTIMAL_KHR Pre";
+			continue;
 		} else if(err == VK_SUCCESS) {
 
 			Screen.State = DrawState::Drawing;
@@ -2079,6 +2081,17 @@ void Vulkan::gui_MainMenu() {
 	ImGui::InputText("Username", ConnectionProgress.Username, sizeof(ConnectionProgress.Username));
 	ImGui::InputText("Password", ConnectionProgress.Password, sizeof(ConnectionProgress.Password), ImGuiInputTextFlags_Password);
 	
+	static bool flag = false;
+	if(!flag) {
+		flag = true;
+		Game.Server = std::make_unique<ServerObj>(IOC);
+		ConnectionProgress.Progress = "Сервер запущен на порту " + std::to_string(Game.Server->LS.getPort());
+		ConnectionProgress.InProgress = true;
+		ConnectionProgress.Cancel = false;
+		ConnectionProgress.Progress.clear();
+		co_spawn(ConnectionProgress.connect(IOC));
+	}
+
 	if(!ConnectionProgress.InProgress && !ConnectionProgress.Socket) {
 		if(ImGui::Button("Подключиться")) {
 			ConnectionProgress.InProgress = true;
@@ -3509,6 +3522,8 @@ void DynamicImage::changeData(int32_t x, int32_t y, uint16_t width, uint16_t hei
 
 	// Выполняем все команды
 	buffer.execute();
+
+	Time::sleep3(50);
 
 	// Удаляем не нужную картинку
 	vkDestroyImage(Instance->Graphics.Device, tempImage, nullptr);

@@ -2,6 +2,7 @@
 
 #include <Common/Abstract.hpp>
 #include "Abstract.hpp"
+#include "TOSLib.hpp"
 #include <algorithm>
 #include <bitset>
 #include <map>
@@ -56,6 +57,10 @@ struct ContentViewInfo {
             if(iterWorld == obj.Regions.end()) {
                 out.WorldsNew.push_back(key);
                 out.RegionsNew[key] = regions;
+
+                for(const Pos::GlobalRegion& rp : regions) {
+                    TOS::Logger("New").debug() << rp.x << ' ' << rp.y << ' ' << rp.z;
+                }
             } else {
                 auto &vec = out.RegionsNew[key];
                 vec.reserve(8*8);
@@ -64,6 +69,10 @@ struct ContentViewInfo {
                     iterWorld->second.begin(), iterWorld->second.end(),
                     std::back_inserter(vec)
                 );
+
+                for(Pos::GlobalRegion& rp : vec) {
+                    TOS::Logger("New").debug() << rp.x << ' ' << rp.y << ' ' << rp.z;
+                }
             }
         }
 
@@ -74,6 +83,10 @@ struct ContentViewInfo {
             if(iterWorld == Regions.end()) {
                 out.WorldsLost.push_back(key);
                 out.RegionsLost[key] = regions;
+
+                for(const Pos::GlobalRegion& rp : regions) {
+                    TOS::Logger("Lost").debug() << rp.x << ' ' << rp.y << ' ' << rp.z;
+                }
             } else {
                 auto &vec = out.RegionsLost[key];
                 vec.reserve(8*8);
@@ -82,6 +95,10 @@ struct ContentViewInfo {
                     iterWorld->second.begin(), iterWorld->second.end(),
                     std::back_inserter(vec)
                 );
+
+                for(Pos::GlobalRegion& rp : vec) {
+                    TOS::Logger("Lost").debug() << rp.x << ' ' << rp.y << ' ' << rp.z;
+                }
             }
         }
 
@@ -135,6 +152,8 @@ public:
     // Если игрок пересекал границы чанка (для перерасчёта ContentViewState)
     bool CrossedBorder = true;
 
+    ServerObjectPos Pos, LastPos;
+
 public:
     ContentEventController(std::unique_ptr<RemoteClient>&& remote);
 
@@ -159,6 +178,8 @@ public:
     void onPortalUpdates(const std::vector<void*> &portals);
 
     inline const SubscribedObj& getSubscribed() { return Subscribed; };
+
+    void onUpdate();
 
 };
 

@@ -24,22 +24,28 @@ struct PacketQuat {
             z = (quat.z+1)/2*0x3ff,
             w = (quat.w+1)/2*0x3ff;
 
-        for(uint8_t &val : Data)
-            val = 0;
+        uint64_t value = 0;
 
-        *(uint16_t*) Data       |= x;
-        *(uint16_t*) (Data+1)   |= y << 2;
-        *(uint16_t*) (Data+2)   |= z << 4;
-        *(uint16_t*) (Data+3)   |= w << 6;
+        value |= x & 0x3ff;
+        value |= uint64_t(y & 0x3ff) << 10;
+        value |= uint64_t(z & 0x3ff) << 20;
+        value |= uint64_t(w & 0x3ff) << 30;
+
+        for(int iter = 0; iter < 5; iter++)
+            Data[iter] = (value >> (iter * 8)) & 0xff;
     }
 
     glm::quat toQuat() const {
-        const uint64_t &data = (const uint64_t&) *Data;
+        uint64_t value = 0;
+
+        for(int iter = 0; iter < 5; iter++)
+            value |= (Data[iter] >> (iter*10)) & 0x3ff;
+
         uint16_t
-            x = data & 0x3ff,
-            y = (data >> 10) & 0x3ff,
-            z = (data >> 20) & 0x3ff,
-            w = (data >> 30) & 0x3ff;
+            x = value & 0x3ff,
+            y = (value >> 10) & 0x3ff,
+            z = (value >> 20) & 0x3ff,
+            w = (value >> 30) & 0x3ff;
 
         float fx = (float(x)/0x3ff)*2-1;
         float fy = (float(y)/0x3ff)*2-1;

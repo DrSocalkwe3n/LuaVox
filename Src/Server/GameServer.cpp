@@ -39,6 +39,11 @@ GameServer::GameServer(asio::io_context &ioc, fs::path worldPath)
     for(size_t iter = 0; iter < BackingNoiseGenerator.Threads.size(); iter++) {
         BackingNoiseGenerator.Threads[iter] = std::thread(&BackingNoiseGenerator_t::run, &BackingNoiseGenerator, iter);
     }
+
+    BackingAsyncLua.Threads.resize(2);
+    for(size_t iter = 0; iter < BackingAsyncLua.Threads.size(); iter++) {
+        BackingAsyncLua.Threads[iter] = std::thread(&BackingAsyncLua_t::run, &BackingAsyncLua, iter);
+    }
 }
     
 GameServer::~GameServer() {
@@ -46,6 +51,7 @@ GameServer::~GameServer() {
     BackingChunkPressure.NeedShutdown = true;
     BackingChunkPressure.Symaphore.notify_all();
     BackingNoiseGenerator.NeedShutdown = true;
+    BackingAsyncLua.NeedShutdown = true;
 
     RunThread.join();
     WorkDeadline.cancel();
@@ -53,6 +59,7 @@ GameServer::~GameServer() {
 
     BackingChunkPressure.stop();
     BackingNoiseGenerator.stop();
+    BackingAsyncLua.stop();
 
     LOG.info() << "Сервер уничтожен";
 }
@@ -227,7 +234,7 @@ void GameServer::BackingChunkPressure_t::run(int id) {
                     for(auto& [chunkPos, chunk] : region.Nodes) {
                         CompressedNodes cmp = compressNodes(chunk.data());
                         Pos::GlobalChunk chunkPosR = (Pos::GlobalChunk(regionPos) << 2) + chunkPos;
-                        
+
                         for(auto& ptr : region.NewCECs) {
                             bool accepted = ptr->Remote->maybe_prepareChunkUpdate_Nodes(worldId, 
                                     chunkPosR, cmp.Compressed, cmp.Defines);
@@ -369,6 +376,64 @@ void GameServer::BackingNoiseGenerator_t::run(int id) {
 
 }
 
+void GameServer::BackingAsyncLua_t::run(int id) {
+    LOG.debug() << "Старт потока " << id;
+
+    BackingNoiseGenerator_t::NoiseKey key;
+    std::array<float, 64*64*64> noise;
+    World::RegionIn out;
+
+    try {
+        while(true) {
+            if(NeedShutdown) {
+                LOG.debug() << "Завершение выполнения потока " << id;
+                break;
+            }
+
+            if(NoiseIn.get_read().empty())
+                TOS::Time::sleep3(50);
+
+            {
+                auto lock = NoiseIn.lock();
+                if(lock->empty())
+                    continue;
+
+                key = lock->front().first;
+                noise = lock->front().second;
+                lock->pop();
+            }
+
+            {
+                for(int z = 0; z < 64; z++)
+                    for(int y = 0; y < 64; y++)
+                        for(int x = 0; x < 64; x++) {
+                            // DefVoxelId_t id = *ptr > 0.9 ? 1 : 0;
+                            Pos::bvec64u nodePos(x, y, z);
+                            auto &node = out.Nodes[Pos::bvec4u(nodePos >> 4).pack()][Pos::bvec16u(nodePos & 0xf).pack()];
+                            // node.NodeId = id;
+                            // node.Meta = 0;
+                            
+                            if(x == 0 && z == 0)
+                                node.NodeId = 1;
+                            else if(y == 0 && z == 0)
+                                node.NodeId = 2;
+                            else if(x == 0 && y == 0)
+                                node.NodeId = 3;
+                            else
+                                node.NodeId = 0;
+
+                            node.Meta = 0;
+                        }
+            }
+
+            RegionOut.lock()->push_back({key, out});
+        }
+    } catch(const std::exception& exc) {
+        NeedShutdown = true;
+        LOG.error() << "Ошибка выполнения потока " << id << ":\n" << exc.what();
+    }
+}
+
 static thread_local std::vector<ContentViewCircle> TL_Circles;
 
 std::vector<ContentViewCircle> GameServer::Expanse_t::accumulateContentViewCircles(ContentViewCircle circle, int depth)
@@ -462,7 +527,7 @@ ContentViewInfo GameServer::Expanse_t::makeContentViewInfo(const std::vector<Con
         for(int32_t z = -regionRange; z <= regionRange; z++)
             for(int32_t y = -regionRange; y <= regionRange; y++)
                 for(int32_t x = -regionRange; x <= regionRange; x++)
-                    cvw.push_back(Pos::GlobalRegion(x, y, z));
+                    cvw.push_back(Pos::GlobalRegion(x, y, z)+circle.Pos);
     }
 
     for(auto& [worldId, regions] : cvi.Regions) {
@@ -751,7 +816,7 @@ IWorldSaveBackend::TickSyncInfo_Out GameServer::stepDatabaseSync() {
 
             ContentViewCircle cvc;
             cvc.WorldId = oPos.WorldId;
-            cvc.Pos = Pos::Object_t::asChunkPos(oPos.ObjectPos);
+            cvc.Pos = Pos::Object_t::asRegionsPos(oPos.ObjectPos);
             cvc.Range = 2;
 
             std::vector<ContentViewCircle> newCVCs = Expanse.accumulateContentViewCircles(cvc);
@@ -831,46 +896,32 @@ void GameServer::stepGeneratorAndLuaAsync(IWorldSaveBackend::TickSyncInfo_Out db
 
 
     // Синхронизация с генератором шума
-    std::vector<std::pair<BackingNoiseGenerator_t::NoiseKey, std::array<float, 64*64*64>>> calculatedNoise = BackingNoiseGenerator.tickSync(std::move(db.NotExisten));
-
+    
     std::unordered_map<WorldId_t, std::vector<std::pair<Pos::GlobalRegion, World::RegionIn>>> toLoadRegions;
 
     // Синхронизация с контроллером асинхронных обработчиков луа
     // 2.2 и 3.1
     // Обработка шума на стороне луа
-    for(auto& [key, region] : calculatedNoise) {
-        auto &obj = toLoadRegions[key.WId].emplace_back(key.RegionPos, World::RegionIn()).second;
-        float *ptr = &region[0];
+    {
+        std::vector<std::pair<BackingNoiseGenerator_t::NoiseKey, std::array<float, 64*64*64>>> calculatedNoise = BackingNoiseGenerator.tickSync(std::move(db.NotExisten));
+        if(!calculatedNoise.empty()) {
+            auto lock = BackingAsyncLua.NoiseIn.lock();
 
-        {
-            Node node;
-            node.Data = 0;
-            std::fill((Node*) obj.Nodes.data(), ((Node*) obj.Nodes.data())+64*64*64, node);
+            for(auto& pair : calculatedNoise)
+                lock->push(pair);
         }
 
-        if((key.RegionPos.x == 0 || key.RegionPos.x == 0) && key.RegionPos.y == 0 && key.RegionPos.z == 0) {
-            for(int z = 0; z < 64; z++)
-            for(int y = 0; y < 64; y++)
-            for(int x = 0; x < 64; x++, ptr++) {
-                // DefVoxelId_t id = *ptr > 0.9 ? 1 : 0;
-                Pos::bvec64u nodePos(x, y, z);
-                auto &node = obj.Nodes[Pos::bvec4u(nodePos >> 4).pack()][Pos::bvec16u(nodePos & 0xf).pack()];
-                // node.NodeId = id;
-                // node.Meta = 0;
+        calculatedNoise.clear();
 
-                if(
-                    (y == 0 && z == 0)
-                    // || (x == 0 && z == 0)
-                    // || (x == 0 && y == 0)
-                ) {
-                    if(x+y+z <= 18)
-                        node.NodeId = (((x+y+z)/3)%3)+1;
-                }
-
-                node.Meta = 0;
+        if(!BackingAsyncLua.RegionOut.get_read().empty()) {
+            std::vector<
+                std::pair<BackingNoiseGenerator_t::NoiseKey, World::RegionIn>
+            > toLoad = std::move(*BackingAsyncLua.RegionOut.lock());
+            
+            for(auto& [key, region] : toLoad) {
+                toLoadRegions[key.WId].push_back({key.RegionPos, region});
             }
         }
-        // obj.Nodes[0][0].NodeId = 1;
     }
 
     // Обработка идентификаторов на стороне луа
@@ -1369,6 +1420,10 @@ void GameServer::stepGlobalStep() {
 }
 
 void GameServer::stepSyncContent() {
+    for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
+        cec->onUpdate();
+    }
+
     // Оповещения о ресурсах и профилях
     Content.Texture.update(CurrentTickDuration);
     if(Content.Texture.hasPreparedInformation()) {

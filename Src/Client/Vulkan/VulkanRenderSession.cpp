@@ -804,6 +804,7 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
     projView[1][1] *= -1;
     glm::mat4 rotate = glm::mat4(1);
     rotate = glm::translate(rotate, {0, 0, -4});
+    rotate = glm::rotate(rotate, 45.f/360*(2*glm::pi<float>()), {1, 0, 0});
     rotate = glm::rotate(rotate, Delta/16*(2*glm::pi<float>()), {0, 1, 0});
     rotate = glm::translate(rotate, {0, 0, 4});
 

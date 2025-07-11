@@ -48,6 +48,19 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
     // Положение камеры
     WorldId_t WorldId;
     Pos::Object Pos;
+    /*
+        Графический конвейер оперирует числами с плавающей запятой
+        Для сохранения точности матрица модели хранит смещения близкие к нулю (X64Delta)
+        глобальные смещения на уровне региона исключаются из смещения ещё при задании матрицы модели
+
+        X64Offset = позиция игрока на уровне регионов
+        X64Delta = позиция игрока в рамках региона
+
+        Внутри графического конвейера будут числа приблежённые к 0
+    */
+    // Смещение дочерних объекто на стороне хоста перед рендером
+    Pos::Object X64Offset;
+    glm::vec3 X64Offset_f, X64Delta;        // Смещение мира относительно игрока в матрице вида (0 -> 64)
     glm::quat Quat;
 
     struct VulkanContext {
@@ -61,7 +74,7 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
 
         VulkanContext(Vulkan *vkInst)
             : MainTest(vkInst), LightDummy(vkInst),
-                TestQuad(vkInst, sizeof(NodeVertexStatic)*6*3),
+                TestQuad(vkInst, sizeof(NodeVertexStatic)*6*3*2),
                 VertexPool_Voxels(vkInst),
                 VertexPool_Nodes(vkInst)
         {}
@@ -143,7 +156,7 @@ public:
     void drawWorld(GlobalTime gTime, float dTime, VkCommandBuffer drawCmd);
 
     static std::vector<VoxelVertexPoint> generateMeshForVoxelChunks(const std::vector<VoxelCube> cubes); 
-    static std::vector<NodeVertexStatic> generateMeshForNodeChunks(const Node nodes[16][16][16]); 
+    static std::vector<NodeVertexStatic> generateMeshForNodeChunks(const Node* nodes); 
 
 private:
     void updateDescriptor_MainAtlas();

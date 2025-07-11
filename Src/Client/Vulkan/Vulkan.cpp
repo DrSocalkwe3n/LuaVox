@@ -2081,7 +2081,7 @@ void Vulkan::gui_MainMenu() {
 	ImGui::InputText("Username", ConnectionProgress.Username, sizeof(ConnectionProgress.Username));
 	ImGui::InputText("Password", ConnectionProgress.Password, sizeof(ConnectionProgress.Password), ImGuiInputTextFlags_Password);
 	
-	static bool flag = false;
+	static bool flag = true;
 	if(!flag) {
 		flag = true;
 		Game.Server = std::make_unique<ServerObj>(IOC);
@@ -2686,12 +2686,16 @@ Buffer::Buffer(Buffer &&obj)
 	obj.Instance = nullptr;
 }
 
-Buffer& Buffer::operator=(Buffer &&obj)
-{
+Buffer& Buffer::operator=(Buffer &&obj) {
+	if(this == &obj)
+		return *this;
+
 	std::swap(Instance, obj.Instance);
 	std::swap(Buff, obj.Buff);
 	std::swap(Memory, obj.Memory);
 	std::swap(Size, obj.Size);
+	obj.Instance = nullptr;
+
 	return *this;
 }
 

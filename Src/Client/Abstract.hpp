@@ -39,7 +39,7 @@ struct Chunk {
     // Кубы вокселей в чанке
     std::vector<VoxelCube> Voxels;
     // Ноды
-    Node Nodes[16][16][16];
+    std::array<Node, 16*16*16> Nodes;
     // Ограничения прохождения света, идущего от солнца (от верха карты до верхней плоскости чанка)
     // LightPrism Lights[16][16];
 };
@@ -79,7 +79,7 @@ public:
 };
 
 struct Region {
-    Chunk Chunks[4][4][4];
+    std::array<Chunk, 4*4*4> Chunks;
 };
 
 struct World {
@@ -172,7 +172,7 @@ public:
     } CursorMode = EnumCursorMoveMode::Default;
 
     enum struct EnumCursorBtn {
-        Left, Middle, Right, One, Two
+        Left, Right, Middle, One, Two
     };
 
 public:

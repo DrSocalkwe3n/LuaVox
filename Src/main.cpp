@@ -1,3 +1,4 @@
+#include "Common/Abstract.hpp"
 #include <filesystem>
 #include <iostream>
 #include <boost/asio.hpp>
@@ -20,9 +21,10 @@ int main() {
 
 	// LuaVox
 	asio::io_context ioc;
+	Logger LOG = "main";
 
 	LV::Client::VK::Vulkan vkInst(ioc);
-	
+
 	ioc.run();
 
 	return 0;

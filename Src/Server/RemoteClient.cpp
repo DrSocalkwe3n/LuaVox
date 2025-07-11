@@ -105,7 +105,7 @@ bool RemoteClient::maybe_prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::Globa
     if(iterWorld != ResUses.RefChunk.end())
     // Исключим зависимости предыдущей версии чанка
     {
-        auto iterRegion = iterWorld->second.find(chunkPos);
+        auto iterRegion = iterWorld->second.find(regionPos);
         if(iterRegion != iterWorld->second.end()) {
             // Уменьшим счётчик зависимостей
             for(const DefVoxelId_t& id : iterRegion->second[localChunk.pack()].Voxel) {
@@ -128,6 +128,8 @@ bool RemoteClient::maybe_prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::Globa
     if(!newTypes.empty()) {
         // Добавляем новые типы в запрос
         NextRequest.Voxel.insert(NextRequest.Voxel.end(), newTypes.begin(), newTypes.end());
+        for(DefVoxelId_t voxel : newTypes)
+            ResUses.RefDefVoxel[voxel] = {};
     }
 
     if(!lostTypes.empty()) {
@@ -181,7 +183,7 @@ bool RemoteClient::maybe_prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::Global
     if(iterWorld != ResUses.RefChunk.end())
     // Исключим зависимости предыдущей версии чанка
     {
-        auto iterRegion = iterWorld->second.find(chunkPos);
+        auto iterRegion = iterWorld->second.find(regionPos);
         if(iterRegion != iterWorld->second.end()) {
             // Уменьшим счётчик зависимостей
             for(const DefNodeId_t& id : iterRegion->second[localChunk.pack()].Node) {
@@ -204,6 +206,8 @@ bool RemoteClient::maybe_prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::Global
     if(!newTypes.empty()) {
         // Добавляем новые типы в запрос
         NextRequest.Node.insert(NextRequest.Node.end(), newTypes.begin(), newTypes.end());
+        for(DefNodeId_t node : newTypes)
+            ResUses.RefDefNode[node] = {};
     }
 
     if(!lostTypes.empty()) {
@@ -259,6 +263,8 @@ void RemoteClient::prepareRegionRemove(WorldId_t worldId, Pos::GlobalRegion regi
                     }
                 }
             }
+
+            iterWorld->second.erase(iterRegion);
         }
     }
 
@@ -673,6 +679,12 @@ coro<> RemoteClient::rP_System(Net::AsyncSocket &sock) {
         for(int iter = 0; iter < 5; iter++)
             CameraQuat.Data[iter] = co_await sock.read<uint8_t>();
 
+        co_return;
+    }
+    case ToServer::L2System::BlockChange:
+    {
+        uint8_t action = co_await sock.read<uint8_t>();
+        Actions.lock()->push(action);
         co_return;
     }
     default:

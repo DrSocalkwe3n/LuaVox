@@ -145,16 +145,18 @@ class GameServer : public AsyncObject {
     */
     struct BackingChunkPressure_t {
         TOS::Logger LOG = "BackingChunkPressure";
-        bool NeedShutdown = false;
+        volatile bool NeedShutdown = false;
         std::vector<std::thread> Threads;
         std::mutex Mutex;
-        int RunCollect = 0, RunCompress = 0;
+        volatile int RunCollect = 0, RunCompress = 0, Iteration = 0;
         std::condition_variable Symaphore;
         std::unordered_map<WorldId_t, std::unique_ptr<World>> *Worlds;
 
         void startCollectChanges() {
             std::lock_guard<std::mutex> lock(Mutex);
-            RunCompress = RunCollect = Threads.size();
+            RunCollect = Threads.size();
+            RunCompress = Threads.size();
+            Iteration += 1;
             Symaphore.notify_all();
         }
 

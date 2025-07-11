@@ -29,18 +29,18 @@ GameServer::GameServer(asio::io_context &ioc, fs::path worldPath)
 {
     init(worldPath);
 
-    BackingChunkPressure.Threads.resize(1);
+    BackingChunkPressure.Threads.resize(4);
     BackingChunkPressure.Worlds = &Expanse.Worlds;
     for(size_t iter = 0; iter < BackingChunkPressure.Threads.size(); iter++) {
         BackingChunkPressure.Threads[iter] = std::thread(&BackingChunkPressure_t::run, &BackingChunkPressure, iter);
     }
 
-    BackingNoiseGenerator.Threads.resize(1);
+    BackingNoiseGenerator.Threads.resize(4);
     for(size_t iter = 0; iter < BackingNoiseGenerator.Threads.size(); iter++) {
         BackingNoiseGenerator.Threads[iter] = std::thread(&BackingNoiseGenerator_t::run, &BackingNoiseGenerator, iter);
     }
 
-    BackingAsyncLua.Threads.resize(2);
+    BackingAsyncLua.Threads.resize(4);
     for(size_t iter = 0; iter < BackingAsyncLua.Threads.size(); iter++) {
         BackingAsyncLua.Threads[iter] = std::thread(&BackingAsyncLua_t::run, &BackingAsyncLua, iter);
     }
@@ -65,17 +65,23 @@ GameServer::~GameServer() {
 }
 
 void GameServer::BackingChunkPressure_t::run(int id) {
+    // static thread_local int local_counter = -1;
+    int iteration = 0;
     LOG.debug() << "Старт потока " << id;
 
     try {
         while(true) {
+            // local_counter++;
+            // LOG.debug() << "Ожидаю начала " << id << ' ' << local_counter;
             {
                 std::unique_lock<std::mutex> lock(Mutex);
-                Symaphore.wait(lock, [&](){ return RunCollect != 0 || NeedShutdown; });
+                Symaphore.wait(lock, [&](){ return iteration != Iteration || NeedShutdown; });
                 if(NeedShutdown) {
                     LOG.debug() << "Завершение выполнения потока " << id;
                     break;
                 }
+
+                iteration = Iteration;
             }
 
             // Сбор данных
@@ -97,20 +103,19 @@ void GameServer::BackingChunkPressure_t::run(int id) {
 
                 for(const auto& [regionPos, region] : worldObj.Regions) {
                     auto& regionObj = *region;
-                    if(counter++ % pullSize != 0) {
-                        counter %= pullSize;
+                    if(counter++ % pullSize != id) {
                         continue;
                     }
 
                     Dump dumpRegion;
 
+                    dumpRegion.CECs = regionObj.CECs;
                     dumpRegion.IsChunkChanged_Voxels = regionObj.IsChunkChanged_Voxels;
                     regionObj.IsChunkChanged_Voxels = 0;
                     dumpRegion.IsChunkChanged_Nodes = regionObj.IsChunkChanged_Nodes;
                     regionObj.IsChunkChanged_Nodes = 0;
                     
                     if(!regionObj.NewCECs.empty()) {
-                        dumpRegion.CECs = regionObj.CECs;
                         dumpRegion.NewCECs = std::move(regionObj.NewCECs);
                         dumpRegion.Voxels = regionObj.Voxels;
 
@@ -123,9 +128,9 @@ void GameServer::BackingChunkPressure_t::run(int id) {
                                 std::copy(fromPtr, fromPtr+16*16*16, toPtr.data());
                             }
                     } else {
-                        if(regionObj.IsChunkChanged_Voxels) {
+                        if(dumpRegion.IsChunkChanged_Voxels) {
                             for(int index = 0; index < 64; index++) {
-                                if((regionObj.IsChunkChanged_Voxels >> index) & 0x1)
+                                if(((dumpRegion.IsChunkChanged_Voxels >> index) & 0x1) == 0)
                                     continue;
 
                                 Pos::bvec4u chunkPos;
@@ -140,9 +145,9 @@ void GameServer::BackingChunkPressure_t::run(int id) {
                             }
                         }
 
-                        if(regionObj.IsChunkChanged_Nodes) {
+                        if(dumpRegion.IsChunkChanged_Nodes) {
                             for(int index = 0; index < 64; index++) {
-                                if((regionObj.IsChunkChanged_Nodes >> index) & 0x1)
+                                if(((dumpRegion.IsChunkChanged_Nodes >> index) & 0x1) == 0)
                                     continue;
 
                                 Pos::bvec4u chunkPos;
@@ -166,9 +171,10 @@ void GameServer::BackingChunkPressure_t::run(int id) {
             }
 
             // Синхронизация
+            // LOG.debug() << "Синхронизирую " << id << ' ' << local_counter;
             {
                 std::unique_lock<std::mutex> lock(Mutex);
-                RunCollect--;
+                RunCollect -= 1;
                 Symaphore.notify_all();
             }
 
@@ -207,7 +213,7 @@ void GameServer::BackingChunkPressure_t::run(int id) {
                         if((region.IsChunkChanged_Voxels >> chunkPos.pack()) & 0x1) {
                             for(auto& ptr : region.CECs) {
                                 bool skip = false;
-                                for(auto& ptr2 : region.CECs) {
+                                for(auto& ptr2 : region.NewCECs) {
                                     if(ptr == ptr2) {
                                         skip = true;
                                         break;
@@ -246,7 +252,7 @@ void GameServer::BackingChunkPressure_t::run(int id) {
                         if((region.IsChunkChanged_Nodes >> chunkPos.pack()) & 0x1) {
                             for(auto& ptr : region.CECs) {
                                 bool skip = false;
-                                for(auto& ptr2 : region.CECs) {
+                                for(auto& ptr2 : region.NewCECs) {
                                     if(ptr == ptr2) {
                                         skip = true;
                                         break;
@@ -315,9 +321,10 @@ void GameServer::BackingChunkPressure_t::run(int id) {
             }
 
             // Синхронизация
+            // LOG.debug() << "Конец " << id << ' ' << local_counter;
             {
                 std::unique_lock<std::mutex> lock(Mutex);
-                RunCompress--;
+                RunCompress -= 1;
                 Symaphore.notify_all();
             }
         }
@@ -364,7 +371,9 @@ void GameServer::BackingNoiseGenerator_t::run(int id) {
             for(int z = 0; z < 64; z++)
                 for(int y = 0; y < 64; y++)
                 for(int x = 0; x < 64; x++, ptr++) {
-                    *ptr = TOS::genRand(); //glm::perlin(glm::vec3(posNode.x+x, posNode.y+y, posNode.z+z));
+                    // *ptr = TOS::genRand();
+                    *ptr = glm::perlin(glm::vec3(posNode.x+x, posNode.y+y, posNode.z+z) / 16.13f);
+                    //*ptr = std::pow(*ptr, 0.75f)*1.5f;
                 }
 
             Output.lock()->push_back({key, std::move(data)});
@@ -403,15 +412,17 @@ void GameServer::BackingAsyncLua_t::run(int id) {
                 lock->pop();
             }
 
+            //if(key.RegionPos == Pos::GlobalRegion(0, 0, 0))
             {
+                float *ptr = noise.data();
                 for(int z = 0; z < 64; z++)
                     for(int y = 0; y < 64; y++)
-                        for(int x = 0; x < 64; x++) {
-                            // DefVoxelId_t id = *ptr > 0.9 ? 1 : 0;
+                        for(int x = 0; x < 64; x++, ptr++) {
+                            DefVoxelId_t id = std::clamp(*ptr, 0.f, 1.f) * 3; //> 0.9 ? 1 : 0;
                             Pos::bvec64u nodePos(x, y, z);
                             auto &node = out.Nodes[Pos::bvec4u(nodePos >> 4).pack()][Pos::bvec16u(nodePos & 0xf).pack()];
-                            // node.NodeId = id;
-                            // node.Meta = 0;
+                            node.NodeId = id;
+                            node.Meta = 0;
                             
                             if(x == 0 && z == 0)
                                 node.NodeId = 1;
@@ -419,12 +430,21 @@ void GameServer::BackingAsyncLua_t::run(int id) {
                                 node.NodeId = 2;
                             else if(x == 0 && y == 0)
                                 node.NodeId = 3;
-                            else
+
+                            if(y == 1 && z == 0)
+                                node.NodeId = 0;
+                            else if(x == 0 && y == 1)
                                 node.NodeId = 0;
 
-                            node.Meta = 0;
+                            // node.Meta = 0;
                         }
-            }
+            } 
+            // else {
+            //     Node *ptr = (Node*) &out.Nodes[0][0];
+            //     Node node;
+            //     node.Data = 0;
+            //     std::fill(ptr, ptr+64*64*64, node);
+            // }
 
             RegionOut.lock()->push_back({key, out});
         }
@@ -799,7 +819,7 @@ void GameServer::stepConnections() {
 }
 
 void GameServer::stepModInitializations() {
-
+    BackingChunkPressure.endWithResults();
 }
 
 IWorldSaveBackend::TickSyncInfo_Out GameServer::stepDatabaseSync() {
@@ -1422,6 +1442,32 @@ void GameServer::stepGlobalStep() {
 void GameServer::stepSyncContent() {
     for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
         cec->onUpdate();
+
+        while(!cec->Build.empty()) {
+            Pos::GlobalNode node = cec->Build.front();
+            cec->Build.pop();
+
+            Pos::GlobalRegion rPos = node >> 6;
+            Pos::bvec4u cPos = (node >> 4) & 0x3;
+            Pos::bvec16u nPos = node & 0xf;
+
+            auto &region = Expanse.Worlds[0]->Regions[rPos];
+            region->Nodes[cPos.pack()][nPos.pack()].NodeId = 4;
+            region->IsChunkChanged_Nodes |= 1ull << cPos.pack();
+        }
+
+        while(!cec->Break.empty()) {
+            Pos::GlobalNode node = cec->Break.front();
+            cec->Break.pop();
+
+            Pos::GlobalRegion rPos = node >> 6;
+            Pos::bvec4u cPos = (node >> 4) & 0x3;
+            Pos::bvec16u nPos = node & 0xf;
+
+            auto &region = Expanse.Worlds[0]->Regions[rPos];
+            region->Nodes[cPos.pack()][nPos.pack()].NodeId = 0;
+            region->IsChunkChanged_Nodes |= 1ull << cPos.pack();
+        }
     }
 
     // Оповещения о ресурсах и профилях

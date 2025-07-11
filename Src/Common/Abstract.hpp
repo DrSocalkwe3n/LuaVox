@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Common/Net.hpp"
+#include "TOSLib.hpp"
 #include <algorithm>
 #include <cstdint>
 #include <glm/ext.hpp>
@@ -90,7 +91,7 @@ public:
         using U = std::make_unsigned_t<T>;
 
         for(size_t iter = 0; iter < N; iter++) {
-            out |= Pack(U(get(iter))) << BitsPerComponent*iter;
+            out |= Pack(U(get(iter)) & U((Pack(1) << BitsPerComponent)-1)) << BitsPerComponent*iter;
         } 
 
         return out;
@@ -100,7 +101,7 @@ public:
         using U = std::make_unsigned_t<T>;
 
         for(size_t iter = 0; iter < N; iter++) {
-            set(iter, U((pack >> BitsPerComponent*iter) & ((Pack(1) << BitsPerComponent)-1)));
+            set(iter, T(U((pack >> BitsPerComponent*iter) & U((Pack(1) << BitsPerComponent)-1))));
         }
     }
 
@@ -480,6 +481,9 @@ struct CompressedNodes {
 
 CompressedNodes compressNodes(const Node* nodes, bool fast = true);
 void unCompressNodes(const std::u8string& compressed, Node* ptr);
+
+std::u8string compressLinear(const std::u8string& data);
+std::u8string unCompressLinear(const std::u8string& data);
 
 }
 

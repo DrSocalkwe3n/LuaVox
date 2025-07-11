@@ -10,6 +10,7 @@
 #include <atomic>
 #include <bitset>
 #include <initializer_list>
+#include <queue>
 #include <set>
 #include <type_traits>
 #include <unordered_map>
@@ -296,6 +297,7 @@ public:
     const std::string Username;
     Pos::Object CameraPos = {0, 0, 0};
     ToServer::PacketQuat CameraQuat = {0};
+    TOS::SpinlockObject<std::queue<uint8_t>> Actions;
 
 public:
     RemoteClient(asio::io_context &ioc, tcp::socket socket, const std::string username, std::vector<HASH> &&client_cache)

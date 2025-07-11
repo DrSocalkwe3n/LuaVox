@@ -13,6 +13,7 @@
 #define _USE_MATH_DEFINES
 #include <cmath>
 #include <vector>
+#include <assert.h>
 
 namespace TOS {
 

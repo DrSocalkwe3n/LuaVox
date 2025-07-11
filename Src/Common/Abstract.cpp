@@ -1,6 +1,10 @@
 #include "Abstract.hpp"
 #include <algorithm>
-
+#include <boost/iostreams/filtering_streambuf.hpp>
+#include <boost/iostreams/copy.hpp>
+#include <boost/iostreams/filter/zlib.hpp>
+#include <cstddef>
+#include <sstream>
 
 
 namespace LV {
@@ -99,7 +103,7 @@ CompressedVoxels compressVoxels_byte(const std::vector<VoxelCube>& voxels) {
         }
     }
 
-    return {compressed, defines};
+    return {compressLinear(compressed), defines};
 }
 
 CompressedVoxels compressVoxels_bit(const std::vector<VoxelCube>& voxels) {
@@ -245,7 +249,7 @@ CompressedVoxels compressVoxels_bit(const std::vector<VoxelCube>& voxels) {
     for(size_t iter = 0; iter < buff.size(); iter++)
         compressed[iter / 8] |= (buff[iter] << (iter % 8));
 
-    return {compressed, profile};
+    return {compressLinear(compressed), profile};
 }
 
 CompressedVoxels compressVoxels(const std::vector<VoxelCube>& voxels, bool fast) {
@@ -419,10 +423,11 @@ std::vector<VoxelCube> unCompressVoxels_bit(const std::u8string& compressed) {
 }
 
 std::vector<VoxelCube> unCompressVoxels(const std::u8string& compressed) {
-    if(compressed.front())
-        return unCompressVoxels_byte(compressed);
+    const std::u8string& next = unCompressLinear(compressed);
+    if(next.front())
+        return unCompressVoxels_byte(next);
     else
-        return unCompressVoxels_bit(compressed);
+        return unCompressVoxels_bit(next);
 }
 
 
@@ -510,7 +515,7 @@ CompressedNodes compressNodes_byte(const Node* nodes) {
 
     profiles.shrink_to_fit();
     
-    return {compressed, profiles};
+    return {compressLinear(compressed), profiles};
 }
 
 CompressedNodes compressNodes_bit(const Node* nodes) {
@@ -628,15 +633,33 @@ CompressedNodes compressNodes_bit(const Node* nodes) {
         }
     }
     
-    return {compressed, profiles};
+    return {compressLinear(compressed), profiles};
 }
 
 
 CompressedNodes compressNodes(const Node* nodes, bool fast) {
-    if(fast)
-        return compressNodes_byte(nodes);
-    else
-        return compressNodes_bit(nodes);
+    std::u8string data(16*16*16*sizeof(Node), '\0');
+    const char8_t *ptr = (const char8_t*) nodes;
+    std::copy(ptr, ptr+16*16*16*4, data.data());
+
+    std::vector<DefNodeId_t> node(16*16*16);
+    for(int iter = 0; iter < 16*16*16; iter++) {
+        node[iter] = nodes[iter].NodeId;
+    }
+
+    {
+        std::sort(node.begin(), node.end());
+        auto last = std::unique(node.begin(), node.end());
+        node.erase(last, node.end());
+        node.shrink_to_fit();
+    }
+
+    return {compressLinear(data), std::move(node)};
+
+    // if(fast)
+    //     return compressNodes_byte(nodes);
+    // else
+    //     return compressNodes_bit(nodes);
 }
 
 void unCompressNodes_byte(const std::u8string& compressed, Node* ptr) {
@@ -761,10 +784,44 @@ void unCompressNodes_bit(const std::u8string& compressed, Node* ptr) {
 }
 
 void unCompressNodes(const std::u8string& compressed, Node* ptr) {
-    if(compressed.front())
-        return unCompressNodes_byte(compressed, ptr);
-    else
-        return unCompressNodes_bit(compressed, ptr);
+    const std::u8string& next = unCompressLinear(compressed);
+    const Node *lPtr = (const Node*) next.data();
+    std::copy(lPtr, lPtr+16*16*16, ptr);
+
+    // if(next.front())
+    //     return unCompressNodes_byte(next, ptr);
+    // else
+    //     return unCompressNodes_bit(next, ptr);
+}
+
+std::u8string compressLinear(const std::u8string& data) {
+    std::stringstream in;
+    in.write((const char*) data.data(), data.size());
+
+    boost::iostreams::filtering_streambuf<boost::iostreams::input> out;
+    out.push(boost::iostreams::zlib_compressor());
+    out.push(in);
+
+    std::stringstream compressed;
+    boost::iostreams::copy(out, compressed);
+    std::string outString = compressed.str();
+
+    return *(std::u8string*) &outString;
+}
+
+std::u8string unCompressLinear(const std::u8string& data) {
+    std::stringstream in;
+    in.write((const char*) data.data(), data.size());
+    
+    boost::iostreams::filtering_streambuf<boost::iostreams::input> out;
+    out.push(boost::iostreams::zlib_decompressor());
+    out.push(in);
+
+    std::stringstream compressed;
+    boost::iostreams::copy(out, compressed);
+    std::string outString = compressed.str();
+
+    return *(std::u8string*) &outString;
 }
 
 }

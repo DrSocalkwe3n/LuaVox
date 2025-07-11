@@ -251,6 +251,13 @@ void VulkanRenderSession::init(Vulkan *instance) {
             array[15] = {135,    135,    135-64, 0, 0, 0, 0, 0,      0};
             array[16] = {135+16, 135, 135-64-16, 0, 0, 0, 0, 65535,  65535};
             array[17] = {135, 135, 135-64-16, 0, 0, 0, 0, 0,      65535};
+
+            for(int iter = 0; iter < 18; iter++) {
+                array[18+iter] = array[iter];
+                array[18+iter].FZ -= 32;
+            }
+
+
             VKCTX->TestQuad.unMapMemory();
         }
 
@@ -431,7 +438,7 @@ void VulkanRenderSession::init(Vulkan *instance) {
             .flags = 0,
             .depthClampEnable = false,
             .rasterizerDiscardEnable = false,
-            .polygonMode = VK_POLYGON_MODE_LINE,
+            .polygonMode = VK_POLYGON_MODE_FILL,
             .cullMode = VK_CULL_MODE_BACK_BIT,
             .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
             .depthBiasEnable = false,
@@ -636,6 +643,7 @@ void VulkanRenderSession::onContentDefinesLost(std::unordered_map<EnumDefContent
 
 }
 
+int changed = 0;
 void VulkanRenderSession::onChunksChange(WorldId_t worldId, const std::unordered_set<Pos::GlobalChunk>& changeOrAddList, const std::unordered_set<Pos::GlobalRegion>& remove) {
     auto &table = External.ChunkVoxelMesh[worldId];
 
@@ -645,7 +653,7 @@ void VulkanRenderSession::onChunksChange(WorldId_t worldId, const std::unordered
 
         auto &buffers = table[pos];
 
-        const auto &chunk = ServerSession->Data.Worlds[worldId].Regions[rPos].Chunks[cPos.x][cPos.y][cPos.z];
+        const auto &chunk = ServerSession->Data.Worlds[worldId].Regions[rPos].Chunks[cPos.pack()];
 
         if(chunk.Voxels.empty()) {
             VKCTX->VertexPool_Voxels.dropVertexs(std::get<0>(buffers));
@@ -655,11 +663,12 @@ void VulkanRenderSession::onChunksChange(WorldId_t worldId, const std::unordered
             VKCTX->VertexPool_Voxels.relocate(voxels, std::move(vertexs));
         }
 
-        std::vector<NodeVertexStatic> vertexs2 = generateMeshForNodeChunks(chunk.Nodes);
+        std::vector<NodeVertexStatic> vertexs2 = generateMeshForNodeChunks(chunk.Nodes.data());
 
         if(vertexs2.empty()) {
             VKCTX->VertexPool_Nodes.dropVertexs(std::get<1>(buffers));
         } else {
+            changed++;
             auto &nodes = std::get<1>(buffers);
             VKCTX->VertexPool_Nodes.relocate(nodes, std::move(vertexs2));
         }
@@ -669,6 +678,8 @@ void VulkanRenderSession::onChunksChange(WorldId_t worldId, const std::unordered
             if(iter != table.end())
                 table.erase(iter);
         }
+
+        TOS::Logger("Vul").debug() << "Обработано " << changed;
     }
 
     for(Pos::GlobalRegion pos : remove) {
@@ -704,7 +715,12 @@ void VulkanRenderSession::beforeDraw() {
 }
 
 void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuffer drawCmd) {
-    
+    {
+        X64Offset = Pos & ~((1 << Pos::Object_t::BS_Bit << 4 << 2)-1);
+        X64Offset_f = glm::vec3(X64Offset) / float(Pos::Object_t::BS);
+        X64Delta = glm::vec3(Pos-X64Offset) / float(Pos::Object_t::BS);
+    }
+
     // Сместить в координаты игрока, повернуть относительно взгляда проецировать на экран
     // Изначально взгляд в z-1
     // PCO.ProjView = glm::mat4(1);
@@ -800,16 +816,27 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
     static float Delta = 0;
     Delta += dTime;
 
-    glm::mat4 projView = glm::perspective<float>(glm::radians(75.f), float(VkInst->Screen.Width)/float(VkInst->Screen.Height), 0.5, std::pow(2, 17));
-    projView[1][1] *= -1;
-    glm::mat4 rotate = glm::mat4(1);
-    rotate = glm::translate(rotate, {0, 0, -4});
-    rotate = glm::rotate(rotate, 45.f/360*(2*glm::pi<float>()), {1, 0, 0});
-    rotate = glm::rotate(rotate, Delta/16*(2*glm::pi<float>()), {0, 1, 0});
-    rotate = glm::translate(rotate, {0, 0, 4});
-
-    PCO.ProjView = projView*rotate;
     PCO.Model = glm::mat4(1);
+    PCO.Model = glm::translate(PCO.Model, -X64Offset_f);
+
+    {
+        glm::mat4 proj = glm::perspective<float>(glm::radians(75.f), float(VkInst->Screen.Width)/float(VkInst->Screen.Height), 0.5, std::pow(2, 17));
+        proj[1][1] *= -1;
+
+        // Получили область рендера от левого верхнего угла
+        // x -1 -> 1; y 1 -> -1; z 0 -> -1
+        // Правило левой руки
+        // Перед полигонов определяется обходом против часовой стрелки
+
+        glm::mat4 view = glm::mat4(1);
+        // Смещаем мир относительно позиции игрока, чтобы игрок в пространстве рендера оказался в нулевых координатах
+        view = glm::translate(view, -X64Delta);
+        // Поворачиваем мир обратно взгляду игрока, чтобы его взгляд стал по направлению оси -z
+        view = glm::mat4(-Quat)*view;
+
+        // Сначала применяется матрица вида, потом проекции
+        PCO.ProjView = proj*view;
+    }
 
     vkCmdBindPipeline(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, NodeStaticOpaquePipeline);
 	vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
@@ -818,11 +845,36 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
         MainAtlas_LightMap_PipelineLayout,  0, 2, 
         (const VkDescriptorSet[]) {MainAtlasDescriptor, VoxelLightMapDescriptor}, 0, nullptr);
 
+    PCO.Model = glm::mat4(1);
     VkBuffer vkBuffer = VKCTX->TestQuad;
-    VkDeviceSize vkOffset = 0;
+    VkDeviceSize vkOffsets = 0;
 
-    vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffset);
-    vkCmdDraw(drawCmd, 6*3, 1, 0, 0);
+    vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
+    vkCmdDraw(drawCmd, 6*3*2, 1, 0, 0);
+
+    {
+        Pos::GlobalChunk x64offset = X64Offset >> Pos::Object_t::BS_Bit >> 4;
+
+        auto iterWorld = External.ChunkVoxelMesh.find(WorldId);
+        if(iterWorld != External.ChunkVoxelMesh.end()) {
+            glm::mat4 orig = PCO.Model;
+
+            for(auto &pair : iterWorld->second) {
+                if(auto& nodes = std::get<1>(pair.second)) {
+                    glm::vec3 cpos(pair.first-x64offset);
+                    PCO.Model = glm::translate(orig, cpos*16.f);
+                    auto [vkBuffer, offset] = VKCTX->VertexPool_Nodes.map(nodes);
+
+                    vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
+                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, offsetof(WorldPCO, Model), sizeof(WorldPCO::Model), &PCO.Model);
+                    vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
+                    vkCmdDraw(drawCmd, nodes.VertexCount, 1, offset, 0);
+                }
+            }
+
+            PCO.Model = orig;
+        }
+    }
 }
 
 std::vector<VoxelVertexPoint> VulkanRenderSession::generateMeshForVoxelChunks(const std::vector<VoxelCube> cubes) {
@@ -912,7 +964,7 @@ std::vector<VoxelVertexPoint> VulkanRenderSession::generateMeshForVoxelChunks(co
     return out;
 }
 
-std::vector<NodeVertexStatic> VulkanRenderSession::generateMeshForNodeChunks(const Node nodes[16][16][16]) {
+std::vector<NodeVertexStatic> VulkanRenderSession::generateMeshForNodeChunks(const Node* nodes) {
     std::vector<NodeVertexStatic> out;
     NodeVertexStatic v;
 
@@ -920,15 +972,16 @@ std::vector<NodeVertexStatic> VulkanRenderSession::generateMeshForNodeChunks(con
         for(int y = 0; y < 16; y++)
             for(int x = 0; x < 16; x++)
         {
-            if(nodes[x][y][z].Data == 0)
+            size_t index = Pos::bvec16u(x, y, z).pack();
+            if(nodes[index].Data == 0)
                 continue;
 
-            v.Tex = nodes[x][y][z].NodeId;
+            v.Tex = nodes[index].NodeId;
 
-            if((y+1) >= 16 || nodes[x][y+1][z].NodeId == 0) {
+            if((y+1) >= 16 || nodes[Pos::bvec16u(x, y+1, z).pack()].NodeId == 0) {
                 v.FX = 135+x*16;
                 v.FY = 135+y*16+16;
-                v.FZ = 135+z*16;
+                v.FZ = 135+z*16+16;
                 v.TU = 0;
                 v.TV = 0;
                 out.push_back(v);
@@ -937,18 +990,18 @@ std::vector<NodeVertexStatic> VulkanRenderSession::generateMeshForNodeChunks(con
                 v.TU = 65535;
                 out.push_back(v);
 
-                v.FZ += 16;
+                v.FZ -= 16;
                 v.TV = 65535;
                 out.push_back(v);
 
                 v.FX = 135+x*16;
-                v.FZ = 135+z*16;
+                v.FZ = 135+z*16+16;
                 v.TU = 0;
                 v.TV = 0;
                 out.push_back(v);
 
                 v.FX += 16;
-                v.FZ += 16;
+                v.FZ -= 16;
                 v.TV = 65535;
                 v.TU = 65535;
                 out.push_back(v);
@@ -958,106 +1011,73 @@ std::vector<NodeVertexStatic> VulkanRenderSession::generateMeshForNodeChunks(con
                 out.push_back(v);
             }
 
-            if((y-1) < 0 || nodes[x][y-1][z].NodeId == 0) {
+            if((y-1) < 0 || nodes[Pos::bvec16u(x, y-1, z).pack()].NodeId == 0) {
                 v.FX = 135+x*16;
                 v.FY = 135+y*16;
-                v.FZ = 135+z*16;
+                v.FZ = 135+z*16+16;
                 v.TU = 0;
                 v.TV = 0;
-                out.push_back(v);
-
-                v.FZ += 16;
-                v.TV = 65535;
-                out.push_back(v);
-
-                v.FX += 16;
-                v.TU = 65535;
-                out.push_back(v);
-
-                v.FX = 135+x*16;
-                v.FZ = 135+z*16;
-                v.TU = 0;
-                v.TV = 0;
-                out.push_back(v);
-
-                v.FX += 16;
-                v.FZ += 16;
-                v.TV = 65535;
-                v.TU = 65535;
                 out.push_back(v);
 
                 v.FZ -= 16;
+                v.TV = 65535;
+                out.push_back(v);
+
+                v.FX += 16;
+                v.TU = 65535;
+                out.push_back(v);
+
+                v.FX = 135+x*16;
+                v.FZ = 135+z*16+16;
+                v.TU = 0;
+                v.TV = 0;
+                out.push_back(v);
+
+                v.FX += 16;
+                v.FZ -= 16;
+                v.TV = 65535;
+                v.TU = 65535;
+                out.push_back(v);
+
+                v.FZ += 16;
                 v.TV = 0;
                 out.push_back(v);
             }
 
-            if((x+1) >= 16 || nodes[x+1][y][z].NodeId == 0) {
+            if((x+1) >= 16 || nodes[Pos::bvec16u(x+1, y, z).pack()].NodeId == 0) {
                 v.FX = 135+x*16+16;
                 v.FY = 135+y*16;
-                v.FZ = 135+z*16;
+                v.FZ = 135+z*16+16;
                 v.TU = 0;
                 v.TV = 0;
-                out.push_back(v);
-
-                v.FZ += 16;
-                v.TV = 65535;
-                out.push_back(v);
-
-                v.FY += 16;
-                v.TU = 65535;
-                out.push_back(v);
-
-                v.FY = 135+y*16;
-                v.FZ = 135+z*16;
-                v.TU = 0;
-                v.TV = 0;
-                out.push_back(v);
-
-                v.FY += 16;
-                v.FZ += 16;
-                v.TV = 65535;
-                v.TU = 65535;
                 out.push_back(v);
 
                 v.FZ -= 16;
-                v.TV = 0;
-                out.push_back(v);
-            }
-
-            if((x-1) < 0 || nodes[x-1][y][z].NodeId == 0) {
-                v.FX = 135+x*16;
-                v.FY = 135+y*16;
-                v.FZ = 135+z*16;
-                v.TU = 0;
-                v.TV = 0;
+                v.TV = 65535;
                 out.push_back(v);
 
                 v.FY += 16;
                 v.TU = 65535;
                 out.push_back(v);
 
-                v.FZ += 16;
-                v.TV = 65535;
-                out.push_back(v);
-
                 v.FY = 135+y*16;
-                v.FZ = 135+z*16;
+                v.FZ = 135+z*16+16;
                 v.TU = 0;
                 v.TV = 0;
                 out.push_back(v);
 
                 v.FY += 16;
-                v.FZ += 16;
+                v.FZ -= 16;
                 v.TV = 65535;
                 v.TU = 65535;
                 out.push_back(v);
 
-                v.FY -= 16;
-                v.TU = 0;
+                v.FZ += 16;
+                v.TV = 0;
                 out.push_back(v);
             }
 
-            if((z+1) >= 16 || nodes[x][y][z+1].NodeId == 0) {
+            if((x-1) < 0 || nodes[Pos::bvec16u(x-1, y, z).pack()].NodeId == 0) {
                 v.FX = 135+x*16;
                 v.FY = 135+y*16;
                 v.FZ = 135+z*16+16;
@@ -1069,18 +1089,18 @@ std::vector<NodeVertexStatic> VulkanRenderSession::generateMeshForNodeChunks(con
                 v.TU = 65535;
                 out.push_back(v);
 
-                v.FX += 16;
+                v.FZ -= 16;
                 v.TV = 65535;
                 out.push_back(v);
 
-                v.FX = 135+x*16;
                 v.FY = 135+y*16;
+                v.FZ = 135+z*16+16;
                 v.TU = 0;
                 v.TV = 0;
                 out.push_back(v);
 
-                v.FX += 16;
                 v.FY += 16;
+                v.FZ -= 16;
                 v.TV = 65535;
                 v.TU = 65535;
                 out.push_back(v);
@@ -1090,20 +1110,20 @@ std::vector<NodeVertexStatic> VulkanRenderSession::generateMeshForNodeChunks(con
                 out.push_back(v);
             }
 
-            if((z-1) < 0 || nodes[x][y][z-1].NodeId == 0) {
+            if((z+1) >= 16 || nodes[Pos::bvec16u(x, y, z+1).pack()].NodeId == 0) {
                 v.FX = 135+x*16;
                 v.FY = 135+y*16;
-                v.FZ = 135+z*16;
+                v.FZ = 135+z*16+16;
                 v.TU = 0;
                 v.TV = 0;
                 out.push_back(v);
 
                 v.FX += 16;
-                v.TV = 65535;
+                v.TU = 65535;
                 out.push_back(v);
 
                 v.FY += 16;
-                v.TU = 65535;
+                v.TV = 65535;
                 out.push_back(v);
 
                 v.FX = 135+x*16;
@@ -1119,6 +1139,39 @@ std::vector<NodeVertexStatic> VulkanRenderSession::generateMeshForNodeChunks(con
                 out.push_back(v);
 
                 v.FX -= 16;
+                v.TU = 0;
+                out.push_back(v);
+            }
+
+            if((z-1) < 0 || nodes[Pos::bvec16u(x, y, z-1).pack()].NodeId == 0) {
+                v.FX = 135+x*16;
+                v.FY = 135+y*16;
+                v.FZ = 135+z*16;
+                v.TU = 0;
+                v.TV = 0;
+                out.push_back(v);
+
+                v.FY += 16;
+                v.TV = 65535;
+                out.push_back(v);
+
+                v.FX += 16;
+                v.TU = 65535;
+                out.push_back(v);
+
+                v.FX = 135+x*16;
+                v.FY = 135+y*16;
+                v.TU = 0;
+                v.TV = 0;
+                out.push_back(v);
+
+                v.FX += 16;
+                v.FY += 16;
+                v.TV = 65535;
+                v.TU = 65535;
+                out.push_back(v);
+
+                v.FY -= 16;
                 v.TV = 0;
                 out.push_back(v);
             }

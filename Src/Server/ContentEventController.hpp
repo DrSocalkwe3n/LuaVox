@@ -7,6 +7,7 @@
 #include <bitset>
 #include <map>
 #include <memory>
+#include <queue>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -57,10 +58,6 @@ struct ContentViewInfo {
             if(iterWorld == obj.Regions.end()) {
                 out.WorldsNew.push_back(key);
                 out.RegionsNew[key] = regions;
-
-                for(const Pos::GlobalRegion& rp : regions) {
-                    TOS::Logger("New").debug() << rp.x << ' ' << rp.y << ' ' << rp.z;
-                }
             } else {
                 auto &vec = out.RegionsNew[key];
                 vec.reserve(8*8);
@@ -69,10 +66,6 @@ struct ContentViewInfo {
                     iterWorld->second.begin(), iterWorld->second.end(),
                     std::back_inserter(vec)
                 );
-
-                for(Pos::GlobalRegion& rp : vec) {
-                    TOS::Logger("New").debug() << rp.x << ' ' << rp.y << ' ' << rp.z;
-                }
             }
         }
 
@@ -83,10 +76,6 @@ struct ContentViewInfo {
             if(iterWorld == Regions.end()) {
                 out.WorldsLost.push_back(key);
                 out.RegionsLost[key] = regions;
-
-                for(const Pos::GlobalRegion& rp : regions) {
-                    TOS::Logger("Lost").debug() << rp.x << ' ' << rp.y << ' ' << rp.z;
-                }
             } else {
                 auto &vec = out.RegionsLost[key];
                 vec.reserve(8*8);
@@ -95,10 +84,6 @@ struct ContentViewInfo {
                     iterWorld->second.begin(), iterWorld->second.end(),
                     std::back_inserter(vec)
                 );
-
-                for(Pos::GlobalRegion& rp : vec) {
-                    TOS::Logger("Lost").debug() << rp.x << ' ' << rp.y << ' ' << rp.z;
-                }
             }
         }
 
@@ -153,6 +138,7 @@ public:
     bool CrossedBorder = true;
 
     ServerObjectPos Pos, LastPos;
+    std::queue<Pos::GlobalNode> Build, Break;
 
 public:
     ContentEventController(std::unique_ptr<RemoteClient>&& remote);

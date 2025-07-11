@@ -32,7 +32,7 @@ struct PP_Content_ChunkVoxels : public ParsedPacket {
 struct PP_Content_ChunkNodes : public ParsedPacket {
     WorldId_t Id;
     Pos::GlobalChunk Pos;
-    Node Nodes[16][16][16];
+    std::array<Node, 16*16*16> Nodes;
 
     PP_Content_ChunkNodes(ToClient::L1 l1, uint8_t l2, WorldId_t id, Pos::GlobalChunk pos)
         : ParsedPacket(l1, l2), Id(id), Pos(pos)
@@ -195,8 +195,8 @@ void ServerSession::onCursorMove(float xMove, float yMove) {
 
     static constexpr float PI = glm::pi<float>(), PI2 = PI*2, PI_HALF = PI/2, PI_DEG = PI/180;
 
-    deltaPYR.x = std::clamp(PYR.x + yMove*PI_DEG, -PI_HALF+PI_DEG, PI_HALF-PI_DEG)-PYR.x;
-    deltaPYR.y = std::fmod(PYR.y + xMove*PI_DEG, PI2)-PYR.y;
+    deltaPYR.x = std::clamp(PYR.x - yMove*PI_DEG, -PI_HALF+PI_DEG, PI_HALF-PI_DEG)-PYR.x;
+    deltaPYR.y = std::fmod(PYR.y - xMove*PI_DEG, PI2)-PYR.y;
     deltaPYR.z = 0;
 
     double gTime = GTime;
@@ -208,7 +208,26 @@ void ServerSession::onCursorMove(float xMove, float yMove) {
 }
 
 void ServerSession::onCursorBtn(ISurfaceEventListener::EnumCursorBtn btn, bool state) {
+    if(!state)
+        return;
 
+    if(btn == EnumCursorBtn::Left) {
+        Net::Packet packet;
+
+        packet << (uint8_t) ToServer::L1::System
+            << (uint8_t) ToServer::L2System::BlockChange
+            << uint8_t(0);
+
+        Socket->pushPacket(std::move(packet));
+    } else if(btn == EnumCursorBtn::Right) {
+        Net::Packet packet;
+
+        packet << (uint8_t) ToServer::L1::System
+            << (uint8_t) ToServer::L2System::BlockChange
+            << uint8_t(1);
+
+        Socket->pushPacket(std::move(packet));
+    }
 }
 
 void ServerSession::onKeyboardBtn(int btn, int state) {
@@ -255,9 +274,9 @@ void ServerSession::atFreeDrawTime(GlobalTime gTime, float dTime) {
     if(Keys.CTRL)
         mltpl *= 16;
 
-    Speed += glm::vec3(rot*glm::vec4(0, 0, 1, 1)*float(Keys.W))*mltpl;
+    Speed += glm::vec3(rot*glm::vec4(0, 0, -1, 1)*float(Keys.W))*mltpl;
     Speed += glm::vec3(rot*glm::vec4(-1, 0, 0, 1)*float(Keys.A))*mltpl;
-    Speed += glm::vec3(rot*glm::vec4(0, 0, -1, 1)*float(Keys.S))*mltpl;
+    Speed += glm::vec3(rot*glm::vec4(0, 0, 1, 1)*float(Keys.S))*mltpl;
     Speed += glm::vec3(rot*glm::vec4(1, 0, 0, 1)*float(Keys.D))*mltpl;
     Speed += glm::vec3(0, -1, 0)*float(Keys.SHIFT)*mltpl;
     Speed += glm::vec3(0, 1, 0)*float(Keys.SPACE)*mltpl;
@@ -275,7 +294,7 @@ void ServerSession::atFreeDrawTime(GlobalTime gTime, float dTime) {
                     Pos::GlobalRegion rPos = p.Pos >> 2;
                     Pos::bvec4u cPos = p.Pos & 0x3;
 
-                    Data.Worlds[p.Id].Regions[rPos].Chunks[cPos.x][cPos.y][cPos.z].Voxels = std::move(p.Cubes);
+                    Data.Worlds[p.Id].Regions[rPos].Chunks[cPos.pack()].Voxels = std::move(p.Cubes);
 
                     auto &pair = changeOrAddList_removeList[p.Id];
                     std::get<0>(pair).insert(p.Pos);
@@ -284,8 +303,8 @@ void ServerSession::atFreeDrawTime(GlobalTime gTime, float dTime) {
                     Pos::GlobalRegion rPos = p.Pos >> 2;
                     Pos::bvec4u cPos = p.Pos & 0x3;
 
-                    Node *nodes = (Node*) Data.Worlds[p.Id].Regions[rPos].Chunks[cPos.x][cPos.y][cPos.z].Nodes;
-                    std::copy((const Node*) p.Nodes, ((const Node*) p.Nodes)+16*16*16, nodes);
+                    Node *nodes = (Node*) Data.Worlds[p.Id].Regions[rPos].Chunks[cPos.pack()].Nodes.data();
+                    std::copy(p.Nodes.begin(), p.Nodes.end(), nodes);
                     
                     auto &pair = changeOrAddList_removeList[p.Id];
                     std::get<0>(pair).insert(p.Pos);
@@ -542,14 +561,14 @@ coro<> ServerSession::rP_Content(Net::AsyncSocket &sock) {
         uint32_t compressedSize = co_await sock.read<uint32_t>();
         assert(compressedSize <= std::pow(2, 24));
         std::u8string compressed(compressedSize, '\0');
-        co_await sock.read((std::byte*) compressed.data(), compressedSize); 
+        co_await sock.read((std::byte*) compressed.data(), compressedSize);
 
         PP_Content_ChunkVoxels *packet = new PP_Content_ChunkVoxels(
             ToClient::L1::Content,
             (uint8_t) ToClient::L2Content::ChunkVoxels,
             wcId,
             pos,
-            unCompressVoxels(compressed)
+            unCompressVoxels(compressed) // TODO: вынести в отдельный поток
         );
 
         while(!NetInputPackets.push(packet));
@@ -566,7 +585,7 @@ coro<> ServerSession::rP_Content(Net::AsyncSocket &sock) {
         uint32_t compressedSize = co_await sock.read<uint32_t>();
         assert(compressedSize <= std::pow(2, 24));
         std::u8string compressed(compressedSize, '\0');
-        co_await sock.read((std::byte*) compressed.data(), compressedSize); 
+        co_await sock.read((std::byte*) compressed.data(), compressedSize);
 
         PP_Content_ChunkNodes *packet = new PP_Content_ChunkNodes(
             ToClient::L1::Content,
@@ -575,7 +594,7 @@ coro<> ServerSession::rP_Content(Net::AsyncSocket &sock) {
             pos
         );
 
-        unCompressNodes(compressed, (Node*) packet->Nodes);
+        unCompressNodes(compressed, (Node*) packet->Nodes.data()); // TODO: вынести в отдельный поток
         
         while(!NetInputPackets.push(packet));
 
@@ -586,7 +605,7 @@ coro<> ServerSession::rP_Content(Net::AsyncSocket &sock) {
         co_return;
     case ToClient::L2Content::RemoveRegion: {
         WorldId_t wcId = co_await sock.read<WorldId_t>();
-        Pos::GlobalChunk pos;
+        Pos::GlobalRegion pos;
         pos.unpack(co_await sock.read<Pos::GlobalRegion::Pack>());
 
         PP_Content_RegionRemove *packet = new PP_Content_RegionRemove(

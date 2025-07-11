@@ -66,6 +66,8 @@ set(Boost_USE_STATIC_LIBS ON)
 
 set(BOOST_INCLUDE_LIBRARIES asio thread json)
 set(BOOST_ENABLE_CMAKE ON)
+set(BOOST_IOSTREAMS_ENABLE_ZLIB ON)
+set(BOOST_INCLUDE_LIBRARIES asio thread json iostreams)
 FetchContent_Declare(
   Boost
   URL https://github.com/boostorg/boost/releases/download/boost-1.87.0/boost-1.87.0-cmake.7z
@@ -73,7 +75,7 @@ FetchContent_Declare(
   DOWNLOAD_NO_EXTRACT FALSE
 )
 FetchContent_MakeAvailable(Boost)
-target_link_libraries(luavox_common INTERFACE Boost::asio Boost::thread Boost::json)
+target_link_libraries(luavox_common INTERFACE Boost::asio Boost::thread Boost::json Boost::iostreams)
 
 # glm
 # find_package(glm REQUIRED)
@@ -116,7 +118,8 @@ target_link_libraries(luavox_common INTERFACE SQLite::SQLite3)
 
 # Static Assets
 file(GLOB_RECURSE ASSETS RELATIVE "${PROJECT_SOURCE_DIR}/assets" "assets/*.*")
-add_custom_command(OUTPUT assets.o resources.cpp INPUT ${ASSETS}
+file(GLOB_RECURSE ASSETS_A "${PROJECT_SOURCE_DIR}/assets" "assets/*.*")
+add_custom_command(OUTPUT assets.o resources.cpp INPUT ${ASSETS_A}
     COMMAND cd ${CMAKE_CURRENT_BINARY_DIR} && ${CMAKE_CURRENT_SOURCE_DIR}/Src/assets.py ${ASSETS}
     COMMAND cd "${CMAKE_CURRENT_SOURCE_DIR}/assets" && ld -r -b binary -o '${CMAKE_CURRENT_BINARY_DIR}/assets.o' ${ASSETS}
     COMMAND objcopy --rename-section .data=.rodata,alloc,load,readonly,data,contents ${CMAKE_CURRENT_BINARY_DIR}/assets.o ${CMAKE_CURRENT_BINARY_DIR}/assets.o)

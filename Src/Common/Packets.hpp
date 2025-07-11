@@ -62,6 +62,7 @@ struct PacketQuat {
         0 -
         1 -
         2 - Новая позиция камеры WorldId_c+ObjectPos+PacketQuat
+        3 - Изменение блока
 
 */
 
@@ -74,7 +75,8 @@ enum struct L1 : uint8_t {
 enum struct L2System : uint8_t {
     InitEnd,
     Disconnect,
-    Test_CAM_PYR_POS
+    Test_CAM_PYR_POS,
+    BlockChange
 };
 
 }

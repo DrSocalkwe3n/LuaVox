@@ -32,14 +32,14 @@ struct PacketQuat {
         value |= uint64_t(w & 0x3ff) << 30;
 
         for(int iter = 0; iter < 5; iter++)
-            Data[iter] = (value >> (iter * 8)) & 0xff;
+            Data[iter] = (value >> (iter*8)) & 0xff;
     }
 
     glm::quat toQuat() const {
         uint64_t value = 0;
 
         for(int iter = 0; iter < 5; iter++)
-            value |= (Data[iter] >> (iter*10)) & 0x3ff;
+            value |= uint64_t(Data[iter]) << (iter*8);
 
         uint16_t
             x = value & 0x3ff,
@@ -52,7 +52,7 @@ struct PacketQuat {
         float fz = (float(z)/0x3ff)*2-1;
         float fw = (float(w)/0x3ff)*2-1;
 
-        return glm::quat(fx, fy, fz, fw);
+        return glm::quat(fw, fx, fy, fz);
     }
 };
 
@@ -144,19 +144,10 @@ enum struct L2System : uint8_t {
 };
 
 enum struct L2Resource : uint8_t {
-    Texture,
-    FreeTexture,
-    Animation,
-    FreeAnimation,
-    Sound,
-    FreeSound,
-    Model,
-    FreeModel,
-    Font,
-    FreeFont,
+    Bind,   // Привязка идентификаторов ресурсов к хешам
+    Lost,
     InitResSend = 253,
-    ChunkSend,
-    SendCanceled
+    ChunkSend
 };
 
 enum struct L2Definition : uint8_t {

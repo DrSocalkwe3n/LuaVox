@@ -141,9 +141,8 @@ public:
         assert(serverSession);
     }
 
-    virtual void onBinaryResourceAdd(std::unordered_map<EnumBinResource, std::unordered_map<ResourceId_t, BinaryResource>>) override;
-    virtual void onBinaryResourceLost(std::unordered_map<EnumBinResource, std::vector<ResourceId_t>>) override;
-    virtual void onContentDefinesAdd(std::unordered_map<EnumDefContent, std::unordered_map<ResourceId_t, std::u8string>>) override;
+    virtual void onBinaryResourceAdd(std::vector<Hash_t>) override;
+    virtual void onContentDefinesAdd(std::unordered_map<EnumDefContent, std::vector<ResourceId_t>>) override;
     virtual void onContentDefinesLost(std::unordered_map<EnumDefContent, std::vector<ResourceId_t>>) override;
     virtual void onChunksChange(WorldId_t worldId, const std::unordered_set<Pos::GlobalChunk>& changeOrAddList, const std::unordered_set<Pos::GlobalRegion>& remove) override;
     virtual void setCameraPos(WorldId_t worldId, Pos::Object pos, glm::quat quat) override;

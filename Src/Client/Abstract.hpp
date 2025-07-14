@@ -64,10 +64,9 @@ public:
 class IRenderSession {
 public:
     // Подгрузка двоичных ресурсов
-    virtual void onBinaryResourceAdd(std::unordered_map<EnumBinResource, std::unordered_map<ResourceId_t, BinaryResource>>) = 0;
-    virtual void onBinaryResourceLost(std::unordered_map<EnumBinResource, std::vector<ResourceId_t>>) = 0;
+    virtual void onBinaryResourceAdd(std::vector<Hash_t>) = 0;
 
-    virtual void onContentDefinesAdd(std::unordered_map<EnumDefContent, std::unordered_map<ResourceId_t, std::u8string>>) = 0;
+    virtual void onContentDefinesAdd(std::unordered_map<EnumDefContent, std::vector<ResourceId_t>>) = 0;
     virtual void onContentDefinesLost(std::unordered_map<EnumDefContent, std::vector<ResourceId_t>>) = 0;
 
     // Сообщаем об изменившихся чанках
@@ -87,10 +86,6 @@ struct World {
 };
 
 struct DefVoxelInfo {
-
-};
-
-struct DefNodeInfo {
 
 };
 
@@ -142,10 +137,24 @@ struct DefItemInfo {
 
 /* Интерфейс обработчика сессии с сервером */
 class IServerSession {
+    struct ArrayHasher {
+        std::size_t operator()(const Hash_t& a) const {
+            std::size_t h = 0;
+            for (auto e : a)
+                h ^= std::hash<int>{}(e)  + 0x9e3779b9 + (h << 6) + (h >> 2);
+            
+            return h;
+        }
+    };
+
 public:
     struct {
+        std::unordered_map<Hash_t, BinaryResource, ArrayHasher>     Resources;
+    } Binary;
+
+    struct {
         std::unordered_map<DefVoxelId_t, DefVoxelInfo>              DefVoxel;
-        std::unordered_map<DefNodeId_t, DefNodeInfo>                DefNode;
+        std::unordered_map<DefNodeId_t, DefNode_t>                  DefNode;
         std::unordered_map<DefWorldId_t, DefWorldInfo>              DefWorld;
         std::unordered_map<DefPortalId_t, DefPortalInfo>            DefPortal;
         std::unordered_map<DefEntityId_t, DefEntityInfo>            DefEntity;

@@ -8,6 +8,8 @@
 #include <array>
 #include <boost/json/parse.hpp>
 #include <chrono>
+#include <filesystem>
+#include <functional>
 #include <glm/geometric.hpp>
 #include <iterator>
 #include <memory>
@@ -15,11 +17,17 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include "SaveBackends/Filesystem.hpp"
 #include "Server/SaveBackend.hpp"
 #include "Server/World.hpp"
 #include "TOSLib.hpp"
 #include "glm/gtc/noise.hpp"
+#include <fstream>
+
+
+namespace js = boost::json;
+
 
 namespace LV::Server {
 
@@ -27,20 +35,21 @@ GameServer::GameServer(asio::io_context &ioc, fs::path worldPath)
     : AsyncObject(ioc),
         Content(ioc, nullptr, nullptr, nullptr, nullptr, nullptr)
 {
+    BackingChunkPressure.Threads.resize(4);
+    BackingNoiseGenerator.Threads.resize(4);
+    BackingAsyncLua.Threads.resize(4);
+
     init(worldPath);
 
-    BackingChunkPressure.Threads.resize(4);
     BackingChunkPressure.Worlds = &Expanse.Worlds;
     for(size_t iter = 0; iter < BackingChunkPressure.Threads.size(); iter++) {
         BackingChunkPressure.Threads[iter] = std::thread(&BackingChunkPressure_t::run, &BackingChunkPressure, iter);
     }
 
-    BackingNoiseGenerator.Threads.resize(4);
     for(size_t iter = 0; iter < BackingNoiseGenerator.Threads.size(); iter++) {
         BackingNoiseGenerator.Threads[iter] = std::thread(&BackingNoiseGenerator_t::run, &BackingNoiseGenerator, iter);
     }
 
-    BackingAsyncLua.Threads.resize(4);
     for(size_t iter = 0; iter < BackingAsyncLua.Threads.size(); iter++) {
         BackingAsyncLua.Threads[iter] = std::thread(&BackingAsyncLua_t::run, &BackingAsyncLua, iter);
     }
@@ -83,6 +92,9 @@ void GameServer::BackingChunkPressure_t::run(int id) {
 
                 iteration = Iteration;
             }
+
+            assert(RunCollect > 0);
+            assert(RunCompress > 0);
 
             // Сбор данных
             size_t pullSize = Threads.size();
@@ -671,7 +683,7 @@ coro<> GameServer::pushSocketGameProtocol(tcp::socket socket, const std::string 
             if(count > 262144)
                 MAKE_ERROR("Не поддерживаемое количество ресурсов в кеше у клиента");
             
-            std::vector<HASH> clientCache;
+            std::vector<Hash_t> clientCache;
             clientCache.resize(count);
             co_await Net::AsyncSocket::read(socket, (std::byte*) clientCache.data(), count*32);
             std::sort(clientCache.begin(), clientCache.end());
@@ -681,6 +693,149 @@ coro<> GameServer::pushSocketGameProtocol(tcp::socket socket, const std::string 
         }
     }
 }
+
+TexturePipeline GameServer::buildTexturePipeline(const std::string& pl) {
+    /* 
+        ^ объединение текстур, вторая поверх первой. 
+        При наложении текстуры будут автоматически увеличины до размера
+        самой большой текстуры из участвующих. По умолчанию ближайший соседний
+        default:dirt.png^our_tech:machine.png
+
+        Текстурные команды описываются в [] <- предоставляет текстуру.
+        Разделитель пробелом
+        default:dirt.png^[create 2 2 r ffaabbcc]
+
+        Если перед командой будет использован $, то первым аргументом будет
+        предыдущая текстура, если это поддерживает команда
+        default:dirt.png$[resize 16 16] или [resize default:dirt.png 16 16]
+
+        Группировка ()
+        default:empty^(default:dirt.png^our_tech:machine.png)
+    */
+
+    std::map<std::string, BinTextureId_t> stbt;
+    std::unordered_set<BinTextureId_t> btis;
+    std::string alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+    // Парсер группы. Возвращает позицию на которой закончил и скомпилированный код
+    std::move_only_function<std::tuple<size_t, std::u8string>(size_t pos)> parse_obj;
+    std::move_only_function<std::tuple<size_t, std::u8string>(size_t pos, std::u8string maybe)> parse_cmd;
+
+    parse_cmd = [&](size_t pos, std::u8string maybe) -> std::tuple<size_t, std::u8string> {
+        std::string cmd_name;
+        std::vector<std::u8string> args;
+        size_t startPos = pos;
+
+        for(pos++; pos < pl.size(); pos++) {
+            if(pl[pos] == ']') {
+                // Команда завершилась
+                // return {pos+1, cmd_name};
+            } else if(pl[pos] == ' ') {
+                // Аргументы
+                // Здесь нужно получить либо кастомные значения, либо объект
+                auto [next_pos, subcmd] = parse_obj(pos+1);
+                args.push_back(subcmd);
+                if(next_pos == pl.size())
+                    MAKE_ERROR("Ожидался конец команды объявленной на " << startPos << ", наткнулись на конец потока");
+            
+                pos = next_pos-1;
+            } else if(alpha.find(pl[pos]) == std::string::npos) {
+                MAKE_ERROR("Ошибка в имени команды");
+            } else {
+                cmd_name += pl[pos];
+            }
+        }
+    };
+    
+    parse_obj = [&](size_t pos) -> std::pair<size_t, std::u8string> {
+        std::u8string out;
+
+        for(; pos < pl.size(); pos++) {
+            if(pl[pos] == '[') {
+                // Начало команды
+                if(!out.empty()) {
+                    MAKE_ERROR("Отсутствует связь между текстурой и текущей командой " << pos);
+                }
+
+                // out.push_back(TexturePipelineCMD::Combine);
+                auto [next_size, subcmd] = parse_cmd(pos+1, {});
+                pos = next_size-1;
+                out = subcmd;
+            } else if(pl[pos] == '^') {
+                // Объединение
+                if(out.empty()) {
+                    MAKE_ERROR("Отсутствует текстура для комбинирования " << pos);
+
+                    auto [next_pos, subcmd] = parse_obj(pos+1);
+                    std::u8string cmd;
+                    cmd.push_back(uint8_t(TexturePipelineCMD::Combine));
+                    cmd.insert(cmd.end(), out.begin(), out.end());
+                    cmd.insert(cmd.end(), subcmd.begin(), subcmd.end());
+
+                    return {next_pos, cmd};
+                }
+            } else if(pl[pos] == '$') {
+                // Готовый набор команд будет использован как аргумент
+                pos++;
+                if(pos >= pl.size() || pl[pos] != '[')
+                    MAKE_ERROR("Ожидалось объявление команды " << pos);
+                auto [next_pos, subcmd] = parse_cmd(pos, out);
+                pos = next_pos-1;
+                out = subcmd;
+            } else if(pl[pos] == '(') {
+                if(!out.empty()) {
+                    MAKE_ERROR("Начато определение группы после текстуры, вероятно пропущен знак объединения ^ " << pos);
+                }
+
+                // Начало группы
+                auto [next_pos, subcmd] = parse_obj(pos+1);
+                pos = next_pos-1;
+                out = subcmd;
+            } else if(pl[pos] == ')') {
+                return {pos+1, out};
+            } else {
+                // Это текстура, нужно её имя
+                if(!out.empty())
+                    MAKE_ERROR("Отсутствует связь между текстурой и текущим объявлением текстуры " << pos);
+
+                out.push_back(uint8_t(TexturePipelineCMD::Texture));
+                std::string texture_name;
+                for(; pos < pl.size(); pos++) {
+                    if(pl[pos] == '^' || pl[pos] == ')' || pl[pos] == ']')
+                        break;
+                    else if(pl[pos] != '.' && pl[pos] != ':' && alpha.find_first_of(pl[pos]) != std::string::npos)
+                        MAKE_ERROR("Недействительные символы в объявлении текстуры " << pos);
+                    else
+                        texture_name += pl[pos];
+                }
+
+                BinTextureId_t id = stbt[texture_name];
+                btis.insert(id);
+
+                for(int iter = 0; iter < 4; iter++)
+                    out.push_back((id >> (iter * 8)) & 0xff);
+
+                if(pos < pl.size())
+                    pos--;
+            }
+        }
+
+        return {pos, out};
+    };
+
+    auto [pos, cmd] = parse_obj(0);
+
+    if(pos < pl.size()) {
+        MAKE_ERROR("Неожиданное продолжение " << pos);
+    }
+
+    return {std::vector<BinTextureId_t>(btis.begin(), btis.end()), cmd};
+}
+
+std::string GameServer::deBuildTexturePipeline(const TexturePipeline& pipeline) {
+    return "";
+}
+
 
 void GameServer::init(fs::path worldPath) {
     Expanse.Worlds[0] = std::make_unique<World>(0);
@@ -776,6 +931,60 @@ void GameServer::run() {
     }
 
     LOG.info() << "Сервер завершил работу";
+}
+
+std::vector<GameServer::ModInfo> GameServer::readModDataPath(const fs::path& modsDir) {
+    if(!fs::exists(modsDir))
+        return {};
+    
+    std::vector<GameServer::ModInfo> infos;
+
+    try {
+        fs::directory_iterator begin(modsDir), end;
+        for(; begin != end; begin++) {
+            if(!begin->is_directory())
+                continue;
+
+            fs::path mod_conf = begin->path() / "mod.json";
+            if(!fs::exists(mod_conf)) {
+                LOG.debug() << "Директория в папке с модами не содержит файл mod.json: " << begin->path().filename();
+                continue;
+            }
+
+            try {
+                std::ifstream fd(mod_conf);
+                js::object obj = js::parse(fd).as_object();
+
+                GameServer::ModInfo info;
+
+                info.Id = obj.at("Id").as_string();
+                info.Title = obj.contains("Title") ? obj["Title"].as_string() : "";
+                info.Description = obj.contains("Description") ? obj["Description"].as_string() : "";
+
+                if(obj.contains("Dependencies")) {
+                    js::array arr = obj["Dependencies"].as_array();
+                    for(auto& iter : arr) {
+                        info.Dependencies.push_back((std::string) iter.as_string());
+                    }
+                }
+
+                if(obj.contains("OptionalDependencies")) {
+                    js::array arr = obj["OptionalDependencies"].as_array();
+                    for(auto& iter : arr) {
+                        info.OptionalDependencies.push_back((std::string) iter.as_string());
+                    }
+                }
+
+            } catch(const std::exception &exc) {
+                LOG.warn() << "Не удалось прочитать " << mod_conf.string();
+            }
+        }
+    } catch(const std::exception &exc) {
+        LOG.warn() << "Не удалось прочитать моды из директории " << modsDir.string() << "\n" << exc.what();
+    }
+
+
+    return infos;
 }
 
 void GameServer::stepConnections() {
@@ -1535,6 +1744,21 @@ void GameServer::stepSyncContent() {
 
     if(!full.BinFont.empty())
         Content.Font.needResourceResponse(full.BinFont);
+
+    if(!full.Node.empty()) {
+        std::unordered_map<DefNodeId_t, DefNode_t*> nodeDefines;
+
+        for(DefNodeId_t id : full.Node) {
+            auto iter = Content.NodeDefines.find(id);
+            if(iter != Content.NodeDefines.end()) {
+                nodeDefines[id] = &iter->second;
+            }
+        }
+
+        for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
+            cec->Remote->informateDefNode(nodeDefines);
+        }
+    }
 }
 
 

@@ -72,6 +72,10 @@ class GameServer : public AsyncObject {
               Font(ioc, zeroFont)
         {}
 
+
+        std::map<DefNodeId_t, DefNode_t> NodeDefines;
+        std::map<std::string, DefNodeId_t> NodeKeys;
+
     } Content;
 
     struct {
@@ -157,6 +161,7 @@ class GameServer : public AsyncObject {
             RunCollect = Threads.size();
             RunCompress = Threads.size();
             Iteration += 1;
+            assert(RunCollect != 0);
             Symaphore.notify_all();
         }
 
@@ -181,7 +186,7 @@ class GameServer : public AsyncObject {
                 thread.join();
         }
 
-        void run(int id);
+        __attribute__((optimize("O3"))) void run(int id);
     } BackingChunkPressure;
 
     /*
@@ -273,13 +278,22 @@ public:
     // Инициализация игрового протокола для сокета (onSocketAuthorized() может передать сокет в onSocketGame())
     coro<> pushSocketGameProtocol(tcp::socket socket, const std::string username);
 
-    /* Загрузит, сгенерирует или просто выдаст регион из мира, который должен существовать */
-    Region* forceGetRegion(WorldId_t worldId, Pos::GlobalRegion pos);
+    TexturePipeline buildTexturePipeline(const std::string& pipeline);
+    std::string deBuildTexturePipeline(const TexturePipeline& pipeline);
 
 private:
     void init(fs::path worldPath);
     void prerun();
     void run();
+
+    struct ModInfo {
+        std::string Id, Title, Description;
+        fs::path Path;
+
+        std::vector<std::string> Dependencies, OptionalDependencies;
+    };
+
+    std::vector<ModInfo> readModDataPath(const fs::path& modsDir);
 
     /*
         Подключение/отключение игроков

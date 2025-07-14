@@ -71,4 +71,6 @@ vec4 atlasColor(uint texId, vec2 uv)
 
 void main() {
     Frame = atlasColor(Fragment.Texture, Fragment.UV);
+    if(Frame.w == 0)
+        discard;
 }

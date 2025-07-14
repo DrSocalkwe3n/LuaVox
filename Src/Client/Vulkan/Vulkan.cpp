@@ -2695,7 +2695,7 @@ Buffer& Buffer::operator=(Buffer &&obj) {
 	std::swap(Memory, obj.Memory);
 	std::swap(Size, obj.Size);
 	obj.Instance = nullptr;
-
+	
 	return *this;
 }
 

@@ -17,7 +17,6 @@
 #include <unordered_set>
 
 namespace LV::Server {
-using HASH = std::array<uint8_t, 32>;
 
 template<typename ServerKey, typename ClientKey, std::enable_if_t<sizeof(ServerKey) >= sizeof(ClientKey), int> = 0>
 class CSChunkedMapper {
@@ -140,11 +139,8 @@ public:
     этих ресурсов и переотправлять их клиенту
 */
 struct ResourceRequest {
-    std::vector<BinTextureId_t>     BinTexture;
-    std::vector<BinAnimationId_t>   BinAnimation;
-    std::vector<BinModelId_t>       BinModel;
-    std::vector<BinSoundId_t>       BinSound;
-    std::vector<BinFontId_t>        BinFont;
+    std::vector<Hash_t>           Hashes;
+    std::vector<ResourceId_t>     BinToHash[5];
 
     std::vector<DefVoxelId_t>       Voxel;
     std::vector<DefNodeId_t>        Node;
@@ -154,11 +150,9 @@ struct ResourceRequest {
     std::vector<DefItemId_t>        Item;
 
     void insert(const ResourceRequest &obj) {
-        BinTexture.insert(BinTexture.end(), obj.BinTexture.begin(), obj.BinTexture.end());
-        BinAnimation.insert(BinAnimation.end(), obj.BinAnimation.begin(), obj.BinAnimation.end());
-        BinModel.insert(BinModel.end(), obj.BinModel.begin(), obj.BinModel.end());
-        BinSound.insert(BinSound.end(), obj.BinSound.begin(), obj.BinSound.end());
-        BinFont.insert(BinFont.end(), obj.BinFont.begin(), obj.BinFont.end());
+        Hashes.insert(Hashes.end(), obj.Hashes.begin(), obj.Hashes.end());
+        for(int iter = 0; iter < 5; iter++)
+            BinToHash[iter].insert(BinToHash[iter].end(), obj.BinToHash[iter].begin(), obj.BinToHash[iter].end());
 
         Voxel.insert(Voxel.end(), obj.Voxel.begin(), obj.Voxel.end());
         Node.insert(Node.end(), obj.Node.begin(), obj.Node.end());
@@ -169,9 +163,7 @@ struct ResourceRequest {
     }
 
     void uniq() {
-        for(std::vector<ResourceId_t> *vec : {
-                &BinTexture, &BinAnimation, &BinModel, &BinSound, 
-                &BinFont, &Voxel, &Node, &World,
+        for(std::vector<ResourceId_t> *vec : {&BinToHash, &Voxel, &Node, &World,
                 &Portal, &Entity, &Item
             })
         {
@@ -179,6 +171,10 @@ struct ResourceRequest {
             auto last = std::unique(vec->begin(), vec->end());
             vec->erase(last, vec->end());
         }
+
+        std::sort(Hashes.begin(), Hashes.end());
+        auto last = std::unique(Hashes.begin(), Hashes.end());
+        Hashes.erase(last, Hashes.end());
     }
 };
 
@@ -199,7 +195,9 @@ class RemoteClient {
     DestroyLock UseLock;
     Net::AsyncSocket Socket;
     bool IsConnected = true, IsGoingShutdown = false;
-    std::vector<HASH> ClientBinaryCache;
+    
+    std::vector<Hash_t> ClientBinaryCache, // Хеши ресурсов которые есть у клиента
+        NeedToSend; // Хеши которые нужно получить и отправить
 
     /*
         При обнаружении нового контента составляется запрос (ResourceRequest)
@@ -209,12 +207,8 @@ class RemoteClient {
     */
 
     struct ResUsesObj {
-        // Счётчики использования двоичных кэшируемых ресурсов
-        std::map<BinTextureId_t,    uint32_t>      BinTexture;
-        std::map<BinAnimationId_t,  uint32_t>    BinAnimation;
-        std::map<BinModelId_t,      uint32_t>        BinModel;
-        std::map<BinSoundId_t,      uint32_t>        BinSound;
-        std::map<BinFontId_t,       uint32_t>         BinFont;
+        // Счётчики использования двоичных кэшируемых ресурсов + хэш привязанный к идентификатору
+        std::map<ResourceId_t,      std::tuple<uint32_t, Hash_t>>      BinUse[5];
 
         // Счётчики использование профилей контента
         std::map<DefVoxelId_t,      uint32_t>        DefVoxel; // Один чанк, одно использование
@@ -226,39 +220,17 @@ class RemoteClient {
 
         // Зависимость профилей контента от профилей ресурсов
         // Нужно чтобы пересчитать зависимости к профилям ресурсов
-        struct RefDefVoxel_t {
-            std::vector<BinTextureId_t> Texture;
-            std::vector<BinSoundId_t> Sound;
+        struct RefDefBin_t {
+            std::vector<ResourceId_t> Resources[5];
         };
-        std::map<DefVoxelId_t, RefDefVoxel_t>           RefDefVoxel;
-        struct RefDefNode_t {
-            std::vector<BinModelId_t> Model;
-            std::vector<BinSoundId_t> Sound;
-        };
-        std::map<DefNodeId_t, RefDefNode_t>             RefDefNode;
-        struct RefDefWorld_t {
-            std::vector<BinTextureId_t> Texture;
-            std::vector<BinModelId_t> Model;
-        };
-        std::map<WorldId_t, RefDefWorld_t>              RefDefWorld;
-        struct RefDefPortal_t {
-            std::vector<BinTextureId_t> Texture;
-            std::vector<BinAnimationId_t> Animation;
-            std::vector<BinModelId_t> Model;
-        };
-        std::map<DefPortalId_t, RefDefPortal_t>           RefDefPortal;
-        struct RefDefEntity_t {
-            std::vector<BinTextureId_t> Texture;
-            std::vector<BinAnimationId_t> Animation;
-            std::vector<BinModelId_t> Model;
-        };
-        std::map<DefEntityId_t, RefDefEntity_t>           RefDefEntity;
-        struct RefDefItem_t {
-            std::vector<BinTextureId_t> Texture;
-            std::vector<BinAnimationId_t> Animation;
-            std::vector<BinModelId_t> Model;
-        };
-        std::map<DefItemId_t, RefDefItem_t>             RefDefItem;
+
+
+        std::map<DefVoxelId_t, RefDefBin_t>           RefDefVoxel;
+        std::map<DefNodeId_t, RefDefBin_t>            RefDefNode;
+        std::map<WorldId_t, RefDefBin_t>              RefDefWorld;
+        std::map<DefPortalId_t, RefDefBin_t>          RefDefPortal;
+        std::map<DefEntityId_t, RefDefBin_t>          RefDefEntity;
+        std::map<DefItemId_t, RefDefBin_t>            RefDefItem;
 
         // Модификационные зависимости экземпляров профилей контента
         struct ChunkRef {
@@ -300,7 +272,7 @@ public:
     TOS::SpinlockObject<std::queue<uint8_t>> Actions;
 
 public:
-    RemoteClient(asio::io_context &ioc, tcp::socket socket, const std::string username, std::vector<HASH> &&client_cache)
+    RemoteClient(asio::io_context &ioc, tcp::socket socket, const std::string username, std::vector<ResourceFile::Hash_t> &&client_cache)
         : LOG("RemoteClient " + username), Socket(ioc, std::move(socket)), Username(username), ClientBinaryCache(std::move(client_cache))
     {
     }
@@ -366,16 +338,16 @@ public:
     // Сюда приходят все обновления ресурсов движка
     // Глобально их можно запросить в выдаче pushPreparedPackets()
 
-    // Двоичные файлы
-    void informateBinTexture(const std::unordered_map<BinTextureId_t, std::shared_ptr<ResourceFile>> &textures);
-    void informateBinAnimation(const std::unordered_map<BinAnimationId_t, std::shared_ptr<ResourceFile>> &animations);
-    void informateBinModel(const std::unordered_map<BinModelId_t, std::shared_ptr<ResourceFile>> &models);
-    void informateBinSound(const std::unordered_map<BinSoundId_t, std::shared_ptr<ResourceFile>> &sounds);
-    void informateBinFont(const std::unordered_map<BinFontId_t, std::shared_ptr<ResourceFile>> &fonts);
+    // Оповещение о ресурсе для отправки клиентам
+    void informateBinary(const std::vector<std::shared_ptr<ResourceFile>>& resources);
+
+    // Привязывает локальный идентификатор с хешем. Если его нет у клиента, 
+    // то делается запрос на получение ресурсы для последующей отправки клиенту
+    void informateIdToHash(const std::vector<std::tuple<EnumBinResource, ResourceId_t, Hash_t>>& resourcesLink);
 
     // Игровые определения
     void informateDefVoxel(const std::unordered_map<DefVoxelId_t, void*> &voxels);
-    void informateDefNode(const std::unordered_map<DefNodeId_t, void*> &nodes);
+    void informateDefNode(const std::unordered_map<DefNodeId_t, DefNode_t*> &nodes);
     void informateDefWorld(const std::unordered_map<DefWorldId_t, void*> &worlds);
     void informateDefPortal(const std::unordered_map<DefPortalId_t, void*> &portals);
     void informateDefEntity(const std::unordered_map<DefEntityId_t, void*> &entityes);
@@ -387,15 +359,8 @@ private:
     coro<> readPacket(Net::AsyncSocket &sock);
     coro<> rP_System(Net::AsyncSocket &sock);
 
-    void incrementBinary(const std::vector<BinTextureId_t> &textures, const std::vector<BinAnimationId_t> &animation,
-        const std::vector<BinSoundId_t> &sounds, const std::vector<BinModelId_t> &models,
-        const std::vector<BinFontId_t> &fonts
-    );
-    void decrementBinary(std::vector<BinTextureId_t>&& textures, std::vector<BinAnimationId_t>&& animation,
-        std::vector<BinSoundId_t>&& sounds, std::vector<BinModelId_t>&& models,
-        std::vector<BinFontId_t>&& fonts
-    );
-    void informateBin(ToClient::L2Resource type, ResourceId_t id, const std::shared_ptr<ResourceFile>& pair);
+    void incrementBinary(const ResUsesObj::RefDefBin_t& bin);
+    void decrementBinary(ResUsesObj::RefDefBin_t&& bin);
 
     // void incrementProfile(const std::vector<TextureId_t> &textures, const std::vector<ModelId_t> &model,
     //     const std::vector<SoundId_t> &sounds, const std::vector<FontId_t> &font

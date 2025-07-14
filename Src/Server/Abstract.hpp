@@ -3,18 +3,12 @@
 #include <cstdint>
 #include <Common/Abstract.hpp>
 #include <Common/Collide.hpp>
-#include <boost/uuid/detail/sha1.hpp>
+#include <sha2.hpp>
 #include <string>
 #include <unordered_map>
 
 
 namespace LV::Server {
-
-struct TexturePipeline {
-    std::vector<BinTextureId_t> BinTextures;
-    std::u8string Pipeline;
-};
-
 
 // В одном регионе может быть максимум 2^16 сущностей. Клиенту адресуются сущности в формате <мир>+<позиция региона>+<uint16_t>
 // И если сущность перешла из одного региона в другой, идентификатор сущности на стороне клиента сохраняется
@@ -39,15 +33,13 @@ using DefGeneratorId_t = ResourceId_t;
 */
 
 struct ResourceFile {
-    using Hash_t = boost::uuids::detail::sha1::digest_type;
+    using Hash_t = sha2::sha256_hash; // boost::uuids::detail::sha1::digest_type;
 
     Hash_t Hash;
     std::vector<std::byte> Data;
 
     void calcHash() {
-        boost::uuids::detail::sha1 hash;
-        hash.process_bytes(Data.data(), Data.size());
-        hash.get_digest(Hash);
+        Hash = sha2::sha256((const uint8_t*) Data.data(), Data.size());
     }
 };
 

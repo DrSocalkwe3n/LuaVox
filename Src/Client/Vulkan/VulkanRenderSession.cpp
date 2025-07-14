@@ -1,11 +1,13 @@
 #include "VulkanRenderSession.hpp"
 #include "Client/Abstract.hpp"
+#include "Client/Vulkan/Abstract.hpp"
 #include "Client/Vulkan/Vulkan.hpp"
 #include "Common/Abstract.hpp"
 #include "TOSLib.hpp"
 #include "assets.hpp"
 #include "glm/ext/matrix_transform.hpp"
 #include "glm/ext/scalar_constants.hpp"
+#include "glm/matrix.hpp"
 #include "glm/trigonometric.hpp"
 #include <cstddef>
 #include <memory>
@@ -211,7 +213,8 @@ void VulkanRenderSession::init(Vulkan *instance) {
                 "willow_wood.png",
                 "tropical_rainforest_wood.png",
                 "xnether_blue_wood.png",
-                "xnether_purple_wood.png"
+                "xnether_purple_wood.png",
+                "frame.png"
         }) {
             ByteBuffer image = VK::loadPNG(getResource(std::string("textures/") + path)->makeStream().Stream, width, height, hasAlpha);
             uint16_t texId = VKCTX->MainTest.atlasAddTexture(width, height);
@@ -229,34 +232,65 @@ void VulkanRenderSession::init(Vulkan *instance) {
 
         {
             NodeVertexStatic *array = (NodeVertexStatic*) VKCTX->TestQuad.mapMemory();
-            array[0] = {135,    135,    135-64, 0, 0, 0, 0, 0,      0};
-            array[1] = {135+16,    135,   135-64, 0, 0, 0, 0, 65535,  0};
-            array[2] = {135+16, 135+16, 135-64, 0, 0, 0, 0, 65535,  65535};
-            array[3] = {135,    135,    135-64, 0, 0, 0, 0, 0,      0};
-            array[4] = {135+16, 135+16, 135-64, 0, 0, 0, 0, 65535,  65535};
-            array[5] = {135, 135+16, 135-64, 0, 0, 0, 0, 0,      65535};
+            array[0] = {135,    135,    135, 0, 0, 0, 0, 65535,      0};
+            array[1] = {135,    135+16,   135, 0, 0, 0, 0, 0,  65535};
+            array[2] = {135+16, 135+16, 135, 0, 0, 0, 0, 0,  65535};
+            array[3] = {135,    135,    135, 0, 0, 0, 0, 65535,      0};
+            array[4] = {135+16, 135+16, 135, 0, 0, 0, 0, 0,  65535};
+            array[5] = {135+16, 135, 135, 0, 0, 0, 0, 0,      0};
 
+            array[6] = {135,    135,    135+16, 0, 0, 0, 0, 0,      0};
+            array[7] = {135+16,    135,   135+16, 0, 0, 0, 0, 65535,  0};
+            array[8] = {135+16, 135+16, 135+16, 0, 0, 0, 0, 65535,  65535};
+            array[9] = {135,    135,    135+16, 0, 0, 0, 0, 0,      0};
+            array[10] = {135+16, 135+16, 135+16, 0, 0, 0, 0, 65535,  65535};
+            array[11] = {135, 135+16, 135+16, 0, 0, 0, 0, 0,      65535};
 
-            array[6] = {135,    135,    135-64-16, 0, 0, 0, 0, 0,      0};
-            array[7] = {135,    135,   135-64, 0, 0, 0, 0, 65535,  0};
-            array[8] = {135, 135+16, 135-64, 0, 0, 0, 0, 65535,  65535};
-            array[9] = {135,    135,    135-64-16, 0, 0, 0, 0, 0,      0};
-            array[10] = {135, 135+16, 135-64, 0, 0, 0, 0, 65535,  65535};
-            array[11] = {135, 135+16, 135-64-16, 0, 0, 0, 0, 0,      65535};
+            array[12] = {135,    135,    135, 0, 0, 0, 0, 0,      0};
+            array[13] = {135,    135,   135+16, 0, 0, 0, 0, 65535,  0};
+            array[14] = {135, 135+16, 135+16, 0, 0, 0, 0, 65535,  65535};
+            array[15] = {135,    135,    135, 0, 0, 0, 0, 0,      0};
+            array[16] = {135, 135+16, 135+16, 0, 0, 0, 0, 65535,  65535};
+            array[17] = {135, 135+16, 135, 0, 0, 0, 0, 0,      65535};
 
+            array[18] = {135+16,    135,    135+16, 0, 0, 0, 0, 0,      0};
+            array[19] = {135+16,    135,   135, 0, 0, 0, 0, 65535,  0};
+            array[20] = {135+16, 135+16, 135, 0, 0, 0, 0, 65535,  65535};
+            array[21] = {135+16,    135,    135+16, 0, 0, 0, 0, 0,      0};
+            array[22] = {135+16, 135+16, 135, 0, 0, 0, 0, 65535,  65535};
+            array[23] = {135+16, 135+16, 135+16, 0, 0, 0, 0, 0,      65535};
 
-            array[12] = {135,    135,    135-64, 0, 0, 0, 0, 0,      0};
-            array[13] = {135+16,    135,   135-64, 0, 0, 0, 0, 65535,  0};
-            array[14] = {135+16, 135, 135-64-16, 0, 0, 0, 0, 65535,  65535};
-            array[15] = {135,    135,    135-64, 0, 0, 0, 0, 0,      0};
-            array[16] = {135+16, 135, 135-64-16, 0, 0, 0, 0, 65535,  65535};
-            array[17] = {135, 135, 135-64-16, 0, 0, 0, 0, 0,      65535};
+            array[24] = {135,    135,    135, 0, 0, 0, 0, 0,      0};
+            array[25] = {135+16,    135,   135, 0, 0, 0, 0, 65535,  0};
+            array[26] = {135+16, 135, 135+16, 0, 0, 0, 0, 65535,  65535};
+            array[27] = {135,    135,    135, 0, 0, 0, 0, 0,      0};
+            array[28] = {135+16, 135, 135+16, 0, 0, 0, 0, 65535,  65535};
+            array[29] = {135, 135, 135+16, 0, 0, 0, 0, 0,      65535};
 
-            for(int iter = 0; iter < 18; iter++) {
-                array[18+iter] = array[iter];
-                array[18+iter].FZ -= 32;
+            array[30] = {135,    135+16,    135+16, 0, 0, 0, 0, 0,      0};
+            array[31] = {135+16,    135+16,   135+16, 0, 0, 0, 0, 65535,  0};
+            array[32] = {135+16, 135+16, 135, 0, 0, 0, 0, 65535,  65535};
+            array[33] = {135,    135+16,    135+16, 0, 0, 0, 0, 0,      0};
+            array[34] = {135+16, 135+16, 135, 0, 0, 0, 0, 65535,  65535};
+            array[35] = {135, 135+16, 135, 0, 0, 0, 0, 0,      65535};
+
+            for(int iter = 0; iter < 36; iter++) {
+                array[iter].Tex = 6;
+                if(array[iter].FX == 135)
+                    array[iter].FX--;
+                else
+                    array[iter].FX++;
+
+                if(array[iter].FY == 135)
+                    array[iter].FY--;
+                else
+                    array[iter].FY++;
+
+                if(array[iter].FZ == 135)
+                    array[iter].FZ--;
+                else
+                    array[iter].FZ++;
             }
-
 
             VKCTX->TestQuad.unMapMemory();
         }
@@ -627,15 +661,11 @@ void VulkanRenderSession::init(Vulkan *instance) {
     }
 }
 
-void VulkanRenderSession::onBinaryResourceAdd(std::unordered_map<EnumBinResource, std::unordered_map<ResourceId_t, BinaryResource>>) {
+void VulkanRenderSession::onBinaryResourceAdd(std::vector<Hash_t>) {
 
 }
 
-void VulkanRenderSession::onBinaryResourceLost(std::unordered_map<EnumBinResource, std::vector<ResourceId_t>>) {
-
-}
-
-void VulkanRenderSession::onContentDefinesAdd(std::unordered_map<EnumDefContent, std::unordered_map<ResourceId_t, std::u8string>>) {
+void VulkanRenderSession::onContentDefinesAdd(std::unordered_map<EnumDefContent, std::vector<ResourceId_t>>) {
 
 }
 
@@ -643,7 +673,6 @@ void VulkanRenderSession::onContentDefinesLost(std::unordered_map<EnumDefContent
 
 }
 
-int changed = 0;
 void VulkanRenderSession::onChunksChange(WorldId_t worldId, const std::unordered_set<Pos::GlobalChunk>& changeOrAddList, const std::unordered_set<Pos::GlobalRegion>& remove) {
     auto &table = External.ChunkVoxelMesh[worldId];
 
@@ -668,7 +697,6 @@ void VulkanRenderSession::onChunksChange(WorldId_t worldId, const std::unordered
         if(vertexs2.empty()) {
             VKCTX->VertexPool_Nodes.dropVertexs(std::get<1>(buffers));
         } else {
-            changed++;
             auto &nodes = std::get<1>(buffers);
             VKCTX->VertexPool_Nodes.relocate(nodes, std::move(vertexs2));
         }
@@ -678,8 +706,6 @@ void VulkanRenderSession::onChunksChange(WorldId_t worldId, const std::unordered
             if(iter != table.end())
                 table.erase(iter);
         }
-
-        TOS::Logger("Vul").debug() << "Обработано " << changed;
     }
 
     for(Pos::GlobalRegion pos : remove) {
@@ -717,7 +743,7 @@ void VulkanRenderSession::beforeDraw() {
 void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuffer drawCmd) {
     {
         X64Offset = Pos & ~((1 << Pos::Object_t::BS_Bit << 4 << 2)-1);
-        X64Offset_f = glm::vec3(X64Offset) / float(Pos::Object_t::BS);
+        X64Offset_f = glm::vec3(X64Offset >> Pos::Object_t::BS_Bit);
         X64Delta = glm::vec3(Pos-X64Offset) / float(Pos::Object_t::BS);
     }
 
@@ -817,7 +843,21 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
     Delta += dTime;
 
     PCO.Model = glm::mat4(1);
-    PCO.Model = glm::translate(PCO.Model, -X64Offset_f);
+    //PCO.Model = glm::translate(PCO.Model, -X64Offset_f);
+    // glm::quat quat = glm::inverse(Quat);
+
+    {
+
+        // auto *srv = (class ServerSession*) ServerSession;
+
+        glm::vec4 v = glm::mat4(glm::inverse(Quat))*glm::vec4(0, 0, -6, 1);
+
+        Pos::GlobalNode pos = (Pos::GlobalNode) (glm::vec3) v;
+
+        pos += (Pos-X64Offset) >> Pos::Object_t::BS_Bit;
+        PCO.Model = glm::translate(PCO.Model, glm::vec3(pos));
+    }
+    
 
     {
         glm::mat4 proj = glm::perspective<float>(glm::radians(75.f), float(VkInst->Screen.Width)/float(VkInst->Screen.Height), 0.5, std::pow(2, 17));
@@ -832,7 +872,7 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
         // Смещаем мир относительно позиции игрока, чтобы игрок в пространстве рендера оказался в нулевых координатах
         view = glm::translate(view, -X64Delta);
         // Поворачиваем мир обратно взгляду игрока, чтобы его взгляд стал по направлению оси -z
-        view = glm::mat4(-Quat)*view;
+        view = glm::mat4(Quat)*view;
 
         // Сначала применяется матрица вида, потом проекции
         PCO.ProjView = proj*view;

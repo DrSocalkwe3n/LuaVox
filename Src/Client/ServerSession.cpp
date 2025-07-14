@@ -3,6 +3,7 @@
 #include "Common/Abstract.hpp"
 #include "Common/Net.hpp"
 #include "TOSLib.hpp"
+#include "glm/ext/quaternion_geometric.hpp"
 #include <GLFW/glfw3.h>
 #include <boost/asio/deadline_timer.hpp>
 #include <boost/asio/this_coro.hpp>
@@ -24,8 +25,8 @@ struct PP_Content_ChunkVoxels : public ParsedPacket {
     Pos::GlobalChunk Pos;
     std::vector<VoxelCube> Cubes;
 
-    PP_Content_ChunkVoxels(ToClient::L1 l1, uint8_t l2, WorldId_t id, Pos::GlobalChunk pos, std::vector<VoxelCube> &&cubes)
-        : ParsedPacket(l1, l2), Id(id), Pos(pos), Cubes(std::move(cubes))
+    PP_Content_ChunkVoxels(WorldId_t id, Pos::GlobalChunk pos, std::vector<VoxelCube> &&cubes)
+        : ParsedPacket(ToClient::L1::Content, (uint8_t) ToClient::L2Content::ChunkVoxels), Id(id), Pos(pos), Cubes(std::move(cubes))
     {}
 };
 
@@ -34,8 +35,8 @@ struct PP_Content_ChunkNodes : public ParsedPacket {
     Pos::GlobalChunk Pos;
     std::array<Node, 16*16*16> Nodes;
 
-    PP_Content_ChunkNodes(ToClient::L1 l1, uint8_t l2, WorldId_t id, Pos::GlobalChunk pos)
-        : ParsedPacket(l1, l2), Id(id), Pos(pos)
+    PP_Content_ChunkNodes(WorldId_t id, Pos::GlobalChunk pos)
+        : ParsedPacket(ToClient::L1::Content, (uint8_t) ToClient::L2Content::ChunkNodes), Id(id), Pos(pos)
     {
     }
 };
@@ -44,8 +45,36 @@ struct PP_Content_RegionRemove : public ParsedPacket {
     WorldId_t Id;
     Pos::GlobalRegion Pos;
 
-    PP_Content_RegionRemove(ToClient::L1 l1, uint8_t l2, WorldId_t id, Pos::GlobalRegion pos)
-        : ParsedPacket(l1, l2), Id(id), Pos(pos)
+    PP_Content_RegionRemove(WorldId_t id, Pos::GlobalRegion pos)
+        : ParsedPacket(ToClient::L1::Content, (uint8_t) ToClient::L2Content::RemoveRegion), Id(id), Pos(pos)
+    {}
+};
+
+struct PP_Definition_FreeNode : public ParsedPacket {
+    DefNodeId_t Id;
+
+    PP_Definition_FreeNode(DefNodeId_t id)
+        : ParsedPacket(ToClient::L1::Definition, (uint8_t) ToClient::L2Definition::Node), 
+            Id(id)
+    {}
+};
+
+struct PP_Definition_Node : public ParsedPacket {
+    DefNodeId_t Id;
+    DefNode_t Def;
+
+    PP_Definition_Node(DefNodeId_t id, DefNode_t def)
+        : ParsedPacket(ToClient::L1::Definition, (uint8_t) ToClient::L2Definition::Node), 
+            Id(id), Def(def)
+    {}
+};
+
+struct PP_Resource_InitResSend : public ParsedPacket {
+    Hash_t Hash;
+    BinaryResource Resource;
+
+    PP_Resource_InitResSend(Hash_t hash, BinaryResource res)
+        : ParsedPacket(ToClient::L1::Resource, (uint8_t) ToClient::L2Resource::InitResSend), Hash(hash), Resource(res)
     {}
 };
 
@@ -283,11 +312,32 @@ void ServerSession::atFreeDrawTime(GlobalTime gTime, float dTime) {
 
     {
         std::unordered_map<WorldId_t, std::tuple<std::unordered_set<Pos::GlobalChunk>, std::unordered_set<Pos::GlobalRegion>>> changeOrAddList_removeList;
+        std::unordered_map<EnumDefContent, std::vector<ResourceId_t>> onContentDefinesAdd;
+        std::unordered_map<EnumDefContent, std::vector<ResourceId_t>> onContentDefinesLost;
 
         // Пакеты
         ParsedPacket *pack;
         while(NetInputPackets.pop(pack)) {
-            if(pack->Level1 == ToClient::L1::Content) {
+            if(pack->Level1 == ToClient::L1::Definition) {
+                ToClient::L2Resource l2 = ToClient::L2Resource(pack->Level2);
+                if(l2 == ToClient::L2Resource::InitResSend) {
+                    PP_Resource_InitResSend &p = *dynamic_cast<PP_Resource_InitResSend*>(pack);
+                    
+                }
+
+            } else if(pack->Level1 == ToClient::L1::Definition) {
+                ToClient::L2Definition l2 = ToClient::L2Definition(pack->Level2);
+                if(l2 == ToClient::L2Definition::Node) {
+                    PP_Definition_Node &p = *dynamic_cast<PP_Definition_Node*>(pack);
+                    Registry.DefNode[p.Id] = p.Def;
+                    onContentDefinesAdd[EnumDefContent::Node].push_back(p.Id);
+                } else if(l2 == ToClient::L2Definition::FreeNode) {
+                    PP_Definition_FreeNode &p = *dynamic_cast<PP_Definition_FreeNode*>(pack);
+                    onContentDefinesLost[EnumDefContent::Node].push_back(p.Id);
+                }
+
+
+            } else if(pack->Level1 == ToClient::L1::Content) {
                 ToClient::L2Content l2 = ToClient::L2Content(pack->Level2);
                 if(l2 == ToClient::L2Content::ChunkVoxels) {
                     PP_Content_ChunkVoxels &p = *dynamic_cast<PP_Content_ChunkVoxels*>(pack);
@@ -339,6 +389,14 @@ void ServerSession::atFreeDrawTime(GlobalTime gTime, float dTime) {
 
                 RS->onChunksChange(pair.first, std::get<0>(pair.second), std::get<1>(pair.second));
             }
+
+            if(!onContentDefinesAdd.empty()) {
+                RS->onContentDefinesAdd(std::move(onContentDefinesAdd));
+            }
+
+            if(!onContentDefinesLost.empty()) {
+                RS->onContentDefinesLost(std::move(onContentDefinesLost));
+            }
         }
     }
 
@@ -348,7 +406,10 @@ void ServerSession::atFreeDrawTime(GlobalTime gTime, float dTime) {
 
         glm::quat quat =
             glm::angleAxis(PYR.x-deltaTime*PYR_Offset.x, glm::vec3(1.f, 0.f, 0.f))
-            *   glm::angleAxis(PYR.y-deltaTime*PYR_Offset.y, glm::vec3(0.f, -1.f, 0.f));
+            *
+            glm::angleAxis(PYR.y-deltaTime*PYR_Offset.y, glm::vec3(0.f, -1.f, 0.f));
+
+        quat = glm::normalize(quat);
 
         if(RS)
             RS->setCameraPos(0, Pos, quat);
@@ -360,7 +421,7 @@ void ServerSession::atFreeDrawTime(GlobalTime gTime, float dTime) {
             LastSendPYR_POS = gTime;
             Net::Packet packet;
             ToServer::PacketQuat q;
-            q.fromQuat(quat);
+            q.fromQuat(glm::inverse(quat));
 
             packet << (uint8_t) ToServer::L1::System
                 << (uint8_t) ToServer::L2System::Test_CAM_PYR_POS
@@ -452,7 +513,7 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
 
     switch((ToClient::L2Resource) second) {
     case ToClient::L2Resource::Texture:
-
+    
         co_return;
     case ToClient::L2Resource::FreeTexture:
 
@@ -470,12 +531,26 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
 
         co_return;
     case ToClient::L2Resource::InitResSend:
+    {
+        uint32_t size = co_await sock.read<uint32_t>();
+        Hash_t hash;
+        co_await sock.read((std::byte*) hash.data(), hash.size());
+
+        uint32_t chunkSize = co_await sock.read<uint32_t>();
+        std::u8string data(size, '\0');
+
+        co_await sock.read((std::byte*) data.data(), data.size());
+
+        PP_Resource_InitResSend *packet = new PP_Resource_InitResSend(
+            hash,
+            std::make_shared<std::u8string>(std::move(data))
+        );
+
+        while(!NetInputPackets.push(packet));
 
         co_return;
+    }
     case ToClient::L2Resource::ChunkSend:
-    
-        co_return;
-    case ToClient::L2Resource::SendCanceled:
     
         co_return;
     default:
@@ -508,11 +583,38 @@ coro<> ServerSession::rP_Definition(Net::AsyncSocket &sock) {
         co_return;
     }
     case ToClient::L2Definition::Node:
+    {
+        DefNodeId_t id;
+        DefNode_t def;
+        id = co_await sock.read<DefNodeId_t>();
+        def.DrawType = (DefNode_t::EnumDrawType) co_await sock.read<uint8_t>();
+        for(int iter = 0; iter < 6; iter++) {
+            auto &pl = def.Texs[iter].Pipeline;
+            pl.resize(co_await sock.read<uint16_t>());
+            co_await sock.read((std::byte*) pl.data(), pl.size());
+        }
+
+        PP_Definition_Node *packet = new PP_Definition_Node(
+            id,
+            def
+        );
+
+        while(!NetInputPackets.push(packet));
 
         co_return;
+    }
     case ToClient::L2Definition::FreeNode:
+    {
+        DefNodeId_t id = co_await sock.read<DefNodeId_t>();
     
+        PP_Definition_FreeNode *packet = new PP_Definition_FreeNode(
+            id
+        );
+
+        while(!NetInputPackets.push(packet));
+
         co_return;
+    }
     case ToClient::L2Definition::Portal:
 
         co_return;
@@ -564,8 +666,6 @@ coro<> ServerSession::rP_Content(Net::AsyncSocket &sock) {
         co_await sock.read((std::byte*) compressed.data(), compressedSize);
 
         PP_Content_ChunkVoxels *packet = new PP_Content_ChunkVoxels(
-            ToClient::L1::Content,
-            (uint8_t) ToClient::L2Content::ChunkVoxels,
             wcId,
             pos,
             unCompressVoxels(compressed) // TODO: вынести в отдельный поток
@@ -588,8 +688,6 @@ coro<> ServerSession::rP_Content(Net::AsyncSocket &sock) {
         co_await sock.read((std::byte*) compressed.data(), compressedSize);
 
         PP_Content_ChunkNodes *packet = new PP_Content_ChunkNodes(
-            ToClient::L1::Content,
-            (uint8_t) ToClient::L2Content::ChunkNodes,
             wcId,
             pos
         );
@@ -609,8 +707,6 @@ coro<> ServerSession::rP_Content(Net::AsyncSocket &sock) {
         pos.unpack(co_await sock.read<Pos::GlobalRegion::Pack>());
 
         PP_Content_RegionRemove *packet = new PP_Content_RegionRemove(
-            ToClient::L1::Content,
-            (uint8_t) ToClient::L2Content::RemoveRegion,
             wcId,
             pos
         );

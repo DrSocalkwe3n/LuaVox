@@ -485,6 +485,28 @@ void unCompressNodes(const std::u8string& compressed, Node* ptr);
 std::u8string compressLinear(const std::u8string& data);
 std::u8string unCompressLinear(const std::u8string& data);
 
+enum struct TexturePipelineCMD : uint8_t {
+    Texture,    // Указание текстуры
+    Combine,    // Комбинирование
+
+};
+
+struct TexturePipeline {
+    std::vector<BinTextureId_t> BinTextures;
+    std::u8string Pipeline;
+};
+
+struct DefNode_t {
+    enum struct EnumDrawType : uint8_t {
+        NoDraw, // Не рисуется
+        Simple, // Простая нода с текстурами на каждой стороне
+    } DrawType = EnumDrawType::Simple;
+
+    TexturePipeline Texs[6];
+};
+
+using Hash_t = std::array<uint8_t, 32>;
+
 }
 
 

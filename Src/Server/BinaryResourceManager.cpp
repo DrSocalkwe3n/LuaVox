@@ -11,9 +11,8 @@ namespace LV::Server {
 
 
 
-BinaryResourceManager::BinaryResourceManager(asio::io_context &ioc, 
-        std::shared_ptr<ResourceFile> zeroResource)
-    : AsyncObject(ioc), ZeroResource(std::move(zeroResource))
+BinaryResourceManager::BinaryResourceManager(asio::io_context &ioc)
+    : AsyncObject(ioc)
 {
 }
 
@@ -43,15 +42,13 @@ void BinaryResourceManager::update(float dtime) {
 
     auto lock = UpdatedResources.lock_write();
     for(ResourceId_t resId : *lock) {
-        std::shared_ptr<ResourceFile> &objRes = PreparedInformation[resId];
-        if(objRes)
+        auto iterPI = PreparedInformation.find(resId);
+        if(iterPI != PreparedInformation.end())
             continue;
 
-        auto iter = ResourcesInfo.find(resId);
-        if(iter == ResourcesInfo.end()) {
-            objRes = ZeroResource;
-        } else {
-            objRes = iter->second->Loaded;
+        auto iterRI = ResourcesInfo.find(resId);
+        if(iterRI != ResourcesInfo.end()) {
+            PreparedInformation[resId] = iterRI->second->Loaded;
         }
     }
 }
@@ -81,7 +78,6 @@ ResourceId_t BinaryResourceManager::getResource_Assets(std::string path) {
     std::shared_ptr<Resource> &res = ResourcesInfo[resId];
     if(!res) {
         res = std::make_shared<Resource>();
-        res->Loaded = ZeroResource;
 
         auto iter = Domains.find("domain");
         if(iter == Domains.end()) {

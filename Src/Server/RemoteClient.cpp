@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <boost/asio/error.hpp>
 #include <boost/system/system_error.hpp>
+#include <cstddef>
 #include <exception>
 #include <unordered_map>
 #include <unordered_set>
@@ -136,8 +137,13 @@ bool RemoteClient::maybe_prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::Globa
         for(const DefVoxelId_t& id : lostTypes) {
             auto iter = ResUses.RefDefVoxel.find(id);
             assert(iter != ResUses.RefDefVoxel.end()); // Должны быть описаны зависимости вокселя
-            decrementBinary(std::move(iter->second.Texture), {}, std::move(iter->second.Sound), {}, {});
+            decrementBinary(std::move(iter->second));
             ResUses.RefDefVoxel.erase(iter);
+
+            checkPacketBorder(16);
+            NextPacket << (uint8_t) ToClient::L1::Definition
+                << (uint8_t) ToClient::L2Definition::FreeVoxel
+                << id;
         }
     }
 
@@ -214,8 +220,13 @@ bool RemoteClient::maybe_prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::Global
         for(const DefNodeId_t& id : lostTypes) {
             auto iter = ResUses.RefDefNode.find(id);
             assert(iter != ResUses.RefDefNode.end()); // Должны быть описаны зависимости ноды
-            decrementBinary({}, {}, std::move(iter->second.Sound), std::move(iter->second.Model), {});
+            decrementBinary(std::move(iter->second));
             ResUses.RefDefNode.erase(iter);
+
+            checkPacketBorder(16);
+            NextPacket << (uint8_t) ToClient::L1::Definition
+                << (uint8_t) ToClient::L2Definition::FreeNode
+                << id;
         }
     }
 
@@ -238,42 +249,49 @@ void RemoteClient::prepareRegionRemove(WorldId_t worldId, Pos::GlobalRegion regi
     // Уменьшаем зависимости вокселей и нод
     {
         auto iterWorld = ResUses.RefChunk.find(worldId);
-        assert(iterWorld != ResUses.RefChunk.end());
+        if(iterWorld == ResUses.RefChunk.end())
+            return;
 
         auto iterRegion = iterWorld->second.find(regionPos);
-        if(iterRegion != iterWorld->second.end()) {
-            for(const auto &iterChunk : iterRegion->second) {
-                for(const DefVoxelId_t& id : iterChunk.Voxel) {
-                    auto iter = ResUses.DefVoxel.find(id);
-                    assert(iter != ResUses.DefVoxel.end()); // Воксель должен быть в зависимостях
-                    if(--iter->second == 0) {
-                        // Вокселя больше нет в зависимостях
-                        lostTypesV.push_back(id);
-                        ResUses.DefVoxel.erase(iter);
-                    }
-                }
-
-                for(const DefNodeId_t& id : iterChunk.Node) {
-                    auto iter = ResUses.DefNode.find(id);
-                    assert(iter != ResUses.DefNode.end()); // Нода должна быть в зависимостях
-                    if(--iter->second == 0) {
-                        // Ноды больше нет в зависимостях
-                        lostTypesN.push_back(id);
-                        ResUses.DefNode.erase(iter);
-                    }
+        if(iterRegion == iterWorld->second.end())
+            return;
+         
+        for(const auto &iterChunk : iterRegion->second) {
+            for(const DefVoxelId_t& id : iterChunk.Voxel) {
+                auto iter = ResUses.DefVoxel.find(id);
+                assert(iter != ResUses.DefVoxel.end()); // Воксель должен быть в зависимостях
+                if(--iter->second == 0) {
+                    // Вокселя больше нет в зависимостях
+                    lostTypesV.push_back(id);
+                    ResUses.DefVoxel.erase(iter);
                 }
             }
 
-            iterWorld->second.erase(iterRegion);
+            for(const DefNodeId_t& id : iterChunk.Node) {
+                auto iter = ResUses.DefNode.find(id);
+                assert(iter != ResUses.DefNode.end()); // Нода должна быть в зависимостях
+                if(--iter->second == 0) {
+                    // Ноды больше нет в зависимостях
+                    lostTypesN.push_back(id);
+                    ResUses.DefNode.erase(iter);
+                }
+            }
         }
+
+        iterWorld->second.erase(iterRegion);
     }
 
     if(!lostTypesV.empty()) {
         for(const DefVoxelId_t& id : lostTypesV) {
             auto iter = ResUses.RefDefVoxel.find(id);
             assert(iter != ResUses.RefDefVoxel.end()); // Должны быть описаны зависимости вокселя
-            decrementBinary(std::move(iter->second.Texture), {}, std::move(iter->second.Sound), {}, {});
+            decrementBinary(std::move(iter->second));
             ResUses.RefDefVoxel.erase(iter);
+
+            checkPacketBorder(16);
+            NextPacket << (uint8_t) ToClient::L1::Definition
+                << (uint8_t) ToClient::L2Definition::FreeVoxel
+                << id;
         }
     }
 
@@ -281,8 +299,13 @@ void RemoteClient::prepareRegionRemove(WorldId_t worldId, Pos::GlobalRegion regi
         for(const DefNodeId_t& id : lostTypesN) {
             auto iter = ResUses.RefDefNode.find(id);
             assert(iter != ResUses.RefDefNode.end()); // Должны быть описаны зависимости ноды
-            decrementBinary({}, {}, std::move(iter->second.Sound), std::move(iter->second.Model), {});
+            decrementBinary(std::move(iter->second));
             ResUses.RefDefNode.erase(iter);
+
+            checkPacketBorder(16);
+            NextPacket << (uint8_t) ToClient::L1::Definition
+                << (uint8_t) ToClient::L2Definition::FreeNode
+                << id;
         }
     }
 
@@ -322,8 +345,7 @@ void RemoteClient::prepareEntityUpdate(ServerEntityId_t entityId, const Entity *
             if(--iterProfile->second == 0) {
                 // Старый профиль больше не нужен
                 auto iterProfileRef = ResUses.RefDefEntity.find(iterEntity->second.Profile);
-                decrementBinary(std::move(iterProfileRef->second.Texture), std::move(iterProfileRef->second.Animation), {}, 
-                    std::move(iterProfileRef->second.Model), {});
+                decrementBinary(std::move(iterProfileRef->second));
                 ResUses.DefEntity.erase(iterProfile);
             }
 
@@ -360,7 +382,7 @@ void RemoteClient::prepareEntityRemove(ServerEntityId_t entityId)
             // Профиль больше не используется
             auto iterProfileRef = ResUses.RefDefEntity.find(iterEntity->second.Profile);
 
-            decrementBinary(std::move(iterProfileRef->second.Texture), std::move(iterProfileRef->second.Animation), {}, std::move(iterProfileRef->second.Model), {});
+            decrementBinary(std::move(iterProfileRef->second));
         
             ResUses.RefDefEntity.erase(iterProfileRef);
             ResUses.DefEntity.erase(iterProfile);
@@ -408,7 +430,7 @@ void RemoteClient::prepareWorldUpdate(WorldId_t worldId, World* world)
                 ResUses.DefWorld.erase(iterWorldProf);
                 auto iterWorldProfRef = ResUses.RefDefWorld.find(iterWorld->second.Profile);
                 assert(iterWorldProfRef != ResUses.RefDefWorld.end()); // Зависимости предыдущего профиля также должны быть
-                decrementBinary(std::move(iterWorldProfRef->second.Texture), {}, {}, std::move(iterWorldProfRef->second.Model), {});
+                decrementBinary(std::move(iterWorldProfRef->second));
                 ResUses.RefDefWorld.erase(iterWorldProfRef);
             }
         }
@@ -438,7 +460,7 @@ void RemoteClient::prepareWorldRemove(WorldId_t worldId)
         // Убавляем зависимости профиля
         auto iterWorldProfDef = ResUses.RefDefWorld.find(iterWorld->second.Profile);
         assert(iterWorldProfDef != ResUses.RefDefWorld.end()); // Зависимости профиля должны быть
-        decrementBinary(std::move(iterWorldProfDef->second.Texture), {}, {}, std::move(iterWorldProfDef->second.Model), {});
+        decrementBinary(std::move(iterWorldProfDef->second));
         ResUses.RefDefWorld.erase(iterWorldProfDef);
     }
 
@@ -468,83 +490,76 @@ ResourceRequest RemoteClient::pushPreparedPackets() {
     return std::move(NextRequest);
 }
 
-void RemoteClient::informateBin(ToClient::L2Resource type, ResourceId_t id, const std::shared_ptr<ResourceFile>& data) {
-    checkPacketBorder(0);
-    NextPacket << (uint8_t) ToClient::L1::Resource    // Оповещение
-        << (uint8_t) type << id;
-    for(auto part : data->Hash)
-        NextPacket << part;
+void RemoteClient::informateBinary(const std::vector<std::shared_ptr<ResourceFile>>& resources) {
+    for(auto& resource : resources) {
+        auto &hash = resource->Hash;
 
-    NextPacket << (uint8_t) ToClient::L1::Resource    // Принудительная полная отправка
-        << (uint8_t) ToClient::L2Resource::InitResSend
-        << uint8_t(0) << uint8_t(0) << id
-        << uint32_t(data->Data.size());
-    for(auto part : data->Hash)
-        NextPacket << part;
+        auto iter = std::find(NeedToSend.begin(), NeedToSend.end(), hash);
+        if(iter == NeedToSend.end())
+            continue; // Клиенту не требуется этот ресурс
 
-    NextPacket << uint8_t(0) << uint32_t(data->Data.size());
+        {
+            auto it = std::lower_bound(ClientBinaryCache.begin(), ClientBinaryCache.end(), hash);
 
-    size_t pos = 0;
-    while(pos < data->Data.size()) {
-        checkPacketBorder(0);
-        size_t need = std::min(data->Data.size()-pos, std::min<size_t>(NextPacket.size(), 64000));
-        NextPacket.write((const std::byte*) data->Data.data()+pos, need);
-        pos += need;
+            if(it == ClientBinaryCache.end() || *it != hash)
+                ClientBinaryCache.insert(it, hash);
+        }
+
+        // Полная отправка ресурса
+        checkPacketBorder(2+4+32+4);
+        NextPacket << (uint8_t) ToClient::L1::Resource    // Принудительная полная отправка
+            << (uint8_t) ToClient::L2Resource::InitResSend
+            << uint32_t(resource->Data.size());
+        for(auto part : hash)
+            NextPacket << part;
+
+        NextPacket << uint32_t(resource->Data.size());
+
+        size_t pos = 0;
+        while(pos < resource->Data.size()) {
+            checkPacketBorder(0);
+            size_t need = std::min(resource->Data.size()-pos, std::min<size_t>(NextPacket.size(), 64000));
+            NextPacket.write((const std::byte*) resource->Data.data()+pos, need);
+            pos += need;
+        }
+        
     }
 }
 
-void RemoteClient::informateBinTexture(const std::unordered_map<BinTextureId_t, std::shared_ptr<ResourceFile>> &textures)
-{
-    for(auto pair : textures) {
-        BinTextureId_t id = pair.first;
-        if(!ResUses.BinTexture.contains(id))
-            continue; // Клиент не наблюдает за этим объектом
+void RemoteClient::informateIdToHash(const std::vector<std::tuple<EnumBinResource, ResourceId_t, Hash_t>>& resourcesLink) {
+    std::vector<std::tuple<EnumBinResource, ResourceId_t, Hash_t>> newForClient;
 
-        informateBin(ToClient::L2Resource::Texture, id, pair.second);
+    for(auto& [type, id, hash] : resourcesLink) {
+        // Посмотрим что известно клиенту
+        auto iter = ResUses.BinUse[uint8_t(type)].find(id);
+        if(iter != ResUses.BinUse[uint8_t(type)].end()) {
+            if(std::get<1>(iter->second) != hash) {
+                // Требуется перепривязать идентификатор к новому хешу
+                newForClient.push_back({type, id, hash});
+                std::get<1>(iter->second) = hash;
+                // Проверить есть ли хеш на стороне клиента
+                if(!std::binary_search(ClientBinaryCache.begin(), ClientBinaryCache.end(), hash)) {
+                    NeedToSend.push_back(hash);
+                    NextRequest.Hashes.push_back(hash);
+                }
+            }
+        } else {
+            // Ресурс не отслеживается клиентом
+        }
     }
-}
 
-void RemoteClient::informateBinAnimation(const std::unordered_map<BinTextureId_t, std::shared_ptr<ResourceFile>> &textures)
-{
-    for(auto pair : textures) {
-        BinTextureId_t id = pair.first;
-        if(!ResUses.BinTexture.contains(id))
-            continue; // Клиент не наблюдает за этим объектом
+    // Отправляем новые привязки ресурсов
+    if(!newForClient.empty()) {
+        assert(newForClient.size() < 65535*4);
 
-        informateBin(ToClient::L2Resource::Animation, id, pair.second);
-    }
-}
+        checkPacketBorder(2+4+newForClient.size()*(1+4+32));
+        NextPacket << (uint8_t) ToClient::L1::Resource    // Оповещение
+            << ((uint8_t) ToClient::L2Resource::Bind) << uint32_t(newForClient.size());
 
-void RemoteClient::informateBinModel(const std::unordered_map<BinTextureId_t, std::shared_ptr<ResourceFile>> &textures)
-{
-    for(auto pair : textures) {
-        BinTextureId_t id = pair.first;
-        if(!ResUses.BinTexture.contains(id))
-            continue; // Клиент не наблюдает за этим объектом
-
-        informateBin(ToClient::L2Resource::Model, id, pair.second);
-    }
-}
-
-void RemoteClient::informateBinSound(const std::unordered_map<BinTextureId_t, std::shared_ptr<ResourceFile>> &textures)
-{
-    for(auto pair : textures) {
-        BinTextureId_t id = pair.first;
-        if(!ResUses.BinTexture.contains(id))
-            continue; // Клиент не наблюдает за этим объектом
-
-        informateBin(ToClient::L2Resource::Sound, id, pair.second);
-    }
-}
-
-void RemoteClient::informateBinFont(const std::unordered_map<BinTextureId_t, std::shared_ptr<ResourceFile>> &textures)
-{
-    for(auto pair : textures) {
-        BinTextureId_t id = pair.first;
-        if(!ResUses.BinTexture.contains(id))
-            continue; // Клиент не наблюдает за этим объектом
-
-        informateBin(ToClient::L2Resource::Font, id, pair.second);
+        for(auto& [type, id, hash] : newForClient) {
+            NextPacket << uint8_t(type) << uint32_t(id);
+            NextPacket.write((const std::byte*) hash.data(), hash.size());
+        }
     }
 }
 
@@ -561,16 +576,51 @@ void RemoteClient::informateDefVoxel(const std::unordered_map<DefVoxelId_t, void
     }
 }
 
-void RemoteClient::informateDefNode(const std::unordered_map<DefNodeId_t, void*> &nodes)
+void RemoteClient::informateDefNode(const std::unordered_map<DefNodeId_t, DefNode_t*> &nodes)
 {
-    for(auto pair : nodes) {
-        DefNodeId_t id = pair.first;
+    for(auto& [id, def] : nodes) {
         if(!ResUses.DefNode.contains(id))
             continue;
+        
+        size_t reserve = 0;
+        for(int iter = 0; iter < 6; iter++)
+            reserve += def->Texs[iter].Pipeline.size();
 
+        checkPacketBorder(1+1+4+1+2*6+reserve);
         NextPacket << (uint8_t) ToClient::L1::Definition
             << (uint8_t) ToClient::L2Definition::Node
-            << id;
+            << id << (uint8_t) def->DrawType;
+
+        for(int iter = 0; iter < 6; iter++) {
+            NextPacket << (uint16_t) def->Texs[iter].Pipeline.size();
+            NextPacket.write((const std::byte*) def->Texs[iter].Pipeline.data(), def->Texs[iter].Pipeline.size());
+        }
+
+        ResUsesObj::RefDefBin_t refs;
+        {
+            auto &array = refs.Resources[(uint8_t) EnumBinResource::Texture];
+            for(int iter = 0; iter < 6; iter++) {
+                array.insert(array.end(), def->Texs[iter].BinTextures.begin(), def->Texs[iter].BinTextures.end());
+            }
+
+            std::sort(array.begin(), array.end());
+            auto eraseLast = std::unique(array.begin(), array.end());
+            array.erase(eraseLast, array.end());
+
+            incrementBinary(refs);
+        }
+
+        
+        {
+            auto iterDefRef = ResUses.RefDefNode.find(id);
+            if(iterDefRef != ResUses.RefDefNode.end()) {
+                decrementBinary(std::move(iterDefRef->second));
+                iterDefRef->second = std::move(refs);
+            } else {
+                ResUses.RefDefNode[id] = std::move(refs);
+            }
+        }
+
     }
 }
 
@@ -692,103 +742,45 @@ coro<> RemoteClient::rP_System(Net::AsyncSocket &sock) {
     }
 }
 
-void RemoteClient::incrementBinary(const std::vector<BinTextureId_t>& textures, const std::vector<BinAnimationId_t>& animation,
-    const std::vector<BinSoundId_t>& sounds, const std::vector<BinModelId_t>& models,
-    const std::vector<BinFontId_t>& fonts
-) {
-    for(BinTextureId_t id : textures) {
-        if(++ResUses.BinTexture[id] == 1) {
-            NextRequest.BinTexture.push_back(id);
-            LOG.debug() << "Новое определение текстуры: " << id;
-        }
-    }
+void RemoteClient::incrementBinary(const ResUsesObj::RefDefBin_t& bin) {
+    for(int iter = 0; iter < 5; iter++) {
+        auto &use = ResUses.BinUse[iter];
 
-    for(BinAnimationId_t id : animation) {
-        if(++ResUses.BinAnimation[id] == 1) {
-            NextRequest.BinAnimation.push_back(id);
-            LOG.debug() << "Новое определение анимации: " << id;
-        }
-    }
-
-    for(BinSoundId_t id : sounds) {
-        if(++ResUses.BinSound[id] == 1) {
-            NextRequest.BinSound.push_back(id);
-            LOG.debug() << "Новое определение звука: " << id;
-        }
-    }
-
-    for(BinModelId_t id : models) {
-        if(++ResUses.BinModel[id] == 1) {
-            NextRequest.BinModel.push_back(id);
-            LOG.debug() << "Новое определение модели: " << id;
-        }
-    }
-
-    for(BinFontId_t id : fonts) {
-        if(++ResUses.BinFont[id] == 1) {
-            NextRequest.BinFont.push_back(id);
-            LOG.debug() << "Новое определение шрифта: " << id;
+        for(ResourceId_t id : bin.Resources[iter]) {
+            if(++std::get<0>(use[id]) == 1) {
+                NextRequest.BinToHash[iter].push_back(id);
+                LOG.debug() << "Новое определение (тип " << iter << ") -> " << id;
+            }
         }
     }
 }
 
-void RemoteClient::decrementBinary(std::vector<BinTextureId_t>&& textures, std::vector<BinAnimationId_t>&& animation,
-    std::vector<BinSoundId_t>&& sounds, std::vector<BinModelId_t>&& models,
-    std::vector<BinFontId_t>&& fonts
-) {
-    for(BinTextureId_t id : textures) {
-        if(--ResUses.BinTexture[id] == 0) {
-            ResUses.BinTexture.erase(ResUses.BinTexture.find(id));
-            LOG.debug() << "Потеряно определение текстуры: " << id;
+void RemoteClient::decrementBinary(ResUsesObj::RefDefBin_t&& bin) {
+    std::vector<std::tuple<EnumBinResource, ResourceId_t>> lost;
 
-            NextPacket << (uint8_t) ToClient::L1::Resource
-                << (uint8_t) ToClient::L2Resource::FreeTexture
-                << id;
+    for(int iter = 0; iter < 5; iter++) {
+        auto &use = ResUses.BinUse[iter];
+
+        for(ResourceId_t id : bin.Resources[iter]) {
+            if(--std::get<0>(use[id]) == 0) {
+                use.erase(use.find(id));
+
+                lost.push_back({(EnumBinResource) iter, id});
+                LOG.debug() << "Потеряно определение (тип " << iter << ") -> " << id;
+            }
         }
     }
 
-    for(BinAnimationId_t id : animation) {
-        if(--ResUses.BinAnimation[id] == 0) {
-            ResUses.BinAnimation.erase(ResUses.BinAnimation.find(id));
-            LOG.debug() << "Потеряно определение анимации: " << id;
+    if(!lost.empty()) {
+        assert(lost.size() < 65535*4);
 
-            NextPacket << (uint8_t) ToClient::L1::Resource
-                << (uint8_t) ToClient::L2Resource::FreeAnimation
-                << id;
-        }
-    }
+        checkPacketBorder(1+1+4+lost.size()*(1+4));
+        NextPacket << (uint8_t) ToClient::L1::Resource
+            << (uint8_t) ToClient::L2Resource::Lost
+            << uint32_t(lost.size());
 
-    for(BinSoundId_t id : sounds) {
-        if(--ResUses.BinSound[id] == 0) {
-            ResUses.BinSound.erase(ResUses.BinSound.find(id));
-            LOG.debug() << "Потеряно определение звука: " << id;
-
-            NextPacket << (uint8_t) ToClient::L1::Resource
-                << (uint8_t) ToClient::L2Resource::FreeSound
-                << id;
-        }
-    }
-
-    for(BinModelId_t id : models) {
-        if(--ResUses.BinModel[id] == 0) {
-            ResUses.BinModel.erase(ResUses.BinModel.find(id));
-            LOG.debug() << "Потеряно определение модели: " << id;
-
-            NextPacket << (uint8_t) ToClient::L1::Resource
-                << (uint8_t) ToClient::L2Resource::FreeModel
-                << id;
-        }
-    }
-
-    for(BinFontId_t id : fonts) {
-        if(--ResUses.BinFont[id] == 0) {
-            ResUses.BinFont.erase(ResUses.BinFont.find(id));
-            LOG.debug() << "Потеряно определение шрифта: " << id;
-
-            NextPacket << (uint8_t) ToClient::L1::Resource
-                << (uint8_t) ToClient::L2Resource::FreeFont
-                << id;
-        }
+        for(auto& [type, id] : lost)
+            NextPacket << uint8_t(type) << uint32_t(id);
     }
 }
 

@@ -3,6 +3,7 @@
 #include "RemoteClient.hpp"
 #include "Server/Abstract.hpp"
 #include "World.hpp"
+#include "glm/ext/quaternion_geometric.hpp"
 #include <algorithm>
 
 
@@ -114,8 +115,10 @@ void ContentEventController::onUpdate() {
             uint8_t action = lock->front();
             lock->pop();
 
-            Pos::GlobalNode pos = (Pos::GlobalNode) (glm::vec3) (glm::mat4(Remote->CameraQuat.toQuat())*glm::vec4(0, 0, -1, 1));
-            pos = Pos.ObjectPos >> Pos::Object_t::BS_Bit;
+            glm::quat q = Remote->CameraQuat.toQuat();
+            glm::vec4 v = glm::mat4(q)*glm::vec4(0, 0, -6, 1);
+            Pos::GlobalNode pos = (Pos::GlobalNode) (glm::vec3) v;
+            pos += Pos.ObjectPos >> Pos::Object_t::BS_Bit;
 
             if(action == 0) {
                 // Break

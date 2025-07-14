@@ -304,9 +304,9 @@ public:
         WritePos = 0;
             
         while(!postponed.empty()) {
-            Task& task = TasksWait.front();
+            Task& task = postponed.front();
             pushData(std::move(task.Data), task.PoolId, task.BlockId);
-            TasksWait.pop();
+            postponed.pop();
         }
     }
 };

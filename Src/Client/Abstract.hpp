@@ -85,10 +85,6 @@ struct World {
     
 };
 
-struct DefVoxelInfo {
-
-};
-
 struct DefWorldInfo {
 
 };
@@ -153,7 +149,7 @@ public:
     } Binary;
 
     struct {
-        std::unordered_map<DefVoxelId_t, DefVoxelInfo>              DefVoxel;
+        std::unordered_map<DefVoxelId_t, DefVoxel_t>              DefVoxel;
         std::unordered_map<DefNodeId_t, DefNode_t>                  DefNode;
         std::unordered_map<DefWorldId_t, DefWorldInfo>              DefWorld;
         std::unordered_map<DefPortalId_t, DefPortalInfo>            DefPortal;

@@ -106,7 +106,7 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
 
     // Для отрисовки вокселей
 	std::shared_ptr<ShaderModule> VoxelShaderVertex, VoxelShaderGeometry, VoxelShaderFragmentOpaque, VoxelShaderFragmentTransparent;
-    VkPipeline 
+    VkPipeline
         VoxelOpaquePipeline = VK_NULL_HANDLE,         // Альфа канал может быть либо 255, либо 0
         VoxelTransparentPipeline = VK_NULL_HANDLE;    // Допускается полупрозрачность и смешивание
 

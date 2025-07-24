@@ -50,11 +50,21 @@ struct PP_Content_RegionRemove : public ParsedPacket {
     {}
 };
 
-struct PP_Definition_FreeNode : public ParsedPacket {
-    DefNodeId_t Id;
+struct PP_Definition_Voxel : public ParsedPacket {
+    DefVoxelId_t Id;
+    DefVoxel_t Def;
 
-    PP_Definition_FreeNode(DefNodeId_t id)
-        : ParsedPacket(ToClient::L1::Definition, (uint8_t) ToClient::L2Definition::Node), 
+    PP_Definition_Voxel(DefVoxelId_t id, DefVoxel_t def)
+        : ParsedPacket(ToClient::L1::Definition, (uint8_t) ToClient::L2Definition::Voxel), 
+            Id(id), Def(def)
+    {}
+};
+
+struct PP_Definition_FreeVoxel : public ParsedPacket {
+    DefVoxelId_t Id;
+
+    PP_Definition_FreeVoxel(DefVoxelId_t id)
+        : ParsedPacket(ToClient::L1::Definition, (uint8_t) ToClient::L2Definition::FreeVoxel), 
             Id(id)
     {}
 };
@@ -66,6 +76,15 @@ struct PP_Definition_Node : public ParsedPacket {
     PP_Definition_Node(DefNodeId_t id, DefNode_t def)
         : ParsedPacket(ToClient::L1::Definition, (uint8_t) ToClient::L2Definition::Node), 
             Id(id), Def(def)
+    {}
+};
+
+struct PP_Definition_FreeNode : public ParsedPacket {
+    DefNodeId_t Id;
+
+    PP_Definition_FreeNode(DefNodeId_t id)
+        : ParsedPacket(ToClient::L1::Definition, (uint8_t) ToClient::L2Definition::FreeNode), 
+            Id(id)
     {}
 };
 
@@ -327,15 +346,32 @@ void ServerSession::atFreeDrawTime(GlobalTime gTime, float dTime) {
 
             } else if(pack->Level1 == ToClient::L1::Definition) {
                 ToClient::L2Definition l2 = ToClient::L2Definition(pack->Level2);
-                if(l2 == ToClient::L2Definition::Node) {
+
+                if(l2 == ToClient::L2Definition::Voxel) {
+                    PP_Definition_Voxel &p = *dynamic_cast<PP_Definition_Voxel*>(pack);
+                    Registry.DefVoxel[p.Id] = p.Def;
+                    onContentDefinesAdd[EnumDefContent::Voxel].push_back(p.Id);
+                } else if(l2 == ToClient::L2Definition::FreeVoxel) {
+                    PP_Definition_FreeVoxel &p = *dynamic_cast<PP_Definition_FreeVoxel*>(pack);
+                    {
+                        auto iter = Registry.DefVoxel.find(p.Id);
+                        if(iter != Registry.DefVoxel.end())
+                            Registry.DefVoxel.erase(iter);
+                    }
+                    onContentDefinesLost[EnumDefContent::Voxel].push_back(p.Id);
+                } else if(l2 == ToClient::L2Definition::Node) {
                     PP_Definition_Node &p = *dynamic_cast<PP_Definition_Node*>(pack);
                     Registry.DefNode[p.Id] = p.Def;
                     onContentDefinesAdd[EnumDefContent::Node].push_back(p.Id);
                 } else if(l2 == ToClient::L2Definition::FreeNode) {
                     PP_Definition_FreeNode &p = *dynamic_cast<PP_Definition_FreeNode*>(pack);
+                    {
+                        auto iter = Registry.DefNode.find(p.Id);
+                        if(iter != Registry.DefNode.end())
+                            Registry.DefNode.erase(iter);
+                    }
                     onContentDefinesLost[EnumDefContent::Node].push_back(p.Id);
                 }
-
 
             } else if(pack->Level1 == ToClient::L1::Content) {
                 ToClient::L2Content l2 = ToClient::L2Content(pack->Level2);

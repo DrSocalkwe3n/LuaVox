@@ -512,24 +512,24 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
     uint8_t second = co_await sock.read<uint8_t>();
 
     switch((ToClient::L2Resource) second) {
-    case ToClient::L2Resource::Texture:
-    
-        co_return;
-    case ToClient::L2Resource::FreeTexture:
-
-        co_return;
-    case ToClient::L2Resource::Sound:
-
-        co_return;
-    case ToClient::L2Resource::FreeSound:
-    
-        co_return;
-    case ToClient::L2Resource::Model:
-
-        co_return;
-    case ToClient::L2Resource::FreeModel:
-
-        co_return;
+    case ToClient::L2Resource::Bind:
+    {
+        uint32_t count = co_await sock.read<uint32_t>();
+        for(size_t iter = 0; iter < count; iter++) {
+            uint8_t type = co_await sock.read<uint8_t>();
+            uint32_t id = co_await sock.read<uint32_t>();
+            Hash_t hash;
+            co_await sock.read((std::byte*) hash.data(), hash.size());
+        }
+    }
+    case ToClient::L2Resource::Lost:
+    {
+        uint32_t count = co_await sock.read<uint32_t>();
+        for(size_t iter = 0; iter < count; iter++) {
+            uint8_t type = co_await sock.read<uint8_t>();
+            uint32_t id = co_await sock.read<uint32_t>();
+        }
+    }
     case ToClient::L2Resource::InitResSend:
     {
         uint32_t size = co_await sock.read<uint32_t>();
@@ -537,6 +537,8 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
         co_await sock.read((std::byte*) hash.data(), hash.size());
 
         uint32_t chunkSize = co_await sock.read<uint32_t>();
+        assert(chunkSize < std::pow(2, 26));
+
         std::u8string data(size, '\0');
 
         co_await sock.read((std::byte*) data.data(), data.size());

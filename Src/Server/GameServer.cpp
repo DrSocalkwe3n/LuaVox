@@ -33,7 +33,7 @@ namespace LV::Server {
 
 GameServer::GameServer(asio::io_context &ioc, fs::path worldPath)
     : AsyncObject(ioc),
-        Content(ioc, nullptr, nullptr, nullptr, nullptr, nullptr)
+        Content(ioc)
 {
     BackingChunkPressure.Threads.resize(4);
     BackingNoiseGenerator.Threads.resize(4);
@@ -745,6 +745,8 @@ TexturePipeline GameServer::buildTexturePipeline(const std::string& pl) {
                 cmd_name += pl[pos];
             }
         }
+
+        MAKE_ERROR("Ожидался конец команды объявленной на " << startPos << ", наткнулись на конец потока");
     };
     
     parse_obj = [&](size_t pos) -> std::pair<size_t, std::u8string> {
@@ -1652,6 +1654,7 @@ void GameServer::stepSyncContent() {
     for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
         cec->onUpdate();
 
+        // Это для пробы строительства и ломания нод
         while(!cec->Build.empty()) {
             Pos::GlobalNode node = cec->Build.front();
             cec->Build.pop();
@@ -1679,86 +1682,129 @@ void GameServer::stepSyncContent() {
         }
     }
 
-    // Оповещения о ресурсах и профилях
-    Content.Texture.update(CurrentTickDuration);
-    if(Content.Texture.hasPreparedInformation()) {
-        auto table = Content.Texture.takePreparedInformation();
-        for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
-            cec->Remote->informateBinTexture(table);
-        }
-    }
-
-    Content.Animation.update(CurrentTickDuration);
-    if(Content.Animation.hasPreparedInformation()) {
-        auto table = Content.Animation.takePreparedInformation();
-        for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
-            cec->Remote->informateBinAnimation(table);
-        }
-    }
-
-    Content.Model.update(CurrentTickDuration);
-    if(Content.Model.hasPreparedInformation()) {
-        auto table = Content.Model.takePreparedInformation();
-        for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
-            cec->Remote->informateBinModel(table);
-        }
-    }
-
-    Content.Sound.update(CurrentTickDuration);
-    if(Content.Sound.hasPreparedInformation()) {
-        auto table = Content.Sound.takePreparedInformation();
-        for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
-            cec->Remote->informateBinSound(table);
-        }
-    }
-
-    Content.Font.update(CurrentTickDuration);
-    if(Content.Font.hasPreparedInformation()) {
-        auto table = Content.Font.takePreparedInformation();
-        for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
-            cec->Remote->informateBinFont(table);
-        }
-    }
 
     // Сбор запросов на ресурсы и профили + отправка пакетов игрокам
-    ResourceRequest full;
+    ResourceRequest full = std::move(Content.OnContentChanges);
     for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
         full.insert(cec->Remote->pushPreparedPackets());
     }
 
-    BackingChunkPressure.startCollectChanges();
 
     full.uniq();
+    // Запрашиваем двоичные ресурсы
+    Content.BRM.needResourceResponse(full);
+    Content.BRM.update(CurrentTickDuration);
+    // Получаем готовую информацию
+    {
+        BinaryResourceManager::OutObj_t out = Content.BRM.takePreparedInformation();
+        bool hasData = false;
+        for(int iter = 0; iter < (int) EnumBinResource::MAX_ENUM; iter++)
+            hasData |= !out.BinToHash[iter].empty();
 
-    if(!full.BinTexture.empty())
-        Content.Texture.needResourceResponse(full.BinTexture);
+        if(hasData) {
+            for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
+                cec->Remote->informateIdToHash(out.BinToHash);
+            }
+        }
 
-    if(!full.BinAnimation.empty())
-        Content.Animation.needResourceResponse(full.BinAnimation);
+        if(!out.HashToResource.empty())
+            for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
+                cec->Remote->informateBinary(out.HashToResource);
+            }
+    }
 
-    if(!full.BinModel.empty())
-        Content.Model.needResourceResponse(full.BinModel);
+    // Оповещаем об игровых профилях
+    if(!full.Voxel.empty()) {
+        std::unordered_map<DefVoxelId_t, DefVoxel_t*> defines;
 
-    if(!full.BinSound.empty())
-        Content.Sound.needResourceResponse(full.BinSound);
-
-    if(!full.BinFont.empty())
-        Content.Font.needResourceResponse(full.BinFont);
-
-    if(!full.Node.empty()) {
-        std::unordered_map<DefNodeId_t, DefNode_t*> nodeDefines;
-
-        for(DefNodeId_t id : full.Node) {
-            auto iter = Content.NodeDefines.find(id);
-            if(iter != Content.NodeDefines.end()) {
-                nodeDefines[id] = &iter->second;
+        for(DefVoxelId_t id : full.Node) {
+            auto iter = Content.ContentIdToDef_Voxel.find(id);
+            if(iter != Content.ContentIdToDef_Voxel.end()) {
+                defines[id] = &iter->second;
             }
         }
 
         for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
-            cec->Remote->informateDefNode(nodeDefines);
+            cec->Remote->informateDefVoxel(defines);
         }
     }
+
+    if(!full.Node.empty()) {
+        std::unordered_map<DefNodeId_t, DefNode_t*> defines;
+
+        for(DefNodeId_t id : full.Node) {
+            auto iter = Content.ContentIdToDef_Node.find(id);
+            if(iter != Content.ContentIdToDef_Node.end()) {
+                defines[id] = &iter->second;
+            }
+        }
+
+        for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
+            cec->Remote->informateDefNode(defines);
+        }
+    }
+
+    if(!full.World.empty()) {
+        std::unordered_map<DefWorldId_t, DefWorld_t*> defines;
+
+        for(DefWorldId_t id : full.Node) {
+            auto iter = Content.ContentIdToDef_World.find(id);
+            if(iter != Content.ContentIdToDef_World.end()) {
+                defines[id] = &iter->second;
+            }
+        }
+
+        for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
+            cec->Remote->informateDefWorld(defines);
+        }
+    }
+
+    if(!full.Portal.empty()) {
+        std::unordered_map<DefPortalId_t, DefPortal_t*> defines;
+
+        for(DefPortalId_t id : full.Node) {
+            auto iter = Content.ContentIdToDef_Portal.find(id);
+            if(iter != Content.ContentIdToDef_Portal.end()) {
+                defines[id] = &iter->second;
+            }
+        }
+
+        for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
+            cec->Remote->informateDefPortal(defines);
+        }
+    }
+
+    if(!full.Entity.empty()) {
+        std::unordered_map<DefEntityId_t, DefEntity_t*> defines;
+
+        for(DefEntityId_t id : full.Node) {
+            auto iter = Content.ContentIdToDef_Entity.find(id);
+            if(iter != Content.ContentIdToDef_Entity.end()) {
+                defines[id] = &iter->second;
+            }
+        }
+
+        for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
+            cec->Remote->informateDefEntity(defines);
+        }
+    }
+
+    if(!full.Item.empty()) {
+        std::unordered_map<DefItemId_t, DefItem_t*> defines;
+
+        for(DefItemId_t id : full.Node) {
+            auto iter = Content.ContentIdToDef_Item.find(id);
+            if(iter != Content.ContentIdToDef_Item.end()) {
+                defines[id] = &iter->second;
+            }
+        }
+
+        for(std::shared_ptr<ContentEventController>& cec : Game.CECs) {
+            cec->Remote->informateDefItem(defines);
+        }
+    }
+
+    BackingChunkPressure.startCollectChanges();
 }
 
 

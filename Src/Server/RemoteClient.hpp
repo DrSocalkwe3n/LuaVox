@@ -140,7 +140,7 @@ public:
 */
 struct ResourceRequest {
     std::vector<Hash_t>           Hashes;
-    std::vector<ResourceId_t>     BinToHash[5];
+    std::vector<ResourceId_t>     BinToHash[5 /*EnumBinResource*/];
 
     std::vector<DefVoxelId_t>       Voxel;
     std::vector<DefNodeId_t>        Node;
@@ -163,13 +163,20 @@ struct ResourceRequest {
     }
 
     void uniq() {
-        for(std::vector<ResourceId_t> *vec : {&BinToHash, &Voxel, &Node, &World,
+        for(std::vector<ResourceId_t> *vec : {&Voxel, &Node, &World,
                 &Portal, &Entity, &Item
             })
         {
             std::sort(vec->begin(), vec->end());
             auto last = std::unique(vec->begin(), vec->end());
             vec->erase(last, vec->end());
+        }
+
+        for(int type = 0; type < (int) EnumBinResource::MAX_ENUM; type++)
+        {
+            std::sort(BinToHash[type].begin(), BinToHash[type].end());
+            auto last = std::unique(BinToHash[type].begin(), BinToHash[type].end());
+            BinToHash[type].erase(last, BinToHash[type].end());
         }
 
         std::sort(Hashes.begin(), Hashes.end());
@@ -343,15 +350,15 @@ public:
 
     // Привязывает локальный идентификатор с хешем. Если его нет у клиента, 
     // то делается запрос на получение ресурсы для последующей отправки клиенту
-    void informateIdToHash(const std::vector<std::tuple<EnumBinResource, ResourceId_t, Hash_t>>& resourcesLink);
+    void informateIdToHash(const std::unordered_map<ResourceId_t, ResourceFile::Hash_t>* resourcesLink);
 
     // Игровые определения
-    void informateDefVoxel(const std::unordered_map<DefVoxelId_t, void*> &voxels);
+    void informateDefVoxel(const std::unordered_map<DefVoxelId_t, DefVoxel_t*> &voxels);
     void informateDefNode(const std::unordered_map<DefNodeId_t, DefNode_t*> &nodes);
-    void informateDefWorld(const std::unordered_map<DefWorldId_t, void*> &worlds);
-    void informateDefPortal(const std::unordered_map<DefPortalId_t, void*> &portals);
-    void informateDefEntity(const std::unordered_map<DefEntityId_t, void*> &entityes);
-    void informateDefItem(const std::unordered_map<DefItemId_t, void*> &items);
+    void informateDefWorld(const std::unordered_map<DefWorldId_t, DefWorld_t*> &worlds);
+    void informateDefPortal(const std::unordered_map<DefPortalId_t, DefPortal_t*> &portals);
+    void informateDefEntity(const std::unordered_map<DefEntityId_t, DefEntity_t*> &entityes);
+    void informateDefItem(const std::unordered_map<DefItemId_t, DefItem_t*> &items);
 
 private:
     void checkPacketBorder(uint16_t size);

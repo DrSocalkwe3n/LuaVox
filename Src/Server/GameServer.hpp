@@ -50,32 +50,42 @@ class GameServer : public AsyncObject {
 
     struct ContentObj {
     public:
-        // WorldDefManager WorldDM;
-        // VoxelDefManager VoxelDM;
-        // NodeDefManager NodeDM;
-        BinaryResourceManager Texture;
-        BinaryResourceManager Animation;
-        BinaryResourceManager Model;
-        BinaryResourceManager Sound;
-        BinaryResourceManager Font;
+        BinaryResourceManager BRM;
 
-        ContentObj(asio::io_context &ioc,
-                std::shared_ptr<ResourceFile> zeroTexture,
-                std::shared_ptr<ResourceFile> zeroAnimation,
-                std::shared_ptr<ResourceFile> zeroModel,
-                std::shared_ptr<ResourceFile> zeroSound,
-                std::shared_ptr<ResourceFile> zeroFont)
-            : Texture(ioc, zeroTexture),
-              Animation(ioc, zeroAnimation),
-              Model(ioc, zeroModel),
-              Sound(ioc, zeroSound),
-              Font(ioc, zeroFont)
+        ResourceId_t NextId[(int) EnumDefContent::MAX_ENUM] = {0};
+        std::unordered_map<std::string, ResourceId_t> ContentKeyToId[(int) EnumDefContent::MAX_ENUM]; // EnumDefContent
+
+        std::unordered_map<DefVoxelId_t, DefVoxel_t>    ContentIdToDef_Voxel;
+        std::unordered_map<DefNodeId_t, DefNode_t>      ContentIdToDef_Node;
+        std::unordered_map<DefWorldId_t, DefWorld_t>    ContentIdToDef_World;
+        std::unordered_map<DefPortalId_t, DefPortal_t>  ContentIdToDef_Portal;
+        std::unordered_map<DefEntityId_t, DefEntity_t>  ContentIdToDef_Entity;
+        std::unordered_map<DefItemId_t, DefItem_t>      ContentIdToDef_Item;
+
+
+        ResourceId_t getContentDefId(const std::string& key, EnumDefContent def) {
+            int index = int(def);
+            assert(index < (int) EnumDefContent::MAX_ENUM);
+
+            auto &container = ContentKeyToId[index];
+            auto iter = container.find(key);
+            if(iter == container.end()) {
+                assert(NextId[index] != ResourceId_t(-1));
+                ResourceId_t nextId = NextId[index]++;
+                container.insert(iter, {key, nextId});
+                return nextId;
+            }
+
+            return iter->second;
+        }
+
+        // Если контент был перерегистрирован (исключая двоичные ресурсы), то профили будут повторно разосланы
+        ResourceRequest OnContentChanges;
+
+
+        ContentObj(asio::io_context& ioc)
+            : BRM(ioc)
         {}
-
-
-        std::map<DefNodeId_t, DefNode_t> NodeDefines;
-        std::map<std::string, DefNodeId_t> NodeKeys;
-
     } Content;
 
     struct {

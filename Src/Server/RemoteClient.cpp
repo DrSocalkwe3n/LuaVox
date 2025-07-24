@@ -510,8 +510,7 @@ void RemoteClient::informateBinary(const std::vector<std::shared_ptr<ResourceFil
         NextPacket << (uint8_t) ToClient::L1::Resource    // Принудительная полная отправка
             << (uint8_t) ToClient::L2Resource::InitResSend
             << uint32_t(resource->Data.size());
-        for(auto part : hash)
-            NextPacket << part;
+        NextPacket.write((const std::byte*) hash.data(), hash.size());
 
         NextPacket << uint32_t(resource->Data.size());
 
@@ -526,25 +525,27 @@ void RemoteClient::informateBinary(const std::vector<std::shared_ptr<ResourceFil
     }
 }
 
-void RemoteClient::informateIdToHash(const std::vector<std::tuple<EnumBinResource, ResourceId_t, Hash_t>>& resourcesLink) {
+void RemoteClient::informateIdToHash(const std::unordered_map<ResourceId_t, ResourceFile::Hash_t>* resourcesLink) {
     std::vector<std::tuple<EnumBinResource, ResourceId_t, Hash_t>> newForClient;
 
-    for(auto& [type, id, hash] : resourcesLink) {
-        // Посмотрим что известно клиенту
-        auto iter = ResUses.BinUse[uint8_t(type)].find(id);
-        if(iter != ResUses.BinUse[uint8_t(type)].end()) {
-            if(std::get<1>(iter->second) != hash) {
-                // Требуется перепривязать идентификатор к новому хешу
-                newForClient.push_back({type, id, hash});
-                std::get<1>(iter->second) = hash;
-                // Проверить есть ли хеш на стороне клиента
-                if(!std::binary_search(ClientBinaryCache.begin(), ClientBinaryCache.end(), hash)) {
-                    NeedToSend.push_back(hash);
-                    NextRequest.Hashes.push_back(hash);
+    for(int type = 0; type < (int) EnumBinResource::MAX_ENUM; type++) {
+        for(auto& [id, hash] : resourcesLink[type]) {
+            // Посмотрим что известно клиенту
+            auto iter = ResUses.BinUse[uint8_t(type)].find(id);
+            if(iter != ResUses.BinUse[uint8_t(type)].end()) {
+                if(std::get<1>(iter->second) != hash) {
+                    // Требуется перепривязать идентификатор к новому хешу
+                    newForClient.push_back({(EnumBinResource) type, id, hash});
+                    std::get<1>(iter->second) = hash;
+                    // Проверить есть ли хеш на стороне клиента
+                    if(!std::binary_search(ClientBinaryCache.begin(), ClientBinaryCache.end(), hash)) {
+                        NeedToSend.push_back(hash);
+                        NextRequest.Hashes.push_back(hash);
+                    }
                 }
+            } else {
+                // Ресурс не отслеживается клиентом
             }
-        } else {
-            // Ресурс не отслеживается клиентом
         }
     }
 
@@ -563,7 +564,7 @@ void RemoteClient::informateIdToHash(const std::vector<std::tuple<EnumBinResourc
     }
 }
 
-void RemoteClient::informateDefVoxel(const std::unordered_map<DefVoxelId_t, void*> &voxels)
+void RemoteClient::informateDefVoxel(const std::unordered_map<DefVoxelId_t, DefVoxel_t*> &voxels)
 {
     for(auto pair : voxels) {
         DefVoxelId_t id = pair.first;
@@ -624,7 +625,7 @@ void RemoteClient::informateDefNode(const std::unordered_map<DefNodeId_t, DefNod
     }
 }
 
-void RemoteClient::informateDefWorld(const std::unordered_map<DefWorldId_t, void*> &worlds)
+void RemoteClient::informateDefWorld(const std::unordered_map<DefWorldId_t, DefWorld_t*> &worlds)
 {
     for(auto pair : worlds) {
         DefWorldId_t id = pair.first;
@@ -637,7 +638,7 @@ void RemoteClient::informateDefWorld(const std::unordered_map<DefWorldId_t, void
     }
 }
 
-void RemoteClient::informateDefPortal(const std::unordered_map<DefPortalId_t, void*> &portals)
+void RemoteClient::informateDefPortal(const std::unordered_map<DefPortalId_t, DefPortal_t*> &portals)
 {
     for(auto pair : portals) {
         DefPortalId_t id = pair.first;
@@ -650,7 +651,7 @@ void RemoteClient::informateDefPortal(const std::unordered_map<DefPortalId_t, vo
     }
 }
 
-void RemoteClient::informateDefEntity(const std::unordered_map<DefEntityId_t, void*> &entityes)
+void RemoteClient::informateDefEntity(const std::unordered_map<DefEntityId_t, DefEntity_t*> &entityes)
 {
     for(auto pair : entityes) {
         DefEntityId_t id = pair.first;
@@ -663,7 +664,7 @@ void RemoteClient::informateDefEntity(const std::unordered_map<DefEntityId_t, vo
     }
 }
 
-void RemoteClient::informateDefItem(const std::unordered_map<DefItemId_t, void*> &items)
+void RemoteClient::informateDefItem(const std::unordered_map<DefItemId_t, DefItem_t*> &items)
 {
     for(auto pair : items) {
         DefItemId_t id = pair.first;

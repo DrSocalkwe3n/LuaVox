@@ -389,7 +389,7 @@ using ResourceId_t = uint32_t;
 */
 
 enum class EnumBinResource {
-    Texture, Animation, Model, Sound, Font
+    Texture, Animation, Model, Sound, Font, MAX_ENUM
 };
 
 using BinaryResource = std::shared_ptr<const std::u8string>;
@@ -401,14 +401,8 @@ using BinModelId_t = ResourceId_t;
 using BinSoundId_t = ResourceId_t;
 using BinFontId_t = ResourceId_t;
 
-// Шаблоны использования бинарных ресурсов
-// using DefTextureId_t   = ResourceId_t;
-// using DefModelId_t     = ResourceId_t;
-// using DefSoundId_t     = ResourceId_t;
-// using DefFontId_t      = ResourceId_t;
-
 enum class EnumDefContent {
-    Voxel, Node, Generator, World, Portal, Entity, FuncEntitry
+    Voxel, Node, Generator, World, Portal, Entity, Item, MAX_ENUM
 };
 
 // Игровые определения
@@ -496,6 +490,10 @@ struct TexturePipeline {
     std::u8string Pipeline;
 };
 
+struct DefVoxel_t {
+
+};
+
 struct DefNode_t {
     enum struct EnumDrawType : uint8_t {
         NoDraw, // Не рисуется
@@ -503,6 +501,22 @@ struct DefNode_t {
     } DrawType = EnumDrawType::Simple;
 
     TexturePipeline Texs[6];
+};
+
+struct DefWorld_t {
+
+};
+
+struct DefPortal_t {
+
+};
+
+struct DefEntity_t {
+
+};
+
+struct DefItem_t {
+
 };
 
 using Hash_t = std::array<uint8_t, 32>;

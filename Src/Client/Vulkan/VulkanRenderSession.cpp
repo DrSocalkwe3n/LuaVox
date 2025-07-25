@@ -21,6 +21,7 @@ namespace LV::Client::VK {
 
 void VulkanRenderSession::ThreadVertexObj_t::run() {
     Logger LOG = "ThreadVertex";
+    LOG.debug() << "Старт потока подготовки чанков к рендеру";
 
     // Контейнеры событий
     std::vector<DefVoxelId_t> changedDefines_Voxel;
@@ -34,16 +35,172 @@ void VulkanRenderSession::ThreadVertexObj_t::run() {
     // std::vector<VertexPool<VoxelVertexPoint>::Pointer> ToDelete_Voxels;
     // std::vector<VertexPool<VoxelVertexPoint>::Pointer> ToDelete_Nodes;
 
-    try {
 
+    try {
         while(State.get_read().Stage != EnumRenderStage::Shutdown) {
-            bool hasWork = false;
+            bool hasWork = false, hasVertexChanges = false;
             auto lock = State.lock();
 
-            if(lock->Stage != EnumRenderStage::WorldUpdate) {
+            // uint64_t now = 0;
+
+            if((!changedContent_RegionRemove.empty() || !chunksUpdate.empty())
+                && (lock->Stage == EnumRenderStage::Render || lock->Stage == EnumRenderStage::WorldUpdate))
+            {
+                // Здесь можно выгрузить готовые данные в ChunkMesh
+                lock->ChunkMesh_IsUse = true;
+                lock.unlock();
+                hasWork = true;
+                // now = Time::nowSystem();
+
+                // Удаляем регионы
+                std::vector<WorldId_t> toRemove;
+                for(auto& [worldId, regions] : changedContent_RegionRemove) {
+                    auto iterWorld = ChunkMesh.find(worldId);
+                    if(iterWorld == ChunkMesh.end())
+                        continue;
+
+                    for(Pos::GlobalRegion regionPos : regions) {
+                        auto iterRegion = iterWorld->second.find(regionPos);
+                        if(iterRegion == iterWorld->second.end())
+                            continue;
+
+                        for(size_t index = 0; index < iterRegion->second.size(); index++) {
+                            auto &chunk = iterRegion->second[index];
+                            chunk.NodeDefines.clear();
+                            chunk.VoxelDefines.clear();
+
+                            VertexPool_Voxels.dropVertexs(chunk.VoxelPointer);
+                            VertexPool_Nodes.dropVertexs(chunk.NodePointer);
+                        }
+
+                        iterWorld->second.erase(iterRegion);
+                    }
+
+                    if(iterWorld->second.empty())
+                        toRemove.push_back(worldId);
+                }
+
+                for(WorldId_t worldId : toRemove)
+                    ChunkMesh.erase(ChunkMesh.find(worldId));
+
+                // Добавляем обновлённые меши
+                for(auto& [worldId, regions] : chunksUpdate) {
+                    auto &world = ChunkMesh[worldId];
+
+                    for(auto& [regionPos, chunks] : regions) {
+                        auto &region = world[regionPos];
+                        
+                        for(auto& [chunkPos, chunk] : chunks) {
+                            auto &drawChunk = region[chunkPos.pack()];
+                            VertexPool_Voxels.dropVertexs(drawChunk.VoxelPointer);
+                            VertexPool_Nodes.dropVertexs(drawChunk.NodePointer);
+                            drawChunk = std::move(chunk);
+                        }
+                    }
+                }
+
+
+                State.lock()->ChunkMesh_IsUse = false;
+                chunksUpdate.clear();
+
+                // LOG.debug() << "ChunkMesh_IsUse: " << Time::nowSystem() - now;
+
+                lock = State.lock();
+            }
+
+            if((!changedContent_Chunk.empty())
+                && (lock->Stage == EnumRenderStage::ComposingCommandBuffer || lock->Stage == EnumRenderStage::Render))
+            {
+                // Здесь можно обработать события, и подготовить меши по данным с мира
+                lock->ServerSession_InUse = true;
+                lock.unlock();
+                // now = Time::nowSystem();
+                hasWork = true;
+                // changedContent_Chunk
+
+                std::vector<WorldId_t> toRemove;
+                for(auto& [worldId, chunks] : changedContent_Chunk) {
+                    while(!chunks.empty() && (State.get_read().Stage == EnumRenderStage::ComposingCommandBuffer || State.get_read().Stage == EnumRenderStage::Render)) {
+                        auto& chunkPos = chunks.back();
+                        Pos::GlobalRegion regionPos = chunkPos >> 2;
+                        Pos::bvec4u localPos = chunkPos & 0x3;
+                        
+                        auto& drawChunk = chunksUpdate[worldId][regionPos][localPos];
+                        {
+                            auto iterWorld = SSession->Data.Worlds.find(worldId);
+                            if(iterWorld == SSession->Data.Worlds.end())
+                                goto skip;
+
+                            auto iterRegion = iterWorld->second.Regions.find(regionPos);
+                            if(iterRegion == iterWorld->second.Regions.end())
+                                goto skip;
+
+                            auto& chunk = iterRegion->second.Chunks[localPos.pack()];
+
+                            {
+                                drawChunk.VoxelDefines.resize(chunk.Voxels.size());
+                                for(size_t index = 0; index < chunk.Voxels.size(); index++)
+                                    drawChunk.VoxelDefines[index] = chunk.Voxels[index].VoxelId;
+                                std::sort(drawChunk.VoxelDefines.begin(), drawChunk.VoxelDefines.end());
+                                auto last = std::unique(drawChunk.VoxelDefines.begin(), drawChunk.VoxelDefines.end());
+                                drawChunk.VoxelDefines.erase(last, drawChunk.VoxelDefines.end());
+                                drawChunk.VoxelDefines.shrink_to_fit();
+                            }
+
+                            {
+                                drawChunk.NodeDefines.resize(chunk.Nodes.size());
+                                for(size_t index = 0; index < chunk.Nodes.size(); index++)
+                                    drawChunk.NodeDefines[index] = chunk.Nodes[index].NodeId;
+                                std::sort(drawChunk.NodeDefines.begin(), drawChunk.NodeDefines.end());
+                                auto last = std::unique(drawChunk.NodeDefines.begin(), drawChunk.NodeDefines.end());
+                                drawChunk.NodeDefines.erase(last, drawChunk.NodeDefines.end());
+                                drawChunk.NodeDefines.shrink_to_fit();
+                            }
+
+                            {
+                                std::vector<VoxelVertexPoint> voxels = generateMeshForVoxelChunks(chunk.Voxels);
+                                if(!voxels.empty()) {
+                                    drawChunk.VoxelPointer = VertexPool_Voxels.pushVertexs(std::move(voxels));
+                                    hasVertexChanges = true;
+                                }
+                            }
+
+                            {
+                                std::vector<NodeVertexStatic> nodes = generateMeshForNodeChunks(chunk.Nodes.data());
+                                if(!nodes.empty()) {
+                                    drawChunk.NodePointer = VertexPool_Nodes.pushVertexs(std::move(nodes));
+                                    hasVertexChanges = true;
+                                }
+                            }
+                        }
+
+                        skip:
+
+                        chunks.pop_back();
+                    }
+
+                    if(chunks.empty())
+                        toRemove.push_back(worldId);
+                }
+
+                State.lock()->ServerSession_InUse = false;
+
+                for(WorldId_t worldId : toRemove)
+                    changedContent_Chunk.erase(changedContent_Chunk.find(worldId));
+
+                // LOG.debug() << "ServerSession_InUse: " << Time::nowSystem() - now;
+                lock = State.lock();
+            }
+
+            if((!ChangedContent_Chunk.empty() || !ChangedContent_RegionRemove.empty()
+                || !ChangedDefines_Voxel.empty() || !ChangedDefines_Node.empty())
+                    && (lock->Stage != EnumRenderStage::WorldUpdate))
+            {
                 // Переносим все события в локальные хранилища
                 lock->ServerSession_InUse = true;
                 lock.unlock();
+                // now = Time::nowSystem();
+                hasWork = true;
 
                 if(!ChangedContent_Chunk.empty()) {
                     for(auto& [worldId, chunks] : ChangedContent_Chunk) {
@@ -52,7 +209,6 @@ void VulkanRenderSession::ThreadVertexObj_t::run() {
                     }
 
                     ChangedContent_Chunk.clear();
-                    hasWork = true;
                 }
 
                 if(!ChangedContent_RegionRemove.empty()) {
@@ -62,7 +218,6 @@ void VulkanRenderSession::ThreadVertexObj_t::run() {
                     }
 
                     ChangedContent_RegionRemove.clear();
-                    hasWork = true;
                 }
 
                 if(!ChangedDefines_Voxel.empty()) {
@@ -72,7 +227,6 @@ void VulkanRenderSession::ThreadVertexObj_t::run() {
                     std::sort(changedDefines_Voxel.begin(), changedDefines_Voxel.end());
                     auto last = std::unique(changedDefines_Voxel.begin(), changedDefines_Voxel.end());
                     changedDefines_Voxel.erase(last, changedDefines_Voxel.end());
-                    hasWork = true;
                 }
 
                 if(!ChangedDefines_Node.empty()) {
@@ -82,7 +236,6 @@ void VulkanRenderSession::ThreadVertexObj_t::run() {
                     std::sort(changedDefines_Node.begin(), changedDefines_Node.end());
                     auto last = std::unique(changedDefines_Node.begin(), changedDefines_Node.end());
                     changedDefines_Node.erase(last, changedDefines_Node.end());
-                    hasWork = true;
                 }
 
                 State.lock()->ServerSession_InUse = false;
@@ -152,155 +305,19 @@ void VulkanRenderSession::ThreadVertexObj_t::run() {
                     regions.erase(last, regions.end());
                 }
 
+                // LOG.debug() << "WorldUpdate: " << Time::nowSystem() - now;
                 lock = State.lock();
-            }
-
-            if(lock->Stage == EnumRenderStage::ComposingCommandBuffer || lock->Stage == EnumRenderStage::Render) {
-                // Здесь можно обработать события, и подготовить меши по данным с мира
-                lock->ServerSession_InUse = true;
-                lock.unlock();
-                // changedContent_Chunk
-                if(!changedContent_Chunk.empty())
-                    hasWork = true;
-
-                std::vector<WorldId_t> toRemove;
-                for(auto& [worldId, chunks] : changedContent_Chunk) {
-                    while(!chunks.empty() && State.get_read().Stage != EnumRenderStage::ComposingCommandBuffer && State.get_read().Stage != EnumRenderStage::Render) {
-                        auto& chunkPos = chunks.back();
-                        Pos::GlobalRegion regionPos = chunkPos >> 2;
-                        Pos::bvec4u localPos = chunkPos & 0x3;
-                        
-                        auto& drawChunk = chunksUpdate[worldId][regionPos][localPos];
-                        {
-                            auto iterWorld = SSession->Data.Worlds.find(worldId);
-                            if(iterWorld == SSession->Data.Worlds.end())
-                                goto skip;
-
-                            auto iterRegion = iterWorld->second.Regions.find(regionPos);
-                            if(iterRegion == iterWorld->second.Regions.end())
-                                goto skip;
-
-                            auto& chunk = iterRegion->second.Chunks[localPos.pack()];
-
-                            {
-                                drawChunk.VoxelDefines.resize(chunk.Voxels.size());
-                                for(size_t index = 0; index < chunk.Voxels.size(); index++)
-                                    drawChunk.VoxelDefines[index] = chunk.Voxels[index].VoxelId;
-                                std::sort(drawChunk.VoxelDefines.begin(), drawChunk.VoxelDefines.end());
-                                auto last = std::unique(drawChunk.VoxelDefines.begin(), drawChunk.VoxelDefines.end());
-                                drawChunk.VoxelDefines.erase(last, drawChunk.VoxelDefines.end());
-                                drawChunk.VoxelDefines.shrink_to_fit();
-                            }
-
-                            {
-                                drawChunk.NodeDefines.resize(chunk.Nodes.size());
-                                for(size_t index = 0; index < chunk.Nodes.size(); index++)
-                                    drawChunk.NodeDefines[index] = chunk.Nodes[index].NodeId;
-                                std::sort(drawChunk.NodeDefines.begin(), drawChunk.NodeDefines.end());
-                                auto last = std::unique(drawChunk.NodeDefines.begin(), drawChunk.NodeDefines.end());
-                                drawChunk.NodeDefines.erase(last, drawChunk.NodeDefines.end());
-                                drawChunk.NodeDefines.shrink_to_fit();
-                            }
-
-                            {
-                                std::vector<VoxelVertexPoint> voxels = generateMeshForVoxelChunks(chunk.Voxels);
-                                if(!voxels.empty()) {
-                                    drawChunk.VoxelPointer = VertexPool_Voxels.pushVertexs(std::move(voxels));
-                                }
-                            }
-
-                            {
-                                std::vector<NodeVertexStatic> nodes = generateMeshForNodeChunks(chunk.Nodes.data());
-                                if(!nodes.empty()) {
-                                    drawChunk.NodePointer = VertexPool_Nodes.pushVertexs(std::move(nodes));
-                                }
-                            }
-                        }
-
-                        skip:
-
-                        chunks.pop_back();
-                    }
-
-                    if(chunks.empty())
-                        toRemove.push_back(worldId);
-                }
-
-                for(WorldId_t worldId : toRemove)
-                    changedContent_Chunk.erase(changedContent_Chunk.find(worldId));
-
-                lock = State.lock();
-                lock->ServerSession_InUse = false;
-            }
-
-            if(lock->Stage == EnumRenderStage::Render || lock->Stage == EnumRenderStage::WorldUpdate) {
-                // Здесь можно выгрузить готовые данные в ChunkMesh
-                lock->ChunkMesh_IsUse = true;
-                lock.unlock();
-
-                if(!changedContent_RegionRemove.empty())
-                    hasWork = true;
-
-                // Удаляем регионы
-                std::vector<WorldId_t> toRemove;
-                for(auto& [worldId, regions] : changedContent_RegionRemove) {
-                    auto iterWorld = ChunkMesh.find(worldId);
-                    if(iterWorld == ChunkMesh.end())
-                        continue;
-
-                    for(Pos::GlobalRegion regionPos : regions) {
-                        auto iterRegion = iterWorld->second.find(regionPos);
-                        if(iterRegion == iterWorld->second.end())
-                            continue;
-
-                        for(size_t index = 0; index < iterRegion->second.size(); index++) {
-                            auto &chunk = iterRegion->second[index];
-                            chunk.NodeDefines.clear();
-                            chunk.VoxelDefines.clear();
-
-                            VertexPool_Voxels.dropVertexs(chunk.VoxelPointer);
-                            VertexPool_Nodes.dropVertexs(chunk.NodePointer);
-                        }
-
-                        iterWorld->second.erase(iterRegion);
-                    }
-
-                    if(iterWorld->second.empty())
-                        toRemove.push_back(worldId);
-                }
-
-                for(WorldId_t worldId : toRemove)
-                    ChunkMesh.erase(ChunkMesh.find(worldId));
-
-                if(!chunksUpdate.empty())
-                    hasWork = true;
-
-                // Добавляем обновлённые меши
-                for(auto& [worldId, regions] : chunksUpdate) {
-                    auto &world = ChunkMesh[worldId];
-
-                    for(auto& [regionPos, chunks] : regions) {
-                        auto &region = world[regionPos];
-                        
-                        for(auto& [chunkPos, chunk] : chunks) {
-                            auto &drawChunk = region[chunkPos.pack()];
-                            VertexPool_Voxels.dropVertexs(drawChunk.VoxelPointer);
-                            VertexPool_Nodes.dropVertexs(drawChunk.NodePointer);
-                            drawChunk = std::move(chunk);
-                        }
-                    }
-                }
-
-                chunksUpdate.clear();
-
-                lock = State.lock();
-                lock->ChunkMesh_IsUse = false;
             }
 
             lock.unlock();
 
+            if(hasVertexChanges) {
+                VertexPool_Voxels.update(CMDPool);
+                VertexPool_Nodes.update(CMDPool);
+            }
+
             if(!hasWork)
-                Time::sleep3(20);
+                Time::sleep3(3);
         }
     } catch(const std::exception &exc) {
         LOG.error() << exc.what();
@@ -310,6 +327,8 @@ void VulkanRenderSession::ThreadVertexObj_t::run() {
     lock->Stage = EnumRenderStage::Shutdown;
     lock->ChunkMesh_IsUse = false;
     lock->ServerSession_InUse = false;
+
+    LOG.debug() << "Завершение потока подготовки чанков к рендеру";
 }
 
 void VulkanRenderSession::VulkanContext::onUpdate() {
@@ -329,7 +348,6 @@ VulkanRenderSession::VulkanRenderSession()
 }
 
 VulkanRenderSession::~VulkanRenderSession() {
-    
 }
 
 void VulkanRenderSession::free(Vulkan *instance) {

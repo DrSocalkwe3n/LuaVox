@@ -24,6 +24,7 @@ class VertexPool {
     // Память, доступная для обмена с устройством
     Buffer HostCoherent;
     Vertex *HCPtr = nullptr;
+    VkFence Fence = nullptr;
     size_t WritePos = 0;
 
     struct Pool {
@@ -83,11 +84,23 @@ public:
     {
         Pools.reserve(16);
         HCPtr = (Vertex*) HostCoherent.mapMemory();
+
+        const VkFenceCreateInfo info = {
+            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0
+        };
+
+        vkAssert(!vkCreateFence(inst->Graphics.Device, &info, nullptr, &Fence));
     }
 
     ~VertexPool() {
         if(HCPtr)
             HostCoherent.unMapMemory();
+
+        if(Fence) {
+            vkDestroyFence(Inst->Graphics.Device, Fence, nullptr);
+        }
     }
 
 
@@ -295,9 +308,12 @@ public:
             0,
             nullptr
         };
-
-        vkQueueSubmit(Inst->Graphics.DeviceQueueGraphic, 1, &submitInfo, VK_NULL_HANDLE);
-        vkQueueWaitIdle(Inst->Graphics.DeviceQueueGraphic);
+        {
+            auto lockQueue = Inst->Graphics.DeviceQueueGraphic.lock();
+            vkAssert(!vkQueueSubmit(*lockQueue, 1, &submitInfo, Fence));
+        }
+        vkAssert(!vkWaitForFences(Inst->Graphics.Device, 1, &Fence, VK_TRUE, UINT64_MAX));
+        vkAssert(!vkResetFences(Inst->Graphics.Device, 1, &Fence));
         vkFreeCommandBuffers(Inst->Graphics.Device, commandPool, 1, &commandBuffer);
 
         std::queue<Task> postponed = std::move(TasksPostponed);

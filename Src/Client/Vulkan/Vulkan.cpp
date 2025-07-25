@@ -33,6 +33,21 @@ extern void LoadSymbolsVulkan(TOS::DynamicLibrary &library);
 
 namespace LV::Client::VK {
 
+static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
+    VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+    VkDebugUtilsMessageTypeFlagsEXT messageType,
+    const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+    void* pUserData)
+{
+	std::cerr << "Validation Layer: " << pCallbackData->pMessage << std::endl;
+
+	if("Copying old device 0 into new device 0" == std::string(pCallbackData->pMessage)) {
+		return VK_FALSE;
+	}
+
+    return VK_FALSE;
+}
+
 struct ServerObj {
 	Server::GameServer GS;
 	Net::SocketServer LS;
@@ -97,6 +112,11 @@ Vulkan::Vulkan(asio::io_context &ioc)
 		try {
 			if(Graphics.Window)
 				glfwSetWindowAttrib(Graphics.Window, GLFW_VISIBLE, false);
+		} catch(...) {}
+
+		try {
+			if(Game.RSession)
+        		Game.RSession->pushStage(EnumRenderStage::Shutdown);
 		} catch(...) {}
 
 		try { Game.RSession = nullptr; } catch(const std::exception &exc) {
@@ -460,7 +480,11 @@ void Vulkan::run()
 				Game.RSession->pushStage(EnumRenderStage::Render);
 
 			#ifdef HAS_IMGUI
-			ImGui_ImplVulkan_NewFrame();
+			{
+				auto lockQueue = Graphics.DeviceQueueGraphic.lock();
+				ImGui_ImplVulkan_NewFrame();
+				lockQueue.unlock();
+			}
 			ImGui_ImplGlfw_NewFrame();
 			ImGui::NewFrame();
 
@@ -514,7 +538,10 @@ void Vulkan::run()
 				};
 
 				//Рисуем, когда получим картинку
-				vkAssert(!vkQueueSubmit(Graphics.DeviceQueueGraphic, 1, &submit_info, nullFence));
+				{
+					auto lockQueue = Graphics.DeviceQueueGraphic.lock();
+					vkAssert(!vkQueueSubmit(*lockQueue, 1, &submit_info, nullFence));
+				}
 			}
 
 			{
@@ -530,7 +557,11 @@ void Vulkan::run()
 				};
 
 				// Завершаем картинку
-				err = vkQueuePresentKHR(Graphics.DeviceQueueGraphic, &present);
+				{
+					auto lockQueue = Graphics.DeviceQueueGraphic.lock();
+					err = vkQueuePresentKHR(*lockQueue, &present);
+				}
+				
 				if (err == VK_ERROR_OUT_OF_DATE_KHR)
 				{
 					freeSwapchains();
@@ -550,9 +581,13 @@ void Vulkan::run()
 			Game.Session->atFreeDrawTime(gTime, dTime);
 		}
 
-		vkAssert(!vkQueueWaitIdle(Graphics.DeviceQueueGraphic));
+		// vkAssert(!vkQueueWaitIdle(Graphics.DeviceQueueGraphic));
 
-		vkDeviceWaitIdle(Graphics.Device);
+		{
+			auto lockQueue = Graphics.DeviceQueueGraphic.lock();
+			vkDeviceWaitIdle(Graphics.Device);
+			lockQueue.unlock();
+		}
 		Screen.State = DrawState::End;
 	}
 
@@ -1477,6 +1512,7 @@ void Vulkan::initNextSettings()
 		freeSwapchains();
 	}
 
+	bool hasVK_EXT_debug_utils = false;
 	if(!Graphics.Instance)
 	{
 		std::vector<std::string_view> knownDebugLayers =
@@ -1506,7 +1542,38 @@ void Vulkan::initNextSettings()
 					break;
 				}
 
-		Graphics.Instance.emplace(this, enableDebugLayers);
+		std::vector<vkInstanceExtension> enableExtension;
+		if(SettingsNext.Debug)
+			for(const vkInstanceExtension &ext : Graphics.InstanceExtensions) {
+				if(ext.ExtensionName == "VK_EXT_debug_utils") {
+					enableExtension.push_back(ext);
+					hasVK_EXT_debug_utils = true;
+					break;
+				}
+			}
+
+		Graphics.Instance.emplace(this, enableDebugLayers, enableExtension);
+	}
+
+	if(hasVK_EXT_debug_utils) {
+		VkDebugUtilsMessengerCreateInfoEXT createInfo = {
+			.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+			.pNext = nullptr,
+			.flags = 0,
+			.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+				VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+				VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+			.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+				VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+				VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+			.pfnUserCallback = &debugCallback,
+			.pUserData = nullptr
+		};
+
+		VkDebugUtilsMessengerEXT debugMessenger;
+		PFN_vkCreateDebugUtilsMessengerEXT myvkCreateDebugUtilsMessengerEXT = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(Graphics.Instance->getInstance(), "vkCreateDebugUtilsMessengerEXT"));
+		myvkCreateDebugUtilsMessengerEXT(Graphics.Instance->getInstance(), &createInfo, nullptr, &debugMessenger);
+		LOG.debug() << "Добавлен обработчик логов";
 	}
 
 	if(!Graphics.Surface)
@@ -1594,7 +1661,8 @@ void Vulkan::initNextSettings()
 		};
 
 		vkAssert(!vkCreateDevice(Graphics.PhysicalDevice, &infoDevice, nullptr, &Graphics.Device));
-		vkGetDeviceQueue(Graphics.Device, SettingsNext.QueueGraphics, 0, &Graphics.DeviceQueueGraphic);
+		auto lockQueue = Graphics.DeviceQueueGraphic.lock();
+		vkGetDeviceQueue(Graphics.Device, SettingsNext.QueueGraphics, 0, &*lockQueue);
 	}
 
 	// Определяемся с форматом экранного буфера
@@ -1821,13 +1889,14 @@ void Vulkan::initNextSettings()
 		
 		ImGui_ImplGlfw_InitForVulkan(Graphics.Window, true);
 
+		auto lockQueue = Graphics.DeviceQueueGraphic.lock();
 		ImGui_ImplVulkan_InitInfo ImGuiInfo = 
 		{
 			.Instance = Graphics.Instance->getInstance(),
 			.PhysicalDevice = Graphics.PhysicalDevice,
 			.Device = Graphics.Device,
 			.QueueFamily = SettingsNext.QueueGraphics,
-			.Queue = Graphics.DeviceQueueGraphic,
+			.Queue = *lockQueue,
 			.DescriptorPool = Graphics.ImGuiDescPool,
 			.RenderPass = Graphics.RenderPass,
 			.MinImageCount = Graphics.DrawBufferCount,
@@ -1843,6 +1912,7 @@ void Vulkan::initNextSettings()
 		};
 		
 		ImGui_ImplVulkan_Init(&ImGuiInfo);
+		lockQueue.unlock();
 
 		// ImFontConfig fontConfig;
 		// fontConfig.MergeMode = false;
@@ -1946,7 +2016,7 @@ void Vulkan::deInitVulkan()
 	Graphics.RenderPass = nullptr;
 	Graphics.Device = nullptr;
 	Graphics.PhysicalDevice = nullptr;
-	Graphics.DeviceQueueGraphic = nullptr;
+	*Graphics.DeviceQueueGraphic.lock() = nullptr;
 	Graphics.Surface = nullptr;
 	Graphics.Instance.reset();
 }
@@ -1970,8 +2040,10 @@ void Vulkan::flushCommandBufferData()
 		.pSignalSemaphores = nullptr
 	};
 
-	vkAssert(!vkQueueSubmit(Graphics.DeviceQueueGraphic, 1, &submit_info, nullFence));
-	vkAssert(!vkQueueWaitIdle(Graphics.DeviceQueueGraphic));
+	auto lockQueue = Graphics.DeviceQueueGraphic.lock();
+	vkAssert(!vkQueueSubmit(*lockQueue, 1, &submit_info, nullFence));
+	vkAssert(!vkQueueWaitIdle(*lockQueue));
+	lockQueue.unlock();
 
 	VkCommandBufferBeginInfo infoCmdBuffer =
 	{
@@ -2763,13 +2835,22 @@ CommandBuffer::CommandBuffer(Vulkan *instance)
 	};
 	
 	vkAssert(!vkBeginCommandBuffer(Buffer, &infoCmdBuffer));
+
+	const VkFenceCreateInfo info = {
+		.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+		.pNext = nullptr,
+		.flags = 0
+	};
+
+	vkAssert(!vkCreateFence(instance->Graphics.Device, &info, nullptr, &Fence));
 }
 
 CommandBuffer::~CommandBuffer()
 {
 	if(Buffer && Instance && Instance->Graphics.Device)
 	{
-		if(Instance->Graphics.DeviceQueueGraphic)
+		auto lockQueue = Instance->Graphics.DeviceQueueGraphic.lock();
+		if(*lockQueue)
 		{
 			//vkAssert(!vkEndCommandBuffer(Buffer));
 			vkEndCommandBuffer(Buffer);
@@ -2789,25 +2870,33 @@ CommandBuffer::~CommandBuffer()
 			};
 
 			//vkAssert(!vkQueueSubmit(Instance->Graphics.DeviceQueueGraphic, 1, &submit_info, nullFence));
-			vkQueueSubmit(Instance->Graphics.DeviceQueueGraphic, 1, &submit_info, nullFence);
+			vkQueueSubmit(*lockQueue, 1, &submit_info, Fence);
+			lockQueue.unlock();
 			//vkAssert(!vkQueueWaitIdle(Instance->Graphics.DeviceQueueGraphic));
-			vkQueueWaitIdle(Instance->Graphics.DeviceQueueGraphic);
-			
+			//vkQueueWaitIdle(Instance->Graphics.DeviceQueueGraphic);
+			vkWaitForFences(Instance->Graphics.Device, 1, &Fence, VK_TRUE, UINT64_MAX);
+			vkResetFences(Instance->Graphics.Device, 1, &Fence);
+
 			auto toExecute = std::move(AfterExecute);
 			for(auto &iter : toExecute)
 				try { iter(); } catch(const std::exception &exc) { Logger("CommandBuffer").error() << exc.what(); }
-		}
+		} else
+			lockQueue.unlock();
 
 		vkFreeCommandBuffers(Instance->Graphics.Device, OffthreadPool ? OffthreadPool : Instance->Graphics.Pool, 1, &Buffer);
 	
 		if(OffthreadPool)
 			vkDestroyCommandPool(Instance->Graphics.Device, OffthreadPool, nullptr);
+
+        if(Fence) 
+            vkDestroyFence(Instance->Graphics.Device, Fence, nullptr);
 	}
 }
 
 void CommandBuffer::execute()
 {
-	vkAssert(Instance->Graphics.DeviceQueueGraphic);
+	auto lockQueue = Instance->Graphics.DeviceQueueGraphic.lock();
+	vkAssert(*lockQueue);
 	vkAssert(!vkEndCommandBuffer(Buffer));
 
 	const VkCommandBuffer cmd_bufs[] = { Buffer };
@@ -2825,8 +2914,16 @@ void CommandBuffer::execute()
 		.pSignalSemaphores = nullptr
 	};
 
-	vkAssert(!vkQueueSubmit(Instance->Graphics.DeviceQueueGraphic, 1, &submit_info, nullFence));
-	vkAssert(!vkQueueWaitIdle(Instance->Graphics.DeviceQueueGraphic));
+	// vkAssert(!vkQueueSubmit(Instance->Graphics.DeviceQueueGraphic, 1, &submit_info, nullFence));
+	// vkAssert(!vkQueueWaitIdle(Instance->Graphics.DeviceQueueGraphic));
+
+	vkAssert(!vkQueueSubmit(*lockQueue, 1, &submit_info, Fence));
+	lockQueue.unlock();
+	//vkAssert(!vkQueueWaitIdle(Instance->Graphics.DeviceQueueGraphic));
+	//vkQueueWaitIdle(Instance->Graphics.DeviceQueueGraphic);
+	vkAssert(!vkWaitForFences(Instance->Graphics.Device, 1, &Fence, VK_TRUE, UINT64_MAX));
+	vkAssert(!vkResetFences(Instance->Graphics.Device, 1, &Fence));
+	
 	VkCommandBufferBeginInfo infoCmdBuffer =
 	{
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,

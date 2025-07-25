@@ -82,6 +82,7 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
         // соответственно никто не попытаеся сюда обратится без событий
         IServerSession *SSession = nullptr;
         Vulkan *VkInst;
+        VkCommandPool CMDPool = nullptr;
 
         // Здесь не хватает стадии работы с текстурами
         struct StateObj_t {
@@ -104,11 +105,24 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
                 VertexPool_Voxels(vkInst),
                 VertexPool_Nodes(vkInst),
                 Thread(&ThreadVertexObj_t::run, this)
-        {}
+        {
+            const VkCommandPoolCreateInfo infoCmdPool =
+            {
+                .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                .queueFamilyIndex = VkInst->getSettings().QueueGraphics
+            };
+
+            vkAssert(!vkCreateCommandPool(VkInst->Graphics.Device, &infoCmdPool, nullptr, &CMDPool));
+        }
 
         ~ThreadVertexObj_t() {
             State.lock()->Stage = EnumRenderStage::Shutdown;
             Thread.join();
+
+            if(CMDPool)
+                vkDestroyCommandPool(VkInst->Graphics.Device, CMDPool, nullptr);
         }
 
         // Сюда входят добавленные/изменённые/удалённые определения нод и вокселей
@@ -148,16 +162,21 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
                     while(State.get_read().ChunkMesh_IsUse);
                 } else
                     lock.unlock();
-
-                VertexPool_Voxels.update(VkInst->Graphics.Pool);
-                VertexPool_Nodes.update(VkInst->Graphics.Pool);
             } else if(stage == EnumRenderStage::WorldUpdate) {
                 if(lock->ServerSession_InUse) {
                     lock.unlock();
                     while(State.get_read().ServerSession_InUse);
                 } else
                     lock.unlock();
+            } else if(stage == EnumRenderStage::Shutdown) {
+                if(lock->ServerSession_InUse || lock->ChunkMesh_IsUse) {
+                    lock.unlock();
+                    while(State.get_read().ServerSession_InUse);
+                    while(State.get_read().ChunkMesh_IsUse);
+                } else
+                    lock.unlock();
             }
+
         }
 
         std::pair<
@@ -181,7 +200,9 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
 
                         bool isVisible = false;
                         for(int index = 0; index < 8; index++) {
-                            glm::vec4 temp = glm::vec4((begin+glm::vec3(index&1, (index>>1)&1, (index>>2)&1))*64.f, 1) * projView;
+                            glm::vec4 vec((begin+glm::vec3(index&1, (index>>1)&1, (index>>2)&1))*64.f, 1);
+                            glm::vec4 temp = projView * vec;
+                            temp /= temp.w;
 
                             if(temp.x >= -1 && temp.x <= 1
                                 && temp.y >= -1 && temp.y <= 1
@@ -252,7 +273,6 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
         {}
 
         ~VulkanContext() {
-            ThreadVertexObj.pushStage(EnumRenderStage::Shutdown);
         }
 
         void onUpdate();

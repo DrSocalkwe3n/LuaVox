@@ -178,7 +178,7 @@ private:
 	asio::executor_work_guard<asio::io_context::executor_type> GuardLock;
 
 public:
-	struct {
+	struct GraphicsObj_t {
 		std::vector<vkInstanceLayer> InstanceLayers;
 		std::vector<vkInstanceExtension> InstanceExtensions;
 		std::vector<std::string> GLFWExtensions;
@@ -191,7 +191,7 @@ public:
 		VkPhysicalDevice PhysicalDevice = nullptr;
 		VkPhysicalDeviceMemoryProperties DeviceMemoryProperties = {0};
 		VkDevice Device = nullptr;
-		VkQueue DeviceQueueGraphic = VK_NULL_HANDLE;
+		SpinlockObject<VkQueue> DeviceQueueGraphic;
 		VkFormat SurfaceFormat = VK_FORMAT_B8G8R8A8_UNORM;
 		VkColorSpaceKHR SurfaceColorSpace = VK_COLOR_SPACE_MAX_ENUM_KHR;
 
@@ -226,6 +226,10 @@ public:
 
 		// Идентификатор потока графики
 		std::thread::id ThisThread = std::this_thread::get_id();
+
+		GraphicsObj_t()
+			: DeviceQueueGraphic(VK_NULL_HANDLE)
+		{}
 	} Graphics;
 
 	enum struct DrawState {
@@ -537,6 +541,7 @@ public:
 class CommandBuffer {
 	VkCommandBuffer Buffer = VK_NULL_HANDLE;
 	Vulkan *Instance;
+	VkFence Fence = VK_NULL_HANDLE;
 	std::vector<std::function<void()>> AfterExecute;
 
 	VkCommandPool OffthreadPool = VK_NULL_HANDLE;

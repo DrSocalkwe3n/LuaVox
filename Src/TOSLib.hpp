@@ -111,25 +111,47 @@ public:
 
     class Lock {
     public:
-        Lock(SpinlockObject* obj, std::atomic_flag& lock)
-            : obj(obj), lock(lock) {
-            while (lock.test_and_set(std::memory_order_acquire));
+        Lock(SpinlockObject* obj, std::atomic_flag& flag)
+            : Obj(obj), Flag(&flag) {
+            while (flag.test_and_set(std::memory_order_acquire));
         }
 
         ~Lock() {
-			if(obj)
-            	lock.clear(std::memory_order_release);
+			if(Obj)
+            	Flag->clear(std::memory_order_release);
         }
 
-        T& get() const { assert(obj); return obj->value; }
-		T* operator->() const { assert(obj); return &obj->value; }
-		T& operator*() const { assert(obj); return obj->value; }
+		Lock(const Lock&) = delete;
+		Lock(Lock&& obj)
+			: Obj(obj.Obj), Flag(obj.Flag)
+		{
+			obj.Obj = nullptr;
+		}
 
-		void unlock() { obj = nullptr; lock.clear(std::memory_order_release);}
+		Lock& operator=(const Lock&) = delete;
+		Lock& operator=(Lock&& obj) {
+			if(this == &obj)
+				return *this;
+
+			if(Obj)
+				unlock();
+
+			Obj = obj.Obj;
+			obj.Obj = nullptr;
+			Flag = obj.Flag;
+			
+			return *this;
+		}
+
+        T& get() const { assert(Obj); return Obj->value; }
+		T* operator->() const { assert(Obj); return &Obj->value; }
+		T& operator*() const { assert(Obj); return Obj->value; }
+
+		void unlock() { assert(Obj); Obj = nullptr; Flag->clear(std::memory_order_release);}
 
     private:
-        SpinlockObject* obj;
-        std::atomic_flag& lock;
+        SpinlockObject *Obj;
+        std::atomic_flag *Flag;
     };
 
     Lock lock() {

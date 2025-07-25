@@ -77,28 +77,19 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
         Удалённые мешы хранятся в памяти N количество кадров
     */
     struct ThreadVertexObj_t {
+        // Сессия будет выдана позже
+        // Предполагается что события будут только после того как сессия будет установлена,
+        // соответственно никто не попытаеся сюда обратится без событий
+        IServerSession *SSession = nullptr;
+        Vulkan *VkInst;
 
         // Здесь не хватает стадии работы с текстурами
-        enum class EnumStage {
-            // Постройка буфера команд на рисовку
-            // В этот период не должно быть изменений в таблице,
-            // хранящей указатели на данные для рендера ChunkMesh
-            // Можно работать с миром
-            // Здесь нужно дождаться завершения работы с ChunkMesh
-            ComposingCommandBuffer,
-            // В этот период можно менять ChunkMesh
-            // Можно работать с миром
-            Render,
-            // В этот период нельзя работать с миром
-            // Можно менять ChunkMesh
-            // Здесь нужно дождаться завершения работы с миром, только в 
-            // этом этапе могут приходить события изменения чанков и определений
-            WorldUpdate,
+        struct StateObj_t {
+            EnumRenderStage Stage = EnumRenderStage::Render;
+            volatile bool ChunkMesh_IsUse = false, ServerSession_InUse = false;
+        };
 
-            Shutdown
-        } Stage = EnumStage::Render;
-
-        volatile bool ChunkMesh_IsUse = false, ServerSession_InUse = false;
+        SpinlockObject<StateObj_t> State;
 
         struct ChunkObj_t {
             // Сортированный список уникальных значений
@@ -108,18 +99,15 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
             VertexPool<NodeVertexStatic>::Pointer NodePointer;
         };
 
-        std::unordered_map<WorldId_t,
-            std::unordered_map<Pos::GlobalRegion, std::array<ChunkObj_t, 4*4*4>>
-        > ChunkMesh;
-
         ThreadVertexObj_t(Vulkan* vkInst)
-            :   VertexPool_Voxels(vkInst),
+            :   VkInst(vkInst),
+                VertexPool_Voxels(vkInst),
                 VertexPool_Nodes(vkInst),
                 Thread(&ThreadVertexObj_t::run, this)
         {}
 
         ~ThreadVertexObj_t() {
-            Stage = EnumStage::Shutdown;
+            State.lock()->Stage = EnumRenderStage::Shutdown;
             Thread.join();
         }
 
@@ -144,18 +132,88 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
         }
 
         // Синхронизация потока рендера мира
-        void pushStage(EnumStage stage) {
-            if(Stage == EnumStage::Shutdown)
+        void pushStage(EnumRenderStage stage) {
+            auto lock = State.lock();
+
+            if(lock->Stage == EnumRenderStage::Shutdown)
                 MAKE_ERROR("Остановка из-за ошибки ThreadVertex");
 
-            assert(Stage != stage);
+            assert(lock->Stage != stage);
 
-            Stage = stage;
-            if(stage == EnumStage::ComposingCommandBuffer) {
-                while(ChunkMesh_IsUse);
-            } else if(stage == EnumStage::WorldUpdate) {
-                while(ServerSession_InUse);
+            lock->Stage = stage;
+
+            if(stage == EnumRenderStage::ComposingCommandBuffer) {
+                if(lock->ChunkMesh_IsUse) {
+                    lock.unlock();
+                    while(State.get_read().ChunkMesh_IsUse);
+                } else
+                    lock.unlock();
+
+                VertexPool_Voxels.update(VkInst->Graphics.Pool);
+                VertexPool_Nodes.update(VkInst->Graphics.Pool);
+            } else if(stage == EnumRenderStage::WorldUpdate) {
+                if(lock->ServerSession_InUse) {
+                    lock.unlock();
+                    while(State.get_read().ServerSession_InUse);
+                } else
+                    lock.unlock();
             }
+        }
+
+        std::pair<
+            std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>>,
+            std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>>
+        > getChunksForRender(WorldId_t worldId, Pos::Object pos, uint8_t distance, glm::mat4 projView, Pos::GlobalRegion x64offset) {
+            Pos::GlobalRegion center = pos >> Pos::Object_t::BS_Bit >> 4 >> 2;
+
+            std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>> vertexVoxels;
+            std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>> vertexNodes;
+
+            auto iterWorld = ChunkMesh.find(worldId);
+            if(iterWorld == ChunkMesh.end())
+                return {};
+
+            for(int z = -distance; z <= distance; z++) {
+                for(int y = -distance; y <= distance; y++) {
+                    for(int x = -distance; x <= distance; x++) {
+                        Pos::GlobalRegion region = center + Pos::GlobalRegion(x, y, z);
+                        glm::vec3 begin = glm::vec3(region - x64offset);
+
+                        bool isVisible = false;
+                        for(int index = 0; index < 8; index++) {
+                            glm::vec4 temp = glm::vec4((begin+glm::vec3(index&1, (index>>1)&1, (index>>2)&1))*64.f, 1) * projView;
+
+                            if(temp.x >= -1 && temp.x <= 1
+                                && temp.y >= -1 && temp.y <= 1
+                                && temp.z >= 0 && temp.z <= 1
+                            ) {
+                                isVisible = true;
+                                break;
+                            }
+                        }
+
+                        if(!isVisible)
+                            continue;
+
+                        auto iterRegion = iterWorld->second.find(region);
+                        if(iterRegion == iterWorld->second.end())
+                            continue;
+
+                        Pos::GlobalChunk local = Pos::GlobalChunk(region) << 2;
+
+                        for(size_t index = 0; index < iterRegion->second.size(); index++) {
+                            auto &chunk = iterRegion->second[index];
+
+                            if(chunk.VoxelPointer)
+                                vertexVoxels.emplace_back(local+Pos::GlobalChunk(Pos::bvec4u().unpack(index)), VertexPool_Voxels.map(chunk.VoxelPointer), chunk.VoxelPointer.VertexCount);
+                            if(chunk.NodePointer)
+                                vertexNodes.emplace_back(local+Pos::GlobalChunk(Pos::bvec4u().unpack(index)), VertexPool_Nodes.map(chunk.NodePointer), chunk.NodePointer.VertexCount);
+                        }
+                    }
+                }
+            }
+
+            return std::pair{vertexVoxels, vertexNodes};
         }
 
     private:
@@ -168,6 +226,10 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
         // Список чанков на перерисовку
         std::unordered_map<WorldId_t, std::vector<Pos::GlobalChunk>> ChangedContent_Chunk; 
         std::unordered_map<WorldId_t, std::vector<Pos::GlobalRegion>> ChangedContent_RegionRemove;
+        // Меши
+        std::unordered_map<WorldId_t,
+            std::unordered_map<Pos::GlobalRegion, std::array<ChunkObj_t, 4*4*4>>
+        > ChunkMesh;
         // Внешний поток
         std::thread Thread;
 
@@ -190,10 +252,14 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
         {}
 
         ~VulkanContext() {
-            ThreadVertexObj.pushStage(ThreadVertexObj_t::EnumStage::Shutdown);
+            ThreadVertexObj.pushStage(EnumRenderStage::Shutdown);
         }
 
         void onUpdate();
+
+        void setServerSession(IServerSession* ssession) {
+            ThreadVertexObj.SSession = ssession;
+        }
     };
 
     std::shared_ptr<VulkanContext> VKCTX;
@@ -249,6 +315,8 @@ public:
 
     void setServerSession(IServerSession *serverSession) {
         ServerSession = serverSession;
+        if(VKCTX)
+            VKCTX->setServerSession(serverSession);
         assert(serverSession);
     }
 
@@ -264,6 +332,7 @@ public:
 
     void beforeDraw();
     void drawWorld(GlobalTime gTime, float dTime, VkCommandBuffer drawCmd);
+    void pushStage(EnumRenderStage stage);
 
     static std::vector<VoxelVertexPoint> generateMeshForVoxelChunks(const std::vector<VoxelCube> cubes); 
     static std::vector<NodeVertexStatic> generateMeshForNodeChunks(const Node* nodes); 

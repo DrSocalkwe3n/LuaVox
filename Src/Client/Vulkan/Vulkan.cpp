@@ -148,10 +148,14 @@ void Vulkan::run()
 	double prevTime = glfwGetTime();
 	while(!NeedShutdown)
 	{
+
 		float dTime = glfwGetTime()-prevTime;
 		prevTime += dTime;
 
 		Screen.State = DrawState::Begin;
+		if(Game.RSession)
+			Game.RSession->pushStage(EnumRenderStage::ComposingCommandBuffer);
+		
 		{
 			std::lock_guard lock(Screen.BeforeDrawMtx);
 			while(!Screen.BeforeDraw.empty())
@@ -452,7 +456,8 @@ void Vulkan::run()
 			// 	vkCmdBeginRenderPass(Graphics.CommandBufferRender, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
 			// }
 
-
+			if(Game.RSession)
+				Game.RSession->pushStage(EnumRenderStage::Render);
 
 			#ifdef HAS_IMGUI
 			ImGui_ImplVulkan_NewFrame();
@@ -539,6 +544,9 @@ void Vulkan::run()
 			vkAssert(err == VK_TIMEOUT);
 
 		if(Game.Session) {
+			if(Game.RSession)
+				Game.RSession->pushStage(EnumRenderStage::WorldUpdate);
+
 			Game.Session->atFreeDrawTime(gTime, dTime);
 		}
 

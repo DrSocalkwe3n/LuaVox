@@ -9,6 +9,7 @@
 #include "glm/ext/scalar_constants.hpp"
 #include "glm/matrix.hpp"
 #include "glm/trigonometric.hpp"
+#include <algorithm>
 #include <cstddef>
 #include <memory>
 #include <vector>
@@ -17,13 +18,214 @@
 
 namespace LV::Client::VK {
 
+void VulkanRenderSession::ThreadVertexObj_t::run() {
+    Logger LOG = "ThreadVertex";
+
+    // Контейнеры событий
+    std::vector<DefVoxelId_t> changedDefines_Voxel;
+    std::vector<DefNodeId_t> changedDefines_Node;
+    std::unordered_map<WorldId_t, std::vector<Pos::GlobalChunk>> changedContent_Chunk;
+    std::unordered_map<WorldId_t, std::vector<Pos::GlobalRegion>> changedContent_RegionRemove;
+
+
+    // std::vector<VertexPool<VoxelVertexPoint>::Pointer> ToDelete_Voxels;
+    // std::vector<VertexPool<VoxelVertexPoint>::Pointer> ToDelete_Nodes;
+
+    try {
+        while(Stage != EnumStage::Shutdown) {
+            if(Stage != EnumStage::WorldUpdate) {
+                // Переносим все события в локальные хранилища
+                ServerSession_InUse = true;
+
+                if(!ChangedContent_Chunk.empty()) {
+                    for(auto& [worldId, chunks] : ChangedContent_Chunk) {
+                        auto &list = changedContent_Chunk[worldId];
+                        list.insert(list.end(), chunks.begin(), chunks.end());
+                    }
+
+                    ChangedContent_Chunk.clear();
+                }
+
+                if(!ChangedContent_RegionRemove.empty()) {
+                    for(auto& [worldId, chunks] : ChangedContent_RegionRemove) {
+                        auto &list = changedContent_RegionRemove[worldId];
+                        list.insert(list.end(), chunks.begin(), chunks.end());
+                    }
+
+                    ChangedContent_RegionRemove.clear();
+                }
+
+                if(!ChangedDefines_Voxel.empty()) {
+                    changedDefines_Voxel.insert(changedDefines_Voxel.end(), ChangedDefines_Voxel.begin(), ChangedDefines_Voxel.end());
+                    ChangedDefines_Voxel.clear();
+
+                    std::sort(changedDefines_Voxel.begin(), changedDefines_Voxel.end());
+                    auto last = std::unique(changedDefines_Voxel.begin(), changedDefines_Voxel.end());
+                    changedDefines_Voxel.erase(last, changedDefines_Voxel.end());
+                }
+
+                if(!ChangedDefines_Node.empty()) {
+                    changedDefines_Node.insert(changedDefines_Node.end(), ChangedDefines_Node.begin(), ChangedDefines_Voxel.end());
+                    ChangedDefines_Node.clear();
+
+                    std::sort(changedDefines_Node.begin(), changedDefines_Node.end());
+                    auto last = std::unique(changedDefines_Node.begin(), changedDefines_Node.end());
+                    changedDefines_Node.erase(last, changedDefines_Node.end());
+                }
+
+                ServerSession_InUse = false;
+
+                // Ищем чанки, которые нужно перерисовать
+                if(!changedDefines_Voxel.empty() || changedDefines_Node.empty()) {
+                    for(auto& [worldId, regions] : ChunkMesh) {
+                        for(auto& [regionPos, chunks] : regions) {
+                            for(size_t index = 0; index < chunks.size(); index++) {
+                                if(!changedDefines_Voxel.empty() && !chunks[index].VoxelDefines.empty()) {
+                                    bool hasIntersection = false;
+                                    {
+                                        size_t i = 0, j = 0;
+                                        while(i < changedDefines_Voxel.size() && j < chunks[index].VoxelDefines.size()) {
+                                            if (changedDefines_Voxel[i] == chunks[index].VoxelDefines[j]) {
+                                                hasIntersection = true;
+                                                break;
+                                            } else if (changedDefines_Voxel[i] < chunks[index].VoxelDefines[j])
+                                                ++i;
+                                            else
+                                                ++j;
+                                        }
+                                    }
+
+                                    if(hasIntersection) {
+                                        changedContent_Chunk[worldId].push_back((Pos::GlobalChunk(regionPos) << 2) + Pos::GlobalChunk(Pos::bvec4u().unpack(index)));
+                                    }
+                                }
+                                    
+                                if(!changedDefines_Node.empty() && !chunks[index].NodeDefines.empty()) {
+                                    bool hasIntersection = false;
+                                    {
+                                        size_t i = 0, j = 0;
+                                        while(i < changedDefines_Node.size() && j < chunks[index].NodeDefines.size()) {
+                                            if (changedDefines_Node[i] == chunks[index].NodeDefines[j]) {
+                                                hasIntersection = true;
+                                                break;
+                                            } else if (changedDefines_Node[i] < chunks[index].NodeDefines[j])
+                                                ++i;
+                                            else
+                                                ++j;
+                                        }
+                                    }
+
+                                    if(hasIntersection) {
+                                        changedContent_Chunk[worldId].push_back((Pos::GlobalChunk(regionPos) << 2) + Pos::GlobalChunk(Pos::bvec4u().unpack(index)));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                changedDefines_Voxel.clear();
+                changedDefines_Node.clear();
+
+                // Уникализируем
+                for(auto& [worldId, chunks] : changedContent_Chunk) {
+                    std::sort(chunks.begin(), chunks.end());
+                    auto last = std::unique(chunks.begin(), chunks.end());
+                    chunks.erase(last, chunks.end());
+                }
+
+                for(auto& [worldId, regions] : changedContent_RegionRemove) {
+                    std::sort(regions.begin(), regions.end());
+                    auto last = std::unique(regions.begin(), regions.end());
+                    regions.erase(last, regions.end());
+                }
+            }
+
+            if(Stage == EnumStage::ComposingCommandBuffer || Stage == EnumStage::Render) {
+                // Здесь можно обработать события, и подготовить меши по данным с мира
+                // changedContent_Chunk
+
+                ServerSession_InUse = true;
+
+                std::vector<WorldId_t> toRemove;
+                for(auto& [worldId, chunks] : changedContent_Chunk) {
+                    if(Stage != EnumStage::ComposingCommandBuffer && Stage != EnumStage::Render)
+                        break;
+
+                    while(!chunks.empty() && Stage != EnumStage::ComposingCommandBuffer && Stage != EnumStage::Render) {
+                        
+                        // TODO: Сгенерировать меши
+
+                        chunks.pop_back();
+                    }
+
+                    if(chunks.empty())
+                        toRemove.push_back(worldId);
+                }
+
+                for(WorldId_t worldId : toRemove)
+                    changedContent_Chunk.erase(changedContent_Chunk.find(worldId));
+
+                ServerSession_InUse = false;
+            }
+
+            if(Stage == EnumStage::Render || Stage == EnumStage::WorldUpdate) {
+                // Здесь можно выгрузить готовые данные в ChunkMesh
+                ChunkMesh_IsUse = true;
+
+                // Удаляем регионы
+                for(auto& [worldId, regions] : changedContent_RegionRemove) {
+                    auto iterWorld = ChunkMesh.find(worldId);
+                    if(iterWorld == ChunkMesh.end())
+                        continue;
+
+                    for(Pos::GlobalRegion regionPos : regions) {
+                        auto iterRegion = iterWorld->second.find(regionPos);
+                        if(iterRegion == iterWorld->second.end())
+                            continue;
+
+                        for(size_t index = 0; index < iterRegion->second.size(); index++) {
+                            auto &chunk = iterRegion->second[index];
+                            chunk.NodeDefines.clear();
+                            chunk.VoxelDefines.clear();
+
+                            VertexPool_Voxels.dropVertexs(chunk.VoxelPointer);
+                            VertexPool_Nodes.dropVertexs(chunk.NodePointer);
+                        }
+                    }
+                }
+
+                // Добавляем обновлённые меши
+
+                ChunkMesh_IsUse = false;
+            }
+        }
+    } catch(const std::exception &exc) {
+        LOG.error() << exc.what();
+    }
+
+    ChunkMesh_IsUse = false;
+    ServerSession_InUse = false;
+}
+
+void VulkanRenderSession::VulkanContext::onUpdate() {
+    // {
+    // Сделать отдельный пул комманд?
+    //     auto lock = ThreadVertexObj.lock();
+    //     lock->VertexPool_Voxels.update(VkInst->Graphics.Pool);
+    //     lock->VertexPool_Nodes.update(VkInst->Graphics.Pool);
+    // }
+
+    MainTest.atlasUpdateDynamicData();
+    LightDummy.atlasUpdateDynamicData();
+}
 
 VulkanRenderSession::VulkanRenderSession()
 {
 }
 
 VulkanRenderSession::~VulkanRenderSession() {
-
+    
 }
 
 void VulkanRenderSession::free(Vulkan *instance) {
@@ -674,56 +876,36 @@ void VulkanRenderSession::onContentDefinesLost(std::unordered_map<EnumDefContent
 }
 
 void VulkanRenderSession::onChunksChange(WorldId_t worldId, const std::unordered_set<Pos::GlobalChunk>& changeOrAddList, const std::unordered_set<Pos::GlobalRegion>& remove) {
-    auto &table = External.ChunkVoxelMesh[worldId];
+    std::unordered_map<WorldId_t, std::vector<Pos::GlobalChunk>> chunkChanges;
+    chunkChanges[worldId] = std::vector<Pos::GlobalChunk>(changeOrAddList.begin(), changeOrAddList.end());
+    std::unordered_map<WorldId_t, std::vector<Pos::GlobalRegion>> regionRemove;
+    regionRemove[worldId] = std::vector<Pos::GlobalRegion>(remove.begin(), remove.end());
+    VKCTX->ThreadVertexObj.onContentChunkChange(chunkChanges, regionRemove);
+    
+        // if(chunk.Voxels.empty()) {
+        //     VKCTX->VertexPool_Voxels.dropVertexs(std::get<0>(buffers));
+        // } else {
+        //     std::vector<VoxelVertexPoint> vertexs = generateMeshForVoxelChunks(chunk.Voxels);
+        //     auto &voxels = std::get<0>(buffers);
+        //     VKCTX->VertexPool_Voxels.relocate(voxels, std::move(vertexs));
+        // }
 
-    for(Pos::GlobalChunk pos : changeOrAddList) {
-        Pos::GlobalRegion rPos = pos >> 2;
-        Pos::bvec4u cPos = pos & 0x3;
+        // std::vector<NodeVertexStatic> vertexs2 = generateMeshForNodeChunks(chunk.Nodes.data());
 
-        auto &buffers = table[pos];
-
-        const auto &chunk = ServerSession->Data.Worlds[worldId].Regions[rPos].Chunks[cPos.pack()];
-
-        if(chunk.Voxels.empty()) {
-            VKCTX->VertexPool_Voxels.dropVertexs(std::get<0>(buffers));
-        } else {
-            std::vector<VoxelVertexPoint> vertexs = generateMeshForVoxelChunks(chunk.Voxels);
-            auto &voxels = std::get<0>(buffers);
-            VKCTX->VertexPool_Voxels.relocate(voxels, std::move(vertexs));
-        }
-
-        std::vector<NodeVertexStatic> vertexs2 = generateMeshForNodeChunks(chunk.Nodes.data());
-
-        if(vertexs2.empty()) {
-            VKCTX->VertexPool_Nodes.dropVertexs(std::get<1>(buffers));
-        } else {
-            auto &nodes = std::get<1>(buffers);
-            VKCTX->VertexPool_Nodes.relocate(nodes, std::move(vertexs2));
-        }
+        // if(vertexs2.empty()) {
+        //     VKCTX->VertexPool_Nodes.dropVertexs(std::get<1>(buffers));
+        // } else {
+        //     auto &nodes = std::get<1>(buffers);
+        //     VKCTX->VertexPool_Nodes.relocate(nodes, std::move(vertexs2));
+        // }
         
-        if(!std::get<0>(buffers) && !std::get<1>(buffers)) {
-            auto iter = table.find(pos);
-            if(iter != table.end())
-                table.erase(iter);
-        }
-    }
-
-    for(Pos::GlobalRegion pos : remove) {
-        for(int z = 0; z < 4; z++)
-        for(int y = 0; y < 4; y++)
-        for(int x = 0; x < 4; x++) {
-            auto iter = table.find((Pos::GlobalChunk(pos) << 2) + Pos::GlobalChunk(x, y, z));
-            if(iter != table.end()) {
-                VKCTX->VertexPool_Voxels.dropVertexs(std::get<0>(iter->second));
-                VKCTX->VertexPool_Nodes.dropVertexs(std::get<1>(iter->second));
-                table.erase(iter);
-            }
-        }
-    }
-
-    if(table.empty())
-        External.ChunkVoxelMesh.erase( External.ChunkVoxelMesh.find(worldId));
+        // if(!std::get<0>(buffers) && !std::get<1>(buffers)) {
+        //     auto iter = table.find(pos);
+        //     if(iter != table.end())
+        //         table.erase(iter);
+        // }
 }
+
 
 void VulkanRenderSession::setCameraPos(WorldId_t worldId, Pos::Object pos, glm::quat quat) {
     WorldId = worldId;
@@ -733,10 +915,7 @@ void VulkanRenderSession::setCameraPos(WorldId_t worldId, Pos::Object pos, glm::
 
 void VulkanRenderSession::beforeDraw() {
     if(VKCTX) {
-        VKCTX->MainTest.atlasUpdateDynamicData();
-        VKCTX->LightDummy.atlasUpdateDynamicData();
-        VKCTX->VertexPool_Voxels.update(VkInst->Graphics.Pool);
-        VKCTX->VertexPool_Nodes.update(VkInst->Graphics.Pool);
+        VKCTX->onUpdate();
     }
 }
 
@@ -895,25 +1074,25 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
     {
         Pos::GlobalChunk x64offset = X64Offset >> Pos::Object_t::BS_Bit >> 4;
 
-        auto iterWorld = External.ChunkVoxelMesh.find(WorldId);
-        if(iterWorld != External.ChunkVoxelMesh.end()) {
-            glm::mat4 orig = PCO.Model;
+        // auto iterWorld = External.ChunkVoxelMesh.find(WorldId);
+        // if(iterWorld != External.ChunkVoxelMesh.end()) {
+        //     glm::mat4 orig = PCO.Model;
 
-            for(auto &pair : iterWorld->second) {
-                if(auto& nodes = std::get<1>(pair.second)) {
-                    glm::vec3 cpos(pair.first-x64offset);
-                    PCO.Model = glm::translate(orig, cpos*16.f);
-                    auto [vkBuffer, offset] = VKCTX->VertexPool_Nodes.map(nodes);
+        //     for(auto &pair : iterWorld->second) {
+        //         if(auto& nodes = std::get<1>(pair.second)) {
+        //             glm::vec3 cpos(pair.first-x64offset);
+        //             PCO.Model = glm::translate(orig, cpos*16.f);
+        //             auto [vkBuffer, offset] = VKCTX->VertexPool_Nodes.map(nodes);
 
-                    vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
-                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, offsetof(WorldPCO, Model), sizeof(WorldPCO::Model), &PCO.Model);
-                    vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
-                    vkCmdDraw(drawCmd, nodes.VertexCount, 1, offset, 0);
-                }
-            }
+        //             vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
+        //                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, offsetof(WorldPCO, Model), sizeof(WorldPCO::Model), &PCO.Model);
+        //             vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
+        //             vkCmdDraw(drawCmd, nodes.VertexCount, 1, offset, 0);
+        //         }
+        //     }
 
-            PCO.Model = orig;
-        }
+        //     PCO.Model = orig;
+        // }
     }
 }
 

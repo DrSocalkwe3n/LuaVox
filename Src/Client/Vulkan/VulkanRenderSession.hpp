@@ -5,9 +5,13 @@
 #include <Client/Vulkan/Vulkan.hpp>
 #include <memory>
 #include <optional>
+#include <queue>
+#include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vulkan/vulkan_core.h>
 #include "Abstract.hpp"
+#include "TOSLib.hpp"
 #include "VertexPool.hpp"
 
 /*
@@ -39,7 +43,9 @@ struct WorldPCO {
 
 static_assert(sizeof(WorldPCO) == 128);
 
-
+/*
+    Модуль, рисующий то, что предоставляет IServerSession
+*/
 class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
     VK::Vulkan *VkInst = nullptr;
     // Доступ к миру на стороне клиента
@@ -63,21 +69,131 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
     glm::vec3 X64Offset_f, X64Delta;        // Смещение мира относительно игрока в матрице вида (0 -> 64)
     glm::quat Quat;
 
+    /*
+        Поток, занимающийся генерацией меша на основе нод и вокселей
+        Требует доступ к профилям в ServerSession (ServerSession должен быть заблокирован только на чтение)
+        Также доступ к идентификаторам текстур в VulkanRenderSession (только на чтение)
+        Должен оповещаться об изменениях профилей и событий чанков
+        Удалённые мешы хранятся в памяти N количество кадров
+    */
+    struct ThreadVertexObj_t {
+
+        // Здесь не хватает стадии работы с текстурами
+        enum class EnumStage {
+            // Постройка буфера команд на рисовку
+            // В этот период не должно быть изменений в таблице,
+            // хранящей указатели на данные для рендера ChunkMesh
+            // Можно работать с миром
+            // Здесь нужно дождаться завершения работы с ChunkMesh
+            ComposingCommandBuffer,
+            // В этот период можно менять ChunkMesh
+            // Можно работать с миром
+            Render,
+            // В этот период нельзя работать с миром
+            // Можно менять ChunkMesh
+            // Здесь нужно дождаться завершения работы с миром, только в 
+            // этом этапе могут приходить события изменения чанков и определений
+            WorldUpdate,
+
+            Shutdown
+        } Stage = EnumStage::Render;
+
+        volatile bool ChunkMesh_IsUse = false, ServerSession_InUse = false;
+
+        struct ChunkObj_t {
+            // Сортированный список уникальных значений
+            std::vector<DefVoxelId_t> VoxelDefines;
+            VertexPool<VoxelVertexPoint>::Pointer VoxelPointer;
+            std::vector<DefNodeId_t> NodeDefines;
+            VertexPool<NodeVertexStatic>::Pointer NodePointer;
+        };
+
+        std::unordered_map<WorldId_t,
+            std::unordered_map<Pos::GlobalRegion, std::array<ChunkObj_t, 4*4*4>>
+        > ChunkMesh;
+
+        ThreadVertexObj_t(Vulkan* vkInst)
+            :   VertexPool_Voxels(vkInst),
+                VertexPool_Nodes(vkInst),
+                Thread(&ThreadVertexObj_t::run, this)
+        {}
+
+        ~ThreadVertexObj_t() {
+            Stage = EnumStage::Shutdown;
+            Thread.join();
+        }
+
+        // Сюда входят добавленные/изменённые/удалённые определения нод и вокселей
+        // Чтобы перерисовать чанки, связанные с ними
+        void onContentDefinesChange(const std::vector<DefVoxelId_t>& voxels, const std::vector<DefNodeId_t>& nodes) {
+            ChangedDefines_Voxel.insert(ChangedDefines_Voxel.end(), voxels.begin(), voxels.end());
+            ChangedDefines_Node.insert(ChangedDefines_Node.end(), nodes.begin(), nodes.end());
+        }
+
+        // Изменение/удаление чанков
+        void onContentChunkChange(const std::unordered_map<WorldId_t, std::vector<Pos::GlobalChunk>>& chunkChanges, const std::unordered_map<WorldId_t, std::vector<Pos::GlobalRegion>>& regionRemove) {
+            for(auto& [worldId, chunks] : chunkChanges) {
+                auto &list = ChangedContent_Chunk[worldId];
+                list.insert(list.end(), chunks.begin(), chunks.end());
+            }
+
+            for(auto& [worldId, regions] : regionRemove) {
+                auto &list = ChangedContent_RegionRemove[worldId];
+                list.insert(list.end(), regions.begin(), regions.end());
+            }
+        }
+
+        // Синхронизация потока рендера мира
+        void pushStage(EnumStage stage) {
+            if(Stage == EnumStage::Shutdown)
+                MAKE_ERROR("Остановка из-за ошибки ThreadVertex");
+
+            assert(Stage != stage);
+
+            Stage = stage;
+            if(stage == EnumStage::ComposingCommandBuffer) {
+                while(ChunkMesh_IsUse);
+            } else if(stage == EnumStage::WorldUpdate) {
+                while(ServerSession_InUse);
+            }
+        }
+
+    private:
+        // Буферы для хранения вершин
+        VertexPool<VoxelVertexPoint> VertexPool_Voxels;
+        VertexPool<NodeVertexStatic> VertexPool_Nodes;
+        // Списки изменённых определений
+        std::vector<DefVoxelId_t> ChangedDefines_Voxel;
+        std::vector<DefNodeId_t> ChangedDefines_Node;
+        // Список чанков на перерисовку
+        std::unordered_map<WorldId_t, std::vector<Pos::GlobalChunk>> ChangedContent_Chunk; 
+        std::unordered_map<WorldId_t, std::vector<Pos::GlobalRegion>> ChangedContent_RegionRemove;
+        // Внешний поток
+        std::thread Thread;
+
+        void run();
+    };
+
     struct VulkanContext {
+        VK::Vulkan *VkInst;
         AtlasImage MainTest, LightDummy;
         Buffer TestQuad;
         std::optional<Buffer> TestVoxel;
 
+        ThreadVertexObj_t ThreadVertexObj;
 
-        VertexPool<VoxelVertexPoint> VertexPool_Voxels;
-        VertexPool<NodeVertexStatic> VertexPool_Nodes;
-
-        VulkanContext(Vulkan *vkInst)
-            : MainTest(vkInst), LightDummy(vkInst),
+        VulkanContext(Vulkan* vkInst)
+            :   VkInst(vkInst),
+                MainTest(vkInst), LightDummy(vkInst),
                 TestQuad(vkInst, sizeof(NodeVertexStatic)*6*3*2),
-                VertexPool_Voxels(vkInst),
-                VertexPool_Nodes(vkInst)
+                ThreadVertexObj(vkInst)
         {}
+
+        ~VulkanContext() {
+            ThreadVertexObj.pushStage(ThreadVertexObj_t::EnumStage::Shutdown);
+        }
+
+        void onUpdate();
     };
 
     std::shared_ptr<VulkanContext> VKCTX;
@@ -119,11 +235,6 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
     std::map<BinTextureId_t, uint16_t> ServerToAtlas;
 
     struct {
-        std::unordered_map<WorldId_t, 
-            std::unordered_map<Pos::GlobalChunk, 
-                std::pair<VertexPool<VoxelVertexPoint>::Pointer, VertexPool<NodeVertexStatic>::Pointer> // Voxels, Nodes
-            >
-        > ChunkVoxelMesh;
     } External;
 
     virtual void free(Vulkan *instance) override;

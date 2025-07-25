@@ -97,12 +97,14 @@ public:
         return out;
     }
     
-    void unpack(const Pack pack) requires (N*BitsPerComponent <= 64) {
+    BitVec3 unpack(const Pack pack) requires (N*BitsPerComponent <= 64) {
         using U = std::make_unsigned_t<T>;
 
         for(size_t iter = 0; iter < N; iter++) {
             set(iter, T(U((pack >> BitsPerComponent*iter) & U((Pack(1) << BitsPerComponent)-1))));
         }
+
+        return *this;
     }
 
     auto operator<=>(const BitVec3&) const = default;

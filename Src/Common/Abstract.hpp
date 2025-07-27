@@ -549,4 +549,16 @@ struct hash<LV::Pos::BitVec3<T, BitsPerComponent>> {
     } 
 };
 
+template <>
+struct hash<LV::Hash_t> {
+    std::size_t operator()(const LV::Hash_t& hash) const noexcept {
+        std::size_t v = 14695981039346656037ULL;
+        for (const auto& byte : hash) {
+            v ^= static_cast<std::size_t>(byte);
+            v *= 1099511628211ULL;
+        }
+        return v;
+    }
+};
+
 }

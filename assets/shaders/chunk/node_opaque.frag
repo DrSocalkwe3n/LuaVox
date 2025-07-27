@@ -2,6 +2,7 @@
 
 layout(location = 0) in FragmentObj {
     vec3 GeoPos;    // Реальная позиция в мире
+    vec3 Normal;
     flat uint Texture;   // Текстура
     vec2 UV;
 } Fragment;
@@ -69,8 +70,21 @@ vec4 atlasColor(uint texId, vec2 uv)
     return color;    
 }
 
+vec3 blendOverlay(vec3 base, vec3 blend) {
+    vec3 result;
+    for (int i = 0; i < 3; ++i) {
+        if (base[i] <= 0.5)
+            result[i] = 2.0 * base[i] * blend[i];
+        else
+            result[i] = 1.0 - 2.0 * (1.0 - base[i]) * (1.0 - blend[i]);
+    }
+    return result;
+}
+
 void main() {
     Frame = atlasColor(Fragment.Texture, Fragment.UV);
+    Frame.xyz *= max(0.2f, dot(Fragment.Normal, normalize(vec3(0.5, 1, 0.8))));
+    // Frame = vec4(blendOverlay(vec3(Frame), vec3(Fragment.GeoPos/64.f)), Frame.w);
     if(Frame.w == 0)
         discard;
 }

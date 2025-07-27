@@ -13,6 +13,8 @@
 #include "Abstract.hpp"
 #include "TOSLib.hpp"
 #include "VertexPool.hpp"
+#include "glm/fwd.hpp"
+#include "../FrustumCull.h"
 
 /*
     У движка есть один текстурный атлас VK_IMAGE_VIEW_TYPE_2D_ARRAY(RGBA_UINT) и к нему Storage с инфой о положении текстур
@@ -192,28 +194,16 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
             if(iterWorld == ChunkMesh.end())
                 return {};
 
+            Frustum fr(projView);
+
             for(int z = -distance; z <= distance; z++) {
                 for(int y = -distance; y <= distance; y++) {
                     for(int x = -distance; x <= distance; x++) {
                         Pos::GlobalRegion region = center + Pos::GlobalRegion(x, y, z);
-                        glm::vec3 begin = glm::vec3(region - x64offset);
+                        glm::vec3 begin = glm::vec3(region - x64offset) * 64.f;
+                        glm::vec3 end = begin + glm::vec3(64.f);
 
-                        bool isVisible = false;
-                        for(int index = 0; index < 8; index++) {
-                            glm::vec4 vec((begin+glm::vec3(index&1, (index>>1)&1, (index>>2)&1))*64.f, 1);
-                            glm::vec4 temp = projView * vec;
-                            temp /= temp.w;
-
-                            if(temp.x >= -1 && temp.x <= 1
-                                && temp.y >= -1 && temp.y <= 1
-                                && temp.z >= 0 && temp.z <= 1
-                            ) {
-                                isVisible = true;
-                                break;
-                            }
-                        }
-
-                        if(!isVisible)
+                        if(!fr.IsBoxVisible(begin, end))
                             continue;
 
                         auto iterRegion = iterWorld->second.find(region);
@@ -223,12 +213,19 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
                         Pos::GlobalChunk local = Pos::GlobalChunk(region) << 2;
 
                         for(size_t index = 0; index < iterRegion->second.size(); index++) {
+                            Pos::bvec4u localPos;
+                            localPos.unpack(index);
+
+                            glm::vec3 chunkPos = begin+glm::vec3(localPos)*16.f;
+                            if(!fr.IsBoxVisible(chunkPos, chunkPos+glm::vec3(16)))
+                                continue;
+
                             auto &chunk = iterRegion->second[index];
 
                             if(chunk.VoxelPointer)
-                                vertexVoxels.emplace_back(local+Pos::GlobalChunk(Pos::bvec4u().unpack(index)), VertexPool_Voxels.map(chunk.VoxelPointer), chunk.VoxelPointer.VertexCount);
+                                vertexVoxels.emplace_back(local+Pos::GlobalChunk(localPos), VertexPool_Voxels.map(chunk.VoxelPointer), chunk.VoxelPointer.VertexCount);
                             if(chunk.NodePointer)
-                                vertexNodes.emplace_back(local+Pos::GlobalChunk(Pos::bvec4u().unpack(index)), VertexPool_Nodes.map(chunk.NodePointer), chunk.NodePointer.VertexCount);
+                                vertexNodes.emplace_back(local+Pos::GlobalChunk(localPos), VertexPool_Nodes.map(chunk.NodePointer), chunk.NodePointer.VertexCount);
                         }
                     }
                 }

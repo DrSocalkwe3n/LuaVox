@@ -8,6 +8,7 @@
 #include <string>
 #include <unordered_map>
 #include <filesystem>
+#include <variant>
 #include <vector>
 #include <Common/Async.hpp>
 #include "Abstract.hpp"
@@ -23,62 +24,58 @@ namespace fs = std::filesystem;
 
     Чтение происходит отдельным потоком, переконвертацию пока предлагаю в realtime.
     Хэш вычисляется после чтения и может быть иным чем при прошлом чтении (ресурс изменили наживую)
-    тогда обычным оповещениям клиентам дойдёт новая версия
+    тогда обычным оповещением клиентам дойдёт новая версия
 
     Подержать какое-то время ресурс в памяти
+
+
+
+    Ключи сопоставляются с идентификаторами и с хешеми. При появлении нового ключа, 
+    ему выдаётся идентификатор и делается запрос на загрузку ресурса для вычисления хеша.
+    recheckResources делает повторную загрузку всех ресурсов для проверки изменения хешей.
+
+
 */
 
 class BinaryResourceManager : public AsyncObject {
-public:
-
 private:
-    struct Resource {
-        // Файл загруженный с диска
-        std::shared_ptr<ResourceFile> Loaded;
-        // Источник
-        std::string Uri;
-        bool IsLoading = false;
-        size_t LastUsedTime = 0;
-
-        std::string LastError;
-    };
-
-    struct UriParse {
-        std::string Protocol, Path;
-
-        std::string getFull() const {
-            return Protocol + "://" + Path;
-        }
-    };
-
 
 // Поток сервера
     // Последовательная регистрация ресурсов
     ResourceId_t NextId[(int) EnumBinResource::MAX_ENUM] = {0};
     // Известные ресурсы, им присвоен идентификатор
+    // Нужно для потока загрузки
     std::unordered_map<std::string, ResourceId_t> KnownResource[(int) EnumBinResource::MAX_ENUM];
-    std::unordered_map<ResourceId_t, std::shared_ptr<Resource>> ResourcesInfo[(int) EnumBinResource::MAX_ENUM];
 
 // Местные потоки
     struct LocalObj_t {
-        // Ресурсы - кешированные в оперативную память или в процессе загрузки
-        std::map<BinTextureId_t, std::shared_ptr<Resource>> InMemory[(int) EnumBinResource::MAX_ENUM];
-        // Кому-то нужно сопоставить идентификаторы с хэшами
+        // Трансляция идентификаторов в Uri (противоположность KnownResource)
+        // Передаётся в отдельный поток
+        std::vector<std::string>      ResIdToUri[(int) EnumBinResource::MAX_ENUM];
+        // Кому-то нужно сопоставить идентификаторы с хешами
         std::vector<ResourceId_t>     BinToHash[(int) EnumBinResource::MAX_ENUM];
         // Запрос ресурсов, по которым потоки загружают ресурсы с диска
         std::vector<Hash_t>           Hashes;
+        // Передача новых путей поиска ресурсов в другой поток
+        std::vector<fs::path>         Assets;
     };
 
     TOS::SpinlockObject<LocalObj_t> Local;
 public:
     // Подготовленные оповещения о ресурсах
     struct OutObj_t {
-        std::unordered_map<ResourceId_t, ResourceFile::Hash_t>     BinToHash[(int) EnumBinResource::MAX_ENUM];
-        std::vector<std::shared_ptr<ResourceFile>> HashToResource;
+        std::unordered_map<ResourceId_t, ResourceFile::Hash_t>      BinToHash[(int) EnumBinResource::MAX_ENUM];
+        std::vector<std::shared_ptr<ResourceFile>>                  HashToResource;
     };
 
 private:
     TOS::SpinlockObject<OutObj_t> Out;
+    volatile bool NeedShutdown = false;
+    std::thread Thread;
+
+    void run();
+    std::variant<std::shared_ptr<ResourceFile>, std::string>
+        loadFile(const std::vector<fs::path>& assets, const std::string& path, EnumBinResource type);
 
 public:
     // Если ресурс будет обновлён или загружен будет вызвано onResourceUpdate
@@ -89,7 +86,17 @@ public:
     void recheckResources(std::vector<fs::path> assets /* Пути до активных папок assets */);
     // Выдаёт или назначает идентификатор для ресурса
     ResourceId_t getResource(const std::string& uri, EnumBinResource bin) {
-        std::string fullUri = parseUri(uri).getFull();
+        std::string fullUri;
+
+        {
+            size_t pos = uri.find("://");
+
+            if(pos == std::string::npos)
+                fullUri = "assets://" + uri;
+            else
+                fullUri = uri;
+        }
+
         int index = (int) bin;
 
         auto &container = KnownResource[index];
@@ -98,6 +105,10 @@ public:
             assert(NextId[index] != ResourceId_t(-1));
             ResourceId_t nextId = NextId[index]++;
             container.insert(iter, {fullUri, nextId});
+
+            auto lock = Local.lock();
+            lock->ResIdToUri[index].push_back(uri);
+
             return nextId;
         }
 
@@ -134,9 +145,6 @@ public:
 
     // Серверный такт
     void update(float dtime);
-
-protected:
-    UriParse parseUri(const std::string &uri);
 
 };
 

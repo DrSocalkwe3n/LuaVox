@@ -1190,7 +1190,11 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
         MainAtlas_LightMap_PipelineLayout,  0, 2, 
         (const VkDescriptorSet[]) {MainAtlasDescriptor, VoxelLightMapDescriptor}, 0, nullptr);
 
-    PCO.Model = glm::mat4(1);
+    {
+        // glm::vec4 offset = glm::inverse(Quat)*glm::vec4(0, 0, -64, 1);
+        // PCO.Model = glm::translate(glm::mat4(1), glm::vec3(offset));
+        PCO.Model = glm::mat4(1);
+    }
     VkBuffer vkBuffer = VKCTX->TestQuad;
     VkDeviceSize vkOffsets = 0;
 

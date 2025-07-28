@@ -70,9 +70,10 @@ set(BOOST_IOSTREAMS_ENABLE_ZLIB ON)
 set(BOOST_INCLUDE_LIBRARIES asio thread json iostreams)
 FetchContent_Declare(
   Boost
-  URL https://github.com/boostorg/boost/releases/download/boost-1.87.0/boost-1.87.0-cmake.7z
-  USES_TERMINAL_DOWNLOAD TRUE
-  DOWNLOAD_NO_EXTRACT FALSE
+  GIT_REPOSITORY https://github.com/boostorg/boost.git
+  GIT_TAG boost-1.87.0
+  GIT_PROGRESS true
+  USES_TERMINAL_DOWNLOAD true
 )
 FetchContent_MakeAvailable(Boost)
 target_link_libraries(luavox_common INTERFACE Boost::asio Boost::thread Boost::json Boost::iostreams)
@@ -81,6 +82,28 @@ target_link_libraries(luavox_common INTERFACE Boost::asio Boost::thread Boost::j
 # find_package(glm REQUIRED)
 # target_include_directories(${PROJECT_NAME} PUBLIC ${GLM_INCLUDE_DIR})
 # target_link_libraries(${PROJECT_NAME} PUBLIC ${GLM_LIBRARY})
+FetchContent_Declare(
+  luajit
+  GIT_REPOSITORY https://luajit.org/git/luajit.git
+  GIT_TAG v2.1
+  GIT_PROGRESS true
+  USES_TERMINAL_DOWNLOAD true
+)
+FetchContent_MakeAvailable(luajit)
+
+FetchContent_Declare(
+  lua_cmake
+  GIT_REPOSITORY https://github.com/zhaozg/luajit-cmake.git
+  GIT_TAG 300c0b3f472be2be158f5b2e6385579ba5c6c0f9
+  GIT_PROGRESS true
+  USES_TERMINAL_DOWNLOAD true
+)
+set(LUAJIT_DIR ${luajit_SOURCE_DIR})
+FetchContent_MakeAvailable(lua_cmake)
+
+target_link_libraries(luavox_common INTERFACE luajit::lib luajit::header)
+
+
 
 FetchContent_Declare(
   glm

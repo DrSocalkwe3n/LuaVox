@@ -25,9 +25,21 @@
 #include "glm/gtc/noise.hpp"
 #include <fstream>
 
+extern "C" {
+#include "lauxlib.h"
+#include "lua.h"
+}
 
 namespace js = boost::json;
 
+int luaPanic(lua_State *L)
+{
+    size_t length;
+	const char *str = luaL_checklstring(L, -1, &length);
+    MAKE_ERROR("LUA PANIC: unprotected error in call to Lua API (" << std::string_view(str, length) <<  ")");
+
+	return 0;
+}
 
 namespace LV::Server {
 
@@ -53,6 +65,13 @@ GameServer::GameServer(asio::io_context &ioc, fs::path worldPath)
     for(size_t iter = 0; iter < BackingAsyncLua.Threads.size(); iter++) {
         BackingAsyncLua.Threads[iter] = std::thread(&BackingAsyncLua_t::run, &BackingAsyncLua, iter);
     }
+
+    // Тест луа
+
+
+    lua_State *m_luastack = luaL_newstate();
+	lua_atpanic(m_luastack, &luaPanic);
+    
 }
     
 GameServer::~GameServer() {

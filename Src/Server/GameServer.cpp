@@ -25,18 +25,22 @@
 #include "glm/gtc/noise.hpp"
 #include <fstream>
 
-extern "C" {
-#include "lauxlib.h"
-#include "lua.h"
-}
+#define SOL_ALL_SAFETIES_ON 1
+#include <sol/sol.hpp>
 
 namespace js = boost::json;
 
-int luaPanic(lua_State *L)
+int luaPanic(lua_State* L)
 {
     size_t length;
 	const char *str = luaL_checklstring(L, -1, &length);
     MAKE_ERROR("LUA PANIC: unprotected error in call to Lua API (" << std::string_view(str, length) <<  ")");
+
+	return 0;
+}
+
+int luaAtException(lua_State* L, sol::optional<const std::exception&> exc, std::string_view view) {
+    MAKE_ERROR("LUA EXCEPTION: unprotected error in call to Lua API (" << view <<  ")");
 
 	return 0;
 }
@@ -69,9 +73,14 @@ GameServer::GameServer(asio::io_context &ioc, fs::path worldPath)
     // Тест луа
 
 
-    lua_State *m_luastack = luaL_newstate();
-	lua_atpanic(m_luastack, &luaPanic);
-    
+    // lua_State *m_luastack = luaL_newstate();
+	// lua_atpanic(m_luastack, &luaPanic);
+
+    sol::state lua;
+    // lua.set_panic(luaPanic);
+    lua.set_exception_handler(luaAtException);
+    lua.script("test = \"Hello world!\" print(test) fast = test..test");
+    LOG.debug() << std::string(lua["fast"]);
 }
     
 GameServer::~GameServer() {

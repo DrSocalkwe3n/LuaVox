@@ -91,6 +91,8 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(luajit)
 
+set(LUAJIT_DIR ${luajit_SOURCE_DIR})
+set(LUAJIT_ENABLE_LUA52COMPAT ON)
 FetchContent_Declare(
   lua_cmake
   GIT_REPOSITORY https://github.com/zhaozg/luajit-cmake.git
@@ -98,11 +100,20 @@ FetchContent_Declare(
   GIT_PROGRESS true
   USES_TERMINAL_DOWNLOAD true
 )
-set(LUAJIT_DIR ${luajit_SOURCE_DIR})
 FetchContent_MakeAvailable(lua_cmake)
 
-target_link_libraries(luavox_common INTERFACE luajit::lib luajit::header)
+target_link_libraries(luavox_common INTERFACE luajit::header luajit::lib)
+target_include_directories(luavox_common INTERFACE ${lua_cmake_BINARY_DIR})
 
+FetchContent_Declare(
+  sol2
+  GIT_REPOSITORY https://github.com/ThePhD/sol2.git
+  GIT_TAG v3.5.0
+  GIT_PROGRESS true
+  USES_TERMINAL_DOWNLOAD true
+)
+FetchContent_MakeAvailable(sol2)
+target_link_libraries(luavox_common INTERFACE sol2::sol2)
 
 
 FetchContent_Declare(

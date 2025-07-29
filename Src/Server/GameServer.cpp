@@ -22,6 +22,8 @@
 #include "Server/SaveBackend.hpp"
 #include "Server/World.hpp"
 #include "TOSLib.hpp"
+#include "boost/json/object.hpp"
+#include "boost/json/parse_into.hpp"
 #include "glm/gtc/noise.hpp"
 #include <fstream>
 
@@ -46,6 +48,83 @@ int luaAtException(lua_State* L, sol::optional<const std::exception&> exc, std::
 }
 
 namespace LV::Server {
+
+struct ModeDepend {
+    std::string Id;
+    uint32_t VersionMin[4], VersionMax[4];
+};
+
+struct ModInfo {
+    std::string Id, Name, Description;
+    uint32_t Version[4];
+    std::vector<ModeDepend> Dependency, Optional;
+    float LoadPriority;
+    fs::path Path;
+};
+
+struct ModPreloadInfo {
+    std::vector<ModInfo> Mods;
+    std::vector<std::string> Errors;
+};
+
+ModPreloadInfo preLoadMods(const std::vector<fs::path>& dirs) {
+    std::vector<ModInfo> mods;
+    std::vector<std::string> errors;
+
+
+    for(const fs::path& p : dirs) {
+        try {
+            if(!fs::is_directory(p))
+                errors.push_back("Объект не является директорией: " + p.string());
+            else {
+                fs::directory_iterator begin(p), end;
+                for(; begin != end; begin++) {
+                    if(!begin->is_directory())
+                        continue;
+
+                    fs::path modPath = begin->path();
+                    fs::path modJson = modPath / "mod.json";
+
+                    if(!fs::exists(modJson)) {
+                        errors.push_back("В директории мода отсутствует файл mod.json: " + modJson.string());
+                    } else {
+                        std::string data;
+                        try {
+                            std::ifstream fd(modJson);
+                            fd.exceptions(std::ifstream::failbit | std::ifstream::badbit);
+                            
+                            fd.seekg(0, std::ios::end);
+                            std::streamsize size = fd.tellg();
+                            fd.seekg(0, std::ios::beg);
+
+                            if(size > 1024*1024)
+                                MAKE_ERROR("Превышен размер файла (1 мб)");
+                            
+                            data.resize(size);
+                            fd.read((char*) data.data(), size);
+                        } catch (const std::exception& exc) {
+                            errors.push_back("Не удалось считать mod.json '" + modPath.string() + "': " + exc.what());
+                            goto skip;
+                        }
+
+                        try {
+                            js::object obj = js::parse(data).as_object();
+                            
+
+                        } catch (const std::exception& exc) {
+                            errors.push_back("Не удалось распарсить mod.json '" + modPath.string() + "': " + exc.what());
+                            goto skip;
+                        }
+                    }
+
+                    skip:
+                }
+            }
+        } catch(const std::exception& exc) {
+            errors.push_back("Неопределённая ошибка при работе с директорией: " + p.string());
+        }
+    }
+}
 
 GameServer::GameServer(asio::io_context &ioc, fs::path worldPath)
     : AsyncObject(ioc),
@@ -72,15 +151,22 @@ GameServer::GameServer(asio::io_context &ioc, fs::path worldPath)
 
     // Тест луа
 
-
-    // lua_State *m_luastack = luaL_newstate();
-	// lua_atpanic(m_luastack, &luaPanic);
-
     sol::state lua;
+    // lua.open_libraries();
     // lua.set_panic(luaPanic);
     lua.set_exception_handler(luaAtException);
-    lua.script("test = \"Hello world!\" print(test) fast = test..test");
-    LOG.debug() << std::string(lua["fast"]);
+    
+    sol::load_result res = lua.load_file("/home/mr_s/Workspace/Alpha/LuaVox/Work/mods/init.lua");
+    sol::function func = res.call<>();
+    int type = func();
+    // lua.script(R"(
+
+    // )");
+
+    LOG.debug() << type;
+
+    fs::path mods = "mods";
+
 }
     
 GameServer::~GameServer() {

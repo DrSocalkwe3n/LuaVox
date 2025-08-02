@@ -14,6 +14,7 @@
 #include <iterator>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -22,8 +23,10 @@
 #include "Server/SaveBackend.hpp"
 #include "Server/World.hpp"
 #include "TOSLib.hpp"
+#include "boost/json/array.hpp"
 #include "boost/json/object.hpp"
 #include "boost/json/parse_into.hpp"
+#include "boost/json/serialize.hpp"
 #include "glm/gtc/noise.hpp"
 #include <fstream>
 
@@ -49,17 +52,58 @@ int luaAtException(lua_State* L, sol::optional<const std::exception&> exc, std::
 
 namespace LV::Server {
 
-struct ModeDepend {
+struct ModDepend {
     std::string Id;
     uint32_t VersionMin[4], VersionMax[4];
 };
 
 struct ModInfo {
-    std::string Id, Name, Description;
+    std::string Id, Name, Description, Author;
     uint32_t Version[4];
-    std::vector<ModeDepend> Dependency, Optional;
+    std::vector<ModDepend> Dependencies, Optional;
     float LoadPriority;
     fs::path Path;
+
+    std::string dump() const {
+        js::object obj;
+
+        obj["id"] = Id;
+        obj["name"] = Name;
+        obj["description"] = Description;
+        obj["author"] = Author;
+        obj["version"] = {Version[0], Version[1], Version[2], Version[3]};
+        
+        {
+            js::array arr;
+            for(const auto& depend : Dependencies) {
+                js::object obj;
+                obj["id"] = depend.Id;
+                obj["version_min"] = {depend.VersionMin[0], depend.VersionMin[1], depend.VersionMin[2], depend.VersionMin[3]};
+                obj["version_max"] = {depend.VersionMax[0], depend.VersionMax[1], depend.VersionMax[2], depend.VersionMax[3]};
+                arr.push_back(obj);
+            }
+
+            obj["depend"] = arr;
+        }
+
+        {
+            js::array arr;
+            for(const auto& depend : Optional) {
+                js::object obj;
+                obj["id"] = depend.Id;
+                obj["version_min"] = {depend.VersionMin[0], depend.VersionMin[1], depend.VersionMin[2], depend.VersionMin[3]};
+                obj["version_max"] = {depend.VersionMax[0], depend.VersionMax[1], depend.VersionMax[2], depend.VersionMax[3]};
+                arr.push_back(obj);
+            }
+
+            obj["optional_depend"] = arr;
+        }
+
+        obj["load_priority"] = LoadPriority;
+        obj["path"] = Path.string();
+
+        return js::serialize(obj);
+    }
 };
 
 struct ModPreloadInfo {
@@ -70,7 +114,6 @@ struct ModPreloadInfo {
 ModPreloadInfo preLoadMods(const std::vector<fs::path>& dirs) {
     std::vector<ModInfo> mods;
     std::vector<std::string> errors;
-
 
     for(const fs::path& p : dirs) {
         try {
@@ -109,7 +152,96 @@ ModPreloadInfo preLoadMods(const std::vector<fs::path>& dirs) {
 
                         try {
                             js::object obj = js::parse(data).as_object();
+
+                            ModInfo info;
+                            info.Id = obj.at("id").as_string();
+                            info.Name = obj.contains("title") ? obj["title"].as_string() : "";
+                            info.Description = obj.contains("description") ? obj["description"].as_string() : "";
+                            info.Author = obj.contains("author") ? obj["author"].as_string() : "";
+
+                            {
+                                js::array version = obj.at("version").as_array();
+                                for(int iter = 0; iter < 4; iter++)
+                                    info.Version[iter] = version.at(iter).as_int64();
+                            }
+
+                            if(obj.contains("depends")) {
+                                js::array arr = obj["depends"].as_array();
+                                for(auto& iter : arr) {
+                                    ModDepend depend;
+
+                                    if(iter.is_string()) {
+                                        depend.Id = iter.as_string();
+                                        std::fill(depend.VersionMin, depend.VersionMin+4, 0);
+                                        std::fill(depend.VersionMax, depend.VersionMax+4, uint32_t(-1));
+                                    } else if(iter.is_object()) {
+                                        js::object d = iter.as_object();
+                                        depend.Id = d.at("id").as_string();
+
+                                        if(d.contains("version_min")) {
+                                            js::array v = d.at("version_min").as_array();
+                                            for(int iter = 0; iter < 4; iter++) {
+                                                depend.VersionMin[iter] = v.at(iter).as_int64();
+                                            }
+                                        } else
+                                            std::fill(depend.VersionMin, depend.VersionMin+4, 0);
+
+                                        if(d.contains("version_max")) {
+                                            js::array v = d.at("version_max").as_array();
+                                            for(int iter = 0; iter < 4; iter++) {
+                                                depend.VersionMax[iter] = v.at(iter).as_int64();
+                                            }
+                                        } else
+                                            std::fill(depend.VersionMax, depend.VersionMax+4, uint32_t(-1));
+                                    }
+
+                                    info.Dependencies.push_back(depend);
+                                }
+                            }
+
                             
+                            if(obj.contains("optional_depends")) {
+                                js::array arr = obj["optional_depends"].as_array();
+                                for(auto& iter : arr) {
+                                    ModDepend depend;
+
+                                    if(iter.is_string()) {
+                                        depend.Id = iter.as_string();
+                                        std::fill(depend.VersionMin, depend.VersionMin+4, 0);
+                                        std::fill(depend.VersionMax, depend.VersionMax+4, uint32_t(-1));
+                                    } else if(iter.is_object()) {
+                                        js::object d = iter.as_object();
+                                        depend.Id = d.at("id").as_string();
+
+                                        if(d.contains("version_min")) {
+                                            js::array v = d.at("version_min").as_array();
+                                            for(int iter = 0; iter < 4; iter++) {
+                                                depend.VersionMin[iter] = v.at(iter).as_int64();
+                                            }
+                                        } else
+                                            std::fill(depend.VersionMin, depend.VersionMin+4, 0);
+
+                                        if(d.contains("version_max")) {
+                                            js::array v = d.at("version_max").as_array();
+                                            for(int iter = 0; iter < 4; iter++) {
+                                                depend.VersionMax[iter] = v.at(iter).as_int64();
+                                            }
+                                        } else
+                                            std::fill(depend.VersionMax, depend.VersionMax+4, uint32_t(-1));
+                                    }
+
+                                    info.Optional.push_back(depend);
+                                }
+                            }
+
+                            if(obj.contains("load_priority")) {
+                                info.LoadPriority = obj.at("load_priority").as_double();
+                            } else {
+                                info.LoadPriority = 0.5;
+                            }
+
+                            info.Path = modPath;
+                            mods.push_back(info);
 
                         } catch (const std::exception& exc) {
                             errors.push_back("Не удалось распарсить mod.json '" + modPath.string() + "': " + exc.what());
@@ -124,6 +256,107 @@ ModPreloadInfo preLoadMods(const std::vector<fs::path>& dirs) {
             errors.push_back("Неопределённая ошибка при работе с директорией: " + p.string());
         }
     }
+
+    return {mods, errors};
+}
+
+struct ModLoadTree {
+    std::vector<ModInfo> UnloadChain, LoadChain;
+};
+
+std::variant<ModLoadTree, std::vector<std::string>> buildLoadChain(const std::vector<ModInfo>& loaded, const std::vector<ModInfo>& toUnload, const std::vector<ModInfo>& toLoad) {
+    // Проверить обязательные зависимости в конечном состоянии
+    {
+        std::vector<std::string> errors;
+        std::vector<ModInfo> endState;
+        for(const ModInfo& lmod : loaded) {
+            bool contains = false;
+            
+            for(const ModInfo& umod : toUnload) {
+                if(lmod.Id == umod.Id) {
+                    contains = true;
+                    break;
+                }
+            }
+
+            if(!contains)
+                endState.push_back(lmod);
+        }
+
+        endState.insert(endState.end(), toLoad.begin(), toLoad.end());
+
+        for(const ModInfo& mmod : endState) {
+            for(const ModDepend& depend : mmod.Dependencies) {
+                std::vector<std::string> lerrors;
+                bool contains = false;
+
+                for(const ModInfo& mmod2 : endState) {
+                    if(depend.Id != mmod2.Id)
+                        continue;
+
+                    if(depend.VersionMin[0] > mmod2.Version[0]
+                        || depend.VersionMin[1] > mmod2.Version[1]
+                        || depend.VersionMin[2] > mmod2.Version[2]
+                        || depend.VersionMin[3] > mmod2.Version[3]
+                    ) {
+                        goto versionMismatch;
+                    }
+
+                    if(depend.VersionMax[0] != uint32_t(-1)) {
+                        if(depend.VersionMax[0] < mmod2.Version[0]
+                            || depend.VersionMax[1] < mmod2.Version[1]
+                            || depend.VersionMax[2] < mmod2.Version[2]
+                            || depend.VersionMax[3] < mmod2.Version[3]
+                        ) {
+                            goto versionMismatch;
+                        }
+                    }
+
+                    contains = true;
+                    continue;
+
+                    versionMismatch:
+                    std::stringstream ss;
+                    ss << depend.VersionMin[0] << '.';
+                    ss << depend.VersionMin[1] << '.';
+                    ss << depend.VersionMin[2] << '.';
+                    ss << depend.VersionMin[3];
+                    std::string verMin = ss.str();
+                    ss.str("");
+
+                    if(depend.VersionMax[0] != uint32_t(-1)) {
+                        ss << depend.VersionMax[0] << '.';
+                    ss << (depend.VersionMax[1] == uint32_t(-1) ? "*" : std::to_string(depend.VersionMax[1])) << '.';
+                    ss << (depend.VersionMax[2] == uint32_t(-1) ? "*" : std::to_string(depend.VersionMax[2])) << '.';
+                    ss << (depend.VersionMax[3] == uint32_t(-1) ? "*" : std::to_string(depend.VersionMax[3])) << '.';
+                        verMin += " -> " + ss.str();
+                        ss.str("");
+                    }
+
+                    ss << mmod2.Version[0] << '.';
+                    ss << mmod2.Version[1] << '.';
+                    ss << mmod2.Version[2] << '.';
+                    ss << mmod2.Version[3];
+                    std::string ver = ss.str();
+                    ss.str("");
+
+                    lerrors.push_back("Мод " + mmod.Name+"("+mmod.Id+") требует "+mmod2.Name+"("+mmod2.Id+", "+verMin+"), найдена версия " + ver);
+                }
+
+                if(!contains)
+                    errors.insert(errors.end(), lerrors.begin(), lerrors.end());
+            }
+        }
+
+        if(!errors.empty())
+            return errors;
+    }
+    
+    std::vector<ModInfo> unloadChain, loadChain;
+
+    
+
+    return ModLoadTree{unloadChain, loadChain};
 }
 
 GameServer::GameServer(asio::io_context &ioc, fs::path worldPath)
@@ -151,22 +384,24 @@ GameServer::GameServer(asio::io_context &ioc, fs::path worldPath)
 
     // Тест луа
 
-    sol::state lua;
-    // lua.open_libraries();
-    // lua.set_panic(luaPanic);
-    lua.set_exception_handler(luaAtException);
+    // sol::state lua;
+    // lua.set_exception_handler(luaAtException);
     
-    sol::load_result res = lua.load_file("/home/mr_s/Workspace/Alpha/LuaVox/Work/mods/init.lua");
-    sol::function func = res.call<>();
-    int type = func();
-    // lua.script(R"(
+    // sol::load_result res = lua.load_file("/home/mr_s/Workspace/Alpha/LuaVox/Work/mods/init.lua");
+    // sol::function func = res.call<>();
+    // int type = func();
 
-    // )");
-
-    LOG.debug() << type;
+    // LOG.debug() << type;
 
     fs::path mods = "mods";
+    auto [info, errors] = preLoadMods({mods});
+    for(const auto& mod : info) {
+        LOG.debug() << mod.dump();
+    }
 
+    for(const std::string& error : errors) {
+        LOG.warn() << error;
+    }
 }
     
 GameServer::~GameServer() {
@@ -1047,60 +1282,6 @@ void GameServer::run() {
     }
 
     LOG.info() << "Сервер завершил работу";
-}
-
-std::vector<GameServer::ModInfo> GameServer::readModDataPath(const fs::path& modsDir) {
-    if(!fs::exists(modsDir))
-        return {};
-    
-    std::vector<GameServer::ModInfo> infos;
-
-    try {
-        fs::directory_iterator begin(modsDir), end;
-        for(; begin != end; begin++) {
-            if(!begin->is_directory())
-                continue;
-
-            fs::path mod_conf = begin->path() / "mod.json";
-            if(!fs::exists(mod_conf)) {
-                LOG.debug() << "Директория в папке с модами не содержит файл mod.json: " << begin->path().filename();
-                continue;
-            }
-
-            try {
-                std::ifstream fd(mod_conf);
-                js::object obj = js::parse(fd).as_object();
-
-                GameServer::ModInfo info;
-
-                info.Id = obj.at("Id").as_string();
-                info.Title = obj.contains("Title") ? obj["Title"].as_string() : "";
-                info.Description = obj.contains("Description") ? obj["Description"].as_string() : "";
-
-                if(obj.contains("Dependencies")) {
-                    js::array arr = obj["Dependencies"].as_array();
-                    for(auto& iter : arr) {
-                        info.Dependencies.push_back((std::string) iter.as_string());
-                    }
-                }
-
-                if(obj.contains("OptionalDependencies")) {
-                    js::array arr = obj["OptionalDependencies"].as_array();
-                    for(auto& iter : arr) {
-                        info.OptionalDependencies.push_back((std::string) iter.as_string());
-                    }
-                }
-
-            } catch(const std::exception &exc) {
-                LOG.warn() << "Не удалось прочитать " << mod_conf.string();
-            }
-        }
-    } catch(const std::exception &exc) {
-        LOG.warn() << "Не удалось прочитать моды из директории " << modsDir.string() << "\n" << exc.what();
-    }
-
-
-    return infos;
 }
 
 void GameServer::stepConnections() {

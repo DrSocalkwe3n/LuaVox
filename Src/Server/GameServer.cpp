@@ -63,6 +63,7 @@ struct ModInfo {
     std::vector<ModDepend> Dependencies, Optional;
     float LoadPriority;
     fs::path Path;
+    bool HasLiveReload;
 
     std::string dump() const {
         js::object obj;
@@ -72,6 +73,7 @@ struct ModInfo {
         obj["description"] = Description;
         obj["author"] = Author;
         obj["version"] = {Version[0], Version[1], Version[2], Version[3]};
+        obj["hasLiveReload"] = HasLiveReload;
         
         {
             js::array arr;
@@ -158,6 +160,7 @@ ModPreloadInfo preLoadMods(const std::vector<fs::path>& dirs) {
                             info.Name = obj.contains("title") ? obj["title"].as_string() : "";
                             info.Description = obj.contains("description") ? obj["description"].as_string() : "";
                             info.Author = obj.contains("author") ? obj["author"].as_string() : "";
+                            info.HasLiveReload = obj.contains("hasLiveReload") ? obj["hasLiveReload"].as_bool() : false;
 
                             {
                                 js::array version = obj.at("version").as_array();
@@ -260,6 +263,49 @@ ModPreloadInfo preLoadMods(const std::vector<fs::path>& dirs) {
     return {mods, errors};
 }
 
+std::vector<std::vector<ModInfo>> rangDepends(const std::vector<ModInfo>& mods) {
+    std::vector<std::vector<ModInfo>> ranging;
+
+    std::vector<ModInfo> state, next = mods;
+    while(true) {
+        state = std::move(next);
+
+        for(size_t index = 0; index < state.size(); index++) {
+            ModInfo &mod = state[index];
+            std::vector<ModDepend> depends = mod.Dependencies;
+            depends.insert(depends.end(), mod.Optional.begin(), mod.Optional.end());
+
+            for(ModDepend &depend : depends) {
+                for(size_t index2 = 0; index2 < state.size(); index2++) {
+                    ModInfo &mod2 = state[index];
+                    if(depend.Id == mod2.Id) {
+                        next.push_back(mod2);
+                        state.erase(state.begin()+index2);
+                        if(index2 <= index)
+                            index--;
+                        index2--;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if(state.empty()) {
+            // Циклическая зависимость
+            ranging.push_back(std::move(next));
+            break;
+        } else if(next.empty())
+            break;
+
+        ranging.push_back(std::move(state));
+    }
+
+    for(auto& list : ranging)
+        std::sort(list.begin(), list.end(), [](const ModInfo& left, const ModInfo& right){ return left.LoadPriority < right.LoadPriority; });
+
+    return ranging;
+}
+
 struct ModLoadTree {
     std::vector<ModInfo> UnloadChain, LoadChain;
 };
@@ -352,9 +398,23 @@ std::variant<ModLoadTree, std::vector<std::string>> buildLoadChain(const std::ve
             return errors;
     }
     
-    std::vector<ModInfo> unloadChain, loadChain;
+    std::vector<ModInfo> unloadChain;
 
-    
+    {
+        std::vector<std::vector<ModInfo>> rangeUnload = rangDepends(toUnload);
+        for(auto begin = rangeUnload.begin(), end = rangeUnload.end(); begin != end; begin++) {
+            unloadChain.insert(unloadChain.end(), begin->rbegin(), begin->rend());
+        }
+    }
+
+    std::vector<ModInfo> loadChain;
+
+    {
+        std::vector<std::vector<ModInfo>> rangeLoad = rangDepends(toLoad);
+        for(auto begin = rangeLoad.rbegin(), end = rangeLoad.rend(); begin != end; begin++) {
+            unloadChain.insert(unloadChain.end(), begin->begin(), begin->end());
+        }
+    }
 
     return ModLoadTree{unloadChain, loadChain};
 }
@@ -1189,15 +1249,69 @@ std::string GameServer::deBuildTexturePipeline(const TexturePipeline& pipeline) 
 
 
 void GameServer::init(fs::path worldPath) {
-    Expanse.Worlds[0] = std::make_unique<World>(0);
+    // world.json
+
+    fs::create_directories(worldPath);
+    fs::path worldJson = worldPath / "world.json";
+
+    LOG.info() << "Обработка файла " << worldJson.string();
+
+    js::object sbWorld, sbPlayer, sbAuth, sbModStorage;
+
+    if(!fs::exists(worldJson)) {
+        MAKE_ERROR("Файл отсутствует");
+    } else {
+        std::string data;
+        try {
+            std::ifstream fd(worldJson);
+            fd.exceptions(std::ifstream::failbit | std::ifstream::badbit);
+            
+            fd.seekg(0, std::ios::end);
+            std::streamsize size = fd.tellg();
+            fd.seekg(0, std::ios::beg);
+
+            if(size > 16*1024*1024)
+                MAKE_ERROR("Превышен размер файла (16 мб)");
+            
+            data.resize(size);
+            fd.read((char*) data.data(), size);
+        } catch (const std::exception& exc) {
+            MAKE_ERROR("Не удалось считать: " << exc.what());
+        }
+
+        // void checkJson()
+
+        try {
+            js::object obj = js::parse(data).as_object();
+
+            {
+                js::object sb = obj.at("save_backends").as_object();
+                sbWorld = sb.at("world").as_object();
+                sbPlayer = sb.at("player").as_object();
+                sbAuth = sb.at("auth").as_object();
+                sbModStorage = sb.at("mod_storage").as_object();
+            }
+
+        } catch(const std::exception& exc) {
+            MAKE_ERROR("Ошибка структуры параметров: " << exc.what());
+        }
+    }
+
 
     SaveBackends::Filesystem fsbc;
 
-    SaveBackend.World = fsbc.createWorld(boost::json::parse("{\"Path\": \"data/world\"}").as_object());
-    SaveBackend.Player = fsbc.createPlayer(boost::json::parse("{\"Path\": \"data/player\"}").as_object());
-    SaveBackend.Auth = fsbc.createAuth(boost::json::parse("{\"Path\": \"data/auth\"}").as_object());
-    SaveBackend.ModStorage = fsbc.createModStorage(boost::json::parse("{\"Path\": \"data/mod_storage\"}").as_object());
+    LOG.info() << "Запуск базы хранения миров";
+    SaveBackend.World = fsbc.createWorld(sbWorld);
+    LOG.info() << "Запуск базы хранения игроков";
+    SaveBackend.Player = fsbc.createPlayer(sbPlayer);
+    LOG.info() << "Запуск базы хранения аутентификаций";
+    SaveBackend.Auth = fsbc.createAuth(sbAuth);
+    LOG.info() << "Запуск базы хранения данных модов";
+    SaveBackend.ModStorage = fsbc.createModStorage(sbModStorage);
 
+    LOG.info() << "Инициализация модов";
+
+    Expanse.Worlds[0] = std::make_unique<World>(0);
     RunThread = std::thread(&GameServer::prerun, this);
 }
 

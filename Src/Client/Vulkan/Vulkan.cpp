@@ -53,7 +53,7 @@ struct ServerObj {
 	Net::SocketServer LS;
 
 	ServerObj(asio::io_context &ioc)
-		: GS(ioc, ""), LS(ioc, [&](tcp::socket sock) -> coro<> { co_await GS.pushSocketConnect(std::move(sock)); }, 7890)
+		: GS(ioc, "worlds/test/"), LS(ioc, [&](tcp::socket sock) -> coro<> { co_await GS.pushSocketConnect(std::move(sock)); }, 7890)
 	{
 	}
 };

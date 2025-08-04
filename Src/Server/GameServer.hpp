@@ -14,6 +14,8 @@
 #include <memory>
 #include <queue>
 #include <set>
+#include <sol/forward.hpp>
+#include <sol/state.hpp>
 #include <thread>
 #include <unordered_map>
 #include "ContentEventController.hpp"
@@ -26,6 +28,22 @@
 
 
 namespace LV::Server {
+
+struct ModRequest {
+    std::string Id;
+    std::array<uint32_t, 4> MinVersion, MaxVersion;
+};
+
+struct ModInfo {
+    std::string Id, Name, Description, Author;
+    std::array<uint32_t, 4> Version;
+    std::vector<ModRequest> Dependencies, Optional;
+    float LoadPriority;
+    fs::path Path;
+    bool HasLiveReload;
+
+    std::string dump() const;
+};
 
 namespace fs = std::filesystem;
 
@@ -263,6 +281,10 @@ class GameServer : public AsyncObject {
         void run(int id);
     } BackingAsyncLua;
 
+    sol::state LuaMainState;
+    std::vector<ModInfo> LoadedMods;
+    std::vector<std::pair<std::string, sol::table>> ModInstances;
+
 public:
     GameServer(asio::io_context &ioc, fs::path worldPath);
     virtual ~GameServer();
@@ -295,15 +317,6 @@ private:
     void init(fs::path worldPath);
     void prerun();
     void run();
-
-    struct ModInfo {
-        std::string Id, Title, Description;
-        fs::path Path;
-
-        std::vector<std::string> Dependencies, OptionalDependencies;
-    };
-
-    std::vector<ModInfo> readModDataPath(const fs::path& modsDir);
 
     /*
         Подключение/отключение игроков

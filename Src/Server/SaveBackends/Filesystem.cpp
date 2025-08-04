@@ -22,7 +22,7 @@ class WSB_Filesystem : public IWorldSaveBackend {
 
 public:
     WSB_Filesystem(const boost::json::object &data) {
-        Dir = (std::string) data.at("Path").as_string();
+        Dir = (std::string) data.at("path").as_string();
     }
 
     virtual ~WSB_Filesystem() {
@@ -111,7 +111,7 @@ class PSB_Filesystem : public IPlayerSaveBackend {
 
 public:
     PSB_Filesystem(const boost::json::object &data) {
-        Dir = (std::string) data.at("Path").as_string();
+        Dir = (std::string) data.at("path").as_string();
     }
 
     virtual ~PSB_Filesystem() {
@@ -146,7 +146,7 @@ class ASB_Filesystem : public IAuthSaveBackend {
 
 public:
     ASB_Filesystem(const boost::json::object &data) {
-        Dir = (std::string) data.at("Path").as_string();
+        Dir = (std::string) data.at("path").as_string();
     }
 
     virtual ~ASB_Filesystem() {
@@ -174,6 +174,7 @@ public:
 
         data.Id = jobj.at("Id").as_uint64();
         data.PasswordHash = jobj.at("PasswordHash").as_string();
+        co_return true;
     }
 
     virtual coro<> save(std::string playerId, const SB_Auth& data) override {
@@ -185,6 +186,7 @@ public:
         fs::create_directories(getPath(playerId).parent_path());
         std::ofstream fd(getPath(playerId));
         fd << js::serialize(jobj);
+        co_return;
     }
 
     virtual coro<> remove(std::string username) override {
@@ -198,7 +200,7 @@ class MSSB_Filesystem : public IModStorageSaveBackend {
 
 public:
     MSSB_Filesystem(const boost::json::object &data) {
-        Dir = (std::string) data.at("Path").as_string();
+        Dir = (std::string) data.at("path").as_string();
     }
 
     virtual ~MSSB_Filesystem() {

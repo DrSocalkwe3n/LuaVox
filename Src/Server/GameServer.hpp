@@ -1,5 +1,7 @@
 #pragma once
 
+#define SOL_EXCEPTIONS_SAFE_PROPAGATION 1
+
 #include <Common/Net.hpp>
 #include <Common/Lockable.hpp>
 #include <boost/asio/any_io_executor.hpp>
@@ -80,8 +82,7 @@ class GameServer : public AsyncObject {
         std::unordered_map<DefEntityId_t, DefEntity_t>  ContentIdToDef_Entity;
         std::unordered_map<DefItemId_t, DefItem_t>      ContentIdToDef_Item;
 
-
-        ResourceId_t getContentDefId(const std::string& key, EnumDefContent def) {
+        ResourceId_t registerContent(const std::string& key, EnumDefContent def) {
             int index = int(def);
             assert(index < (int) EnumDefContent::MAX_ENUM);
 
@@ -92,6 +93,19 @@ class GameServer : public AsyncObject {
                 ResourceId_t nextId = NextId[index]++;
                 container.insert(iter, {key, nextId});
                 return nextId;
+            }
+
+            MAKE_ERROR("Повторная регистрация контента: " << key << " тип " << int(def));
+        }
+
+        ResourceId_t getContentDefId(const std::string& key, EnumDefContent def) {
+            int index = int(def);
+            assert(index < (int) EnumDefContent::MAX_ENUM);
+
+            auto &container = ContentKeyToId[index];
+            auto iter = container.find(key);
+            if(iter == container.end()) {
+                return ResourceId_t(-1);
             }
 
             return iter->second;
@@ -284,6 +298,12 @@ class GameServer : public AsyncObject {
     sol::state LuaMainState;
     std::vector<ModInfo> LoadedMods;
     std::vector<std::pair<std::string, sol::table>> ModInstances;
+    // Идентификатор текущегго мода, находящевося в обработке
+    std::string CurrentModId;
+
+    struct {
+
+    };
 
 public:
     GameServer(asio::io_context &ioc, fs::path worldPath);
@@ -317,6 +337,11 @@ private:
     void init(fs::path worldPath);
     void prerun();
     void run();
+
+
+    void initLuaPre();
+    void initLua();
+    void initLuaPost();
 
     /*
         Подключение/отключение игроков

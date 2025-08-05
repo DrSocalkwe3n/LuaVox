@@ -15,6 +15,8 @@
 #include <memory>
 #include <mutex>
 #include <sol/forward.hpp>
+#include <sol/optional_implementation.hpp>
+#include <sol/protected_function_result.hpp>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -240,7 +242,7 @@ std::vector<std::vector<ModInfo>> rangDepends(const std::vector<ModInfo>& mods) 
     std::vector<std::vector<ModInfo>> ranging;
 
     std::vector<ModInfo> state, next = mods;
-    while(true) {
+    while(!next.empty()) {
         state = std::move(next);
 
         for(size_t index = 0; index < state.size(); index++) {
@@ -267,8 +269,7 @@ std::vector<std::vector<ModInfo>> rangDepends(const std::vector<ModInfo>& mods) 
             // Циклическая зависимость
             ranging.push_back(std::move(next));
             break;
-        } else if(next.empty())
-            break;
+        } 
 
         ranging.push_back(std::move(state));
     }
@@ -381,7 +382,7 @@ std::variant<ModLoadTree, std::vector<std::string>> buildLoadChain(const std::ve
     {
         std::vector<std::vector<ModInfo>> rangeLoad = rangDepends(toLoad);
         for(auto begin = rangeLoad.rbegin(), end = rangeLoad.rend(); begin != end; begin++) {
-            unloadChain.insert(unloadChain.end(), begin->begin(), begin->end());
+            loadChain.insert(loadChain.end(), begin->begin(), begin->end());
         }
     }
 
@@ -1262,6 +1263,22 @@ std::string GameServer::deBuildTexturePipeline(const TexturePipeline& pipeline) 
     return "";
 }
 
+int my_exception_handler(lua_State* lua, sol::optional<const std::exception&> maybe_exception, sol::string_view description) {
+	std::cout << "An exception occurred in a function, here's what it says ";
+	if (maybe_exception) {
+		std::cout << "(straight from the exception): ";
+		const std::exception& ex = *maybe_exception;
+		std::cout << ex.what() << std::endl;
+	}
+	else {
+		std::cout << "(from the description parameter): ";
+		std::cout.write(description.data(), static_cast<std::streamsize>(description.size()));
+		std::cout << std::endl;
+	}
+
+	return sol::stack::push(lua, description);
+}
+
 void GameServer::init(fs::path worldPath) {
     // world.json
 
@@ -1403,32 +1420,75 @@ void GameServer::init(fs::path worldPath) {
     LoadedMods = mlt.LoadChain;
 
     LuaMainState.open_libraries();
+	LuaMainState.set_exception_handler(&my_exception_handler);
 
     for(const ModInfo& info : mlt.LoadChain) {
         LOG.info() << info.Id;
+        CurrentModId = info.Id;
         sol::load_result res = LuaMainState.load_file(info.Path / "init.lua");
         ModInstances.emplace_back(info.Id, res.call<sol::table>());
     }
 
     LOG.info() << "Пре Инициализация";
+    initLuaPre();
 
     for(auto& [id, core] : ModInstances) {
-        sol::function func = core.get_or<sol::function>("preInit", {});
-        func();
+        std::optional<sol::protected_function> func = core.get<std::optional<sol::protected_function>>("preInit");
+        if(func) {
+            sol::protected_function_result result;
+            try {
+                result = func->operator()();
+            } catch(const std::exception &exc) {
+                MAKE_ERROR("Ошибка инициализации мода " << id << ":\n" << exc.what());
+            }
+
+            if(!result.valid()) {
+                sol::error err = result;
+                MAKE_ERROR("Ошибка инициализации мода " << id << ":\n" << err.what());
+            }
+        }
     }
 
     LOG.info() << "Инициализация";
+    initLua();
 
     for(auto& [id, core] : ModInstances) {
-        sol::function func = core.get_or<sol::function>("init", {});
-        func();
+        CurrentModId = id;
+        std::optional<sol::protected_function> func = core.get<std::optional<sol::protected_function>>("init");
+        if(func) {
+            sol::protected_function_result result;
+            try {
+                result = func->operator()();
+            } catch(...) {
+                MAKE_ERROR("Ошибка инициализации мода " << id << ":\n");
+            }
+
+            if(!result.valid()) {
+                sol::error err = result;
+                MAKE_ERROR("Ошибка инициализации мода " << id << ":\n" << err.what());
+            }
+        }
     }
 
     LOG.info() << "Пост Инициализация";
+    initLuaPost();
 
     for(auto& [id, core] : ModInstances) {
-        sol::function func = core.get_or<sol::function>("postInit", {});
-        func();
+        CurrentModId = id;
+        std::optional<sol::protected_function> func = core.get<std::optional<sol::protected_function>>("postInit");
+        if(func) {
+            sol::protected_function_result result;
+            try {
+                result = func->operator()();
+            } catch(const std::exception &exc) {
+                MAKE_ERROR("Ошибка инициализации мода " << id << ":\n" << exc.what());
+            }
+
+            if(!result.valid()) {
+                sol::error err = result;
+                MAKE_ERROR("Ошибка инициализации мода " << id << ":\n" << err.what());
+            }
+        }
     }
 
     // Загрузить миры с существующими профилями
@@ -1535,6 +1595,43 @@ void GameServer::run() {
     }
 
     LOG.info() << "Сервер завершил работу";
+}
+
+void GameServer::initLuaPre() {
+    auto &lua = LuaMainState;
+
+    sol::table core = lua.create_named_table("core");
+    core.set_function("register_node", [&](const std::string& id, const sol::table& profile) {
+        std::optional<std::vector<std::optional<std::string>>> result_o = TOS::Str::match(id, "^(?:([\\w\\d_]+):)?([\\w\\d_]+)$");
+
+        if(!result_o) {
+            MAKE_ERROR("Недействительный идентификатор ноды: " << id);
+        }
+        
+        auto &result = *result_o;
+
+        if(result[1])
+            Content.registerContent(id, EnumDefContent::Node);
+        else
+            Content.registerContent(CurrentModId+":"+*result[2], EnumDefContent::Node);
+    });
+}
+
+void GameServer::initLua() {
+    auto &lua = LuaMainState;
+
+    sol::table core = lua["core"];
+
+    auto lambdaError = [](sol::this_state L) {
+        luaL_error(L.lua_state(), "Данная функция может использоваться только в стадии [preInit]");
+    };
+
+    for(const char* name : {"register_node"})
+        core.set_function(name, lambdaError);
+}
+
+void GameServer::initLuaPost() {
+    
 }
 
 void GameServer::stepConnections() {

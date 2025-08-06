@@ -1,6 +1,9 @@
 #pragma once
 
+#include "TOSLib.hpp"
+#include <algorithm>
 #include <bitset>
+#include <cctype>
 #include <cstdint>
 #include <Common/Abstract.hpp>
 #include <Common/Collide.hpp>
@@ -169,7 +172,87 @@ struct StateExpression {
 
     StateExpression(std::vector<NodestateEntry>, const std::string& expression) {
         // Скомпилировать выражение и просчитать таблицу CT
-        
+
+        struct Value {
+            bool IsMetaData;
+            union {
+                int Val;
+                struct {
+                    uint8_t MetaId, MetaValue;
+                };
+            };
+        };
+
+        struct Node {
+            std::variant<std::string, uint16_t> Val1, Val2;
+            char Func;
+        };
+
+        std::vector<Node> nodes;
+
+        std::function<Node(const std::string_view&)> lambda = [&](const std::string_view& exp) -> Node {
+            std::vector<std::variant<std::string, char, Node>> tokens;
+
+            // Парсим токены и выражения в круглых скобках
+            for(size_t pos = 0; pos < exp.size(); pos++) {
+                if(
+                    (exp[pos] >= 'a' && exp[pos] <= 'z') 
+                    || (exp[pos] >= 'A' && exp[pos] <= 'Z') 
+                    || (exp[pos] >= '0' && exp[pos] <= '9')
+                ) {
+                    if(tokens.empty() || tokens.back().index() != 0) {
+                        tokens.push_back(exp[pos]);
+                    }
+
+                    std::string& token = std::get<0>(tokens.back());
+                    token += exp[pos];
+                } else if(exp[pos] == '(') {
+                    int depth = 0;
+                    for(size_t pos2 = pos; pos2 < exp.size(); pos2++) {
+                        if(exp[pos2] == '(')
+                            depth++;
+                        else if(exp[pos2] == ')')
+                            depth--;
+
+                        if(depth == 0) {
+                            tokens.push_back(lambda(exp.substr(pos+1, pos2-pos-1)));
+                            break;
+                        }
+                    }
+
+                    if(depth != 0) {
+                        MAKE_ERROR("Неожиданное завершение выражения");
+                    }
+                } else {
+                    tokens.push_back(exp[pos]);
+                }
+            }
+
+            while(true) {
+                for(ssize_t pos = tokens.size()-1; pos >= 0; pos--) {
+                    auto& token = tokens[pos];
+                    if(token.index() != 1 || std::get<1>(token) != '!' || (pos < tokens.size()-1 && tokens[pos+1].index() == 1))
+                        continue;
+
+                    if(pos == tokens.size()-1) {
+                        MAKE_ERROR("Отсутствует операнд");
+                    }
+
+                    auto& rightToken = tokens[pos+1];
+                    if(rightToken.index() == 2) {
+                        nodes.push_back(std::get<2>(rightToken));
+                        uint16_t index = nodes.size()-1;
+                        Node newNode;
+                        newNode.Func = '!';
+                        newNode.Val2 = index;
+                    }
+                }
+            }
+        };
+
+        const std::string exp = TOS::Str::replace(expression, " ", "");
+        // exp = TOS::Str::replace(expression, "\0", "");
+        lambda(exp);
 
         for(int meta = 0; meta < 256; meta++) {
             CT[meta] = true;

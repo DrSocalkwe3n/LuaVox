@@ -15,7 +15,6 @@
 #include <memory>
 #include <mutex>
 #include <sol/forward.hpp>
-#include <sol/optional_implementation.hpp>
 #include <sol/protected_function_result.hpp>
 #include <sstream>
 #include <string>
@@ -1610,10 +1609,16 @@ void GameServer::initLuaPre() {
         
         auto &result = *result_o;
 
+        DefNode_t node;
+
+        ResourceId_t sId;
+
         if(result[1])
-            Content.registerContent(id, EnumDefContent::Node);
+            sId = Content.registerContent(id, EnumDefContent::Node);
         else
-            Content.registerContent(CurrentModId+":"+*result[2], EnumDefContent::Node);
+            sId = Content.registerContent(CurrentModId+":"+*result[2], EnumDefContent::Node);
+
+        Content.ContentIdToDef_Node.insert({sId, std::move(node)});
     });
 }
 

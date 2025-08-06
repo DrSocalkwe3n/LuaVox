@@ -1,14 +1,19 @@
 #pragma once
 
+#include <bitset>
 #include <cstdint>
 #include <Common/Abstract.hpp>
 #include <Common/Collide.hpp>
 #include <sha2.hpp>
+#include <sol/sol.hpp>
 #include <string>
 #include <unordered_map>
+#include <boost/json.hpp>
 
 
 namespace LV::Server {
+
+namespace js = boost::json;
 
 // В одном регионе может быть максимум 2^16 сущностей. Клиенту адресуются сущности в формате <мир>+<позиция региона>+<uint16_t>
 // И если сущность перешла из одного региона в другой, идентификатор сущности на стороне клиента сохраняется
@@ -144,6 +149,95 @@ struct CollisionAABB : public AABB {
     bool Skip = false;
 };
 
+/*
+    Модель, считанная с файла и предкомпилированна
+    Для компиляции нужно собрать зависимости модели,
+    и в случае их изменения нужно перекомпилировать модель (может просто перекомпилировать всё разом?)
+*/
+struct PreCompiledModel_t {
+
+};
+
+struct NodestateEntry {
+    std::string Name;
+    int Variability = 0;
+    std::vector<std::string> ValueNames;
+};
+
+struct StateExpression {
+    std::bitset<256> CT;
+
+    StateExpression(std::vector<NodestateEntry>, const std::string& expression) {
+        // Скомпилировать выражение и просчитать таблицу CT
+        
+
+        for(int meta = 0; meta < 256; meta++) {
+            CT[meta] = true;
+        }
+    }
+
+    bool operator()(uint8_t meta) {
+        return CT[meta];
+    }
+};
+
+struct DefNodeStates_t {
+    /*
+        Указать модель, текстуры и поворот по конкретным осям.
+        Может быть вариативность моделей относительно одного условия (случайность в зависимости от координат?)
+        Допускается активация нескольких условий одновременно
+
+        условия snowy=false
+
+        "snowy=false": [{"model": "node/grass_node"}, {"model": "node/grass_node", transformations: ["y=90", "x=67"]}] <- модель будет выбрана случайно
+        или
+        : [{models: [], weight: 1}, {}] <- в models можно перечислить сразу несколько моделей, и они будут использоваться одновременно
+        или
+        "": {"model": "node/grass", weight <вес влияющий на шанс отображения именно этой модели>}
+        или просто
+        "model": "node/grass_node"
+        В условия добавить простые проверки !><=&|() in ['1', 2]
+        в задании параметров модели использовать формулы с применением состояний
+
+        uvlock ? https://minecraft.wiki/w/Blockstates_definition/format
+    */
+
+
+};
+
+// Скомпилированный профиль ноды
+struct DefNode_t {
+    // Зарегистрированные состояния (мета)
+    struct {
+        // Подгружается с файла assets/<modid>/blockstate/node/nodeId.json
+        DefNodeStates_t StateRouter;
+
+    } States;
+
+    // Параметры рендера
+    struct {
+        bool hasHalfTransparency = false;
+    } Render;
+
+    // Параметры коллизии
+    struct {
+        enum class EnumCollisionType {
+            None, ByRender, 
+        };
+
+        std::variant<EnumCollisionType> CollisionType = EnumCollisionType::None;
+    } Collision;
+
+    // События
+    struct {
+
+    } Events;
+
+    // Если нода умная, то для неё будет создаваться дополнительный более активный объект
+    sol::protected_function NodeAdvancementFactory;
+
+    
+};
 
 class Entity  {
     DefEntityId_t DefId;

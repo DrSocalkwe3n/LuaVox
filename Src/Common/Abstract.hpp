@@ -7,6 +7,7 @@
 #include <glm/ext.hpp>
 #include <initializer_list>
 #include <memory>
+#include <sol/forward.hpp>
 #include <type_traits>
 #include <vector>
 

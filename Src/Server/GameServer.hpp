@@ -75,12 +75,12 @@ class GameServer : public AsyncObject {
         ResourceId_t NextId[(int) EnumDefContent::MAX_ENUM] = {0};
         std::unordered_map<std::string, ResourceId_t> ContentKeyToId[(int) EnumDefContent::MAX_ENUM]; // EnumDefContent
 
-        std::unordered_map<DefVoxelId_t, DefVoxel_t>    ContentIdToDef_Voxel;
-        std::unordered_map<DefNodeId_t, DefNode_t>      ContentIdToDef_Node;
-        std::unordered_map<DefWorldId_t, DefWorld_t>    ContentIdToDef_World;
-        std::unordered_map<DefPortalId_t, DefPortal_t>  ContentIdToDef_Portal;
-        std::unordered_map<DefEntityId_t, DefEntity_t>  ContentIdToDef_Entity;
-        std::unordered_map<DefItemId_t, DefItem_t>      ContentIdToDef_Item;
+        std::unordered_map<DefVoxelId_t,    DefVoxel_t>    ContentIdToDef_Voxel;
+        std::unordered_map<DefNodeId_t,     DefNode_t>      ContentIdToDef_Node;
+        std::unordered_map<DefWorldId_t,    DefWorld_t>    ContentIdToDef_World;
+        std::unordered_map<DefPortalId_t,   DefPortal_t>  ContentIdToDef_Portal;
+        std::unordered_map<DefEntityId_t,   DefEntity_t>  ContentIdToDef_Entity;
+        std::unordered_map<DefItemId_t,     DefItem_t>      ContentIdToDef_Item;
 
         ResourceId_t registerContent(const std::string& key, EnumDefContent def) {
             int index = int(def);

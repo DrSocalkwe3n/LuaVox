@@ -173,16 +173,6 @@ struct StateExpression {
     StateExpression(std::vector<NodestateEntry>, const std::string& expression) {
         // Скомпилировать выражение и просчитать таблицу CT
 
-        struct Value {
-            bool IsMetaData;
-            union {
-                int Val;
-                struct {
-                    uint8_t MetaId, MetaValue;
-                };
-            };
-        };
-
         struct Node {
             std::variant<std::string, uint16_t> Val1, Val2;
             char Func;
@@ -190,7 +180,7 @@ struct StateExpression {
 
         std::vector<Node> nodes;
 
-        std::function<Node(const std::string_view&)> lambda = [&](const std::string_view& exp) -> Node {
+        std::function<std::variant<std::string, Node>(const std::string_view&)> lambda = [&](const std::string_view& exp) -> std::variant<std::string, Node> {
             std::vector<std::variant<std::string, char, Node>> tokens;
 
             // Парсим токены и выражения в круглых скобках
@@ -215,7 +205,11 @@ struct StateExpression {
                             depth--;
 
                         if(depth == 0) {
-                            tokens.push_back(lambda(exp.substr(pos+1, pos2-pos-1)));
+                            auto res = lambda(exp.substr(pos+1, pos2-pos-1));
+                            if(res.index() == 0)
+                                tokens.push_back(std::get<0>(res));
+                            else if(res.index() == 1)
+                                tokens.push_back(std::get<1>(res));
                             break;
                         }
                     }
@@ -228,31 +222,491 @@ struct StateExpression {
                 }
             }
 
-            while(true) {
-                for(ssize_t pos = tokens.size()-1; pos >= 0; pos--) {
-                    auto& token = tokens[pos];
-                    if(token.index() != 1 || std::get<1>(token) != '!' || (pos < tokens.size()-1 && tokens[pos+1].index() == 1))
-                        continue;
+            for(ssize_t pos = tokens.size()-1; pos >= 0; pos--) {
+                // Проверка на логическое НЕ и унарные операции
 
-                    if(pos == tokens.size()-1) {
-                        MAKE_ERROR("Отсутствует операнд");
-                    }
+                auto& token = tokens[pos];
+                // Если справа знак =, то этот случай не обрабатываем
+                if(token.index() != 1 || (std::get<1>(token) != '!' && std::get<1>(token) != '+' && std::get<1>(token) != '-'))
+                    continue;
 
-                    auto& rightToken = tokens[pos+1];
-                    if(rightToken.index() == 2) {
-                        nodes.push_back(std::get<2>(rightToken));
-                        uint16_t index = nodes.size()-1;
+                // Справа должен быть операнд
+                if(pos == tokens.size()-1) {
+                    MAKE_ERROR("Отсутствует операнд");
+                }
+
+                auto& rightToken = tokens[pos+1];
+                char oper = std::get<1>(token);
+
+                if(oper == '!' && rightToken.index() == 1 && std::get<1>(rightToken) == '=')
+                    continue;
+
+                if(pos != 0 && (oper == '+' || oper == '-') && tokens[pos-1].index() != 1)
+                    continue;
+
+                // Если справа нода
+                if(rightToken.index() == 2) {
+                    nodes.push_back(std::get<2>(rightToken));
+                    uint16_t index = nodes.size()-1;
+                    Node newNode;
+                    newNode.Func = '!';
+                    newNode.Val2 = index;
+                    token = newNode;
+                    tokens.erase(tokens.begin()+pos+1);
+                } else if(rightToken.index() == 1) {
+                    MAKE_ERROR("Недопустимый операнд");
+                } else if(rightToken.index() == 0) {
+                    // Если справа переменная или число
+                    const std::string& valOrVar = std::get<0>(rightToken);
+                    assert(!valOrVar.empty());
+                    if(std::isdigit(valOrVar[0])) {
+                        // Это число
+                        int val = std::stoi(valOrVar);
+                        if(oper == '+')
+                            token = valOrVar;
+                        else if(oper == '-')
+                            token = std::to_string(-val);
+                        else if(oper == '!')
+                            token = val ? "0" : "1";
+                        tokens.erase(tokens.begin()+pos+1);
+                    } else {
+                        // Это переменная
                         Node newNode;
-                        newNode.Func = '!';
-                        newNode.Val2 = index;
+                        newNode.Func = oper;
+                        newNode.Val2 = valOrVar;
+                        token = newNode;
+                        tokens.erase(tokens.begin()+pos+1);
                     }
                 }
+            }
+
+            for(ssize_t pos = 0; pos < tokens.size(); pos++) {
+                // Проверка на *.%
+
+                auto& token = tokens[pos];
+                if(token.index() != 1 || (std::get<1>(token) != '*' && std::get<1>(token) != '/' && std::get<1>(token) != '%'))
+                    continue;
+
+                char oper = std::get<1>(token);
+
+                // Слева и справа должны быть операнды
+                if(pos == 0 || pos == tokens.size()-1) {
+                    MAKE_ERROR("Отсутствует операнд");
+                }
+
+                auto& leftToken = tokens[pos-1];
+                auto& rightToken = tokens[pos+1];
+
+                if(leftToken.index() == 0 && rightToken.index() == 0
+                    && std::isdigit(std::get<0>(leftToken)[0])
+                    && std::isdigit(std::get<0>(rightToken)[0])
+                ) {
+                    // Можно высчитать на месте
+                    int leftVal = std::stoi(std::get<0>(leftToken));
+                    int rightVal = std::stoi(std::get<0>(rightToken));
+
+                    if(oper == '*')
+                        token = std::to_string(leftVal*rightVal);
+                    else if(oper == '/')
+                        token = std::to_string(leftVal/rightVal);
+                    else if(oper == '%')
+                        token = std::to_string(leftVal%rightVal);
+                    tokens.erase(tokens.begin()+pos+1);
+                    tokens.erase(tokens.begin()+pos-1);
+                    pos--;
+                } else {
+                    Node newNode;
+                    newNode.Func = oper;
+
+                    if(leftToken.index() == 0)
+                        newNode.Val1 = std::get<0>(leftToken);
+                    else if(leftToken.index() == 1)
+                        MAKE_ERROR("Недопустимый операнд");
+                    else {
+                        nodes.push_back(std::get<2>(leftToken));
+                        uint16_t index = nodes.size()-1;
+                        newNode.Val1 = index;
+                        tokens.erase(tokens.begin()+pos-1);
+                        pos--;
+                    }
+
+                    if(rightToken.index() == 0)
+                        newNode.Val2 = std::get<0>(rightToken);
+                    else if(rightToken.index() == 1)
+                        MAKE_ERROR("Недопустимый операнд");
+                    else {
+                        nodes.push_back(std::get<2>(rightToken));
+                        uint16_t index = nodes.size()-1;
+                        newNode.Val2 = index;
+                        tokens.erase(tokens.begin()+pos+1);
+                    }
+                      
+                    tokens[pos] = newNode;
+                }
+            }
+
+            for(ssize_t pos = 0; pos < tokens.size(); pos++) {
+                // Проверка на +-
+
+                auto& token = tokens[pos];
+                if(token.index() != 1 || (std::get<1>(token) != '+' && std::get<1>(token) != '-'))
+                    continue;
+
+                char oper = std::get<1>(token);
+
+                // Слева и справа должны быть операнды
+                if(pos == 0 || pos == tokens.size()-1) {
+                    MAKE_ERROR("Отсутствует операнд");
+                }
+
+                auto& leftToken = tokens[pos-1];
+                auto& rightToken = tokens[pos+1];
+
+                if(leftToken.index() == 0 && rightToken.index() == 0
+                    && std::isdigit(std::get<0>(leftToken)[0])
+                    && std::isdigit(std::get<0>(rightToken)[0])
+                ) {
+                    // Можно высчитать на месте
+                    int leftVal = std::stoi(std::get<0>(leftToken));
+                    int rightVal = std::stoi(std::get<0>(rightToken));
+
+                    if(oper == '+')
+                        token = std::to_string(leftVal+rightVal);
+                    else if(oper == '-')
+                        token = std::to_string(leftVal-rightVal);
+                    tokens.erase(tokens.begin()+pos+1);
+                    tokens.erase(tokens.begin()+pos-1);
+                    pos--;
+                } else {
+                    Node newNode;
+                    newNode.Func = oper;
+
+                    if(leftToken.index() == 0)
+                        newNode.Val1 = std::get<0>(leftToken);
+                    else if(leftToken.index() == 1)
+                        MAKE_ERROR("Недопустимый операнд");
+                    else {
+                        nodes.push_back(std::get<2>(leftToken));
+                        uint16_t index = nodes.size()-1;
+                        newNode.Val1 = index;
+                        tokens.erase(tokens.begin()+pos-1);
+                        pos--;
+                    }
+
+                    if(rightToken.index() == 0)
+                        newNode.Val2 = std::get<0>(rightToken);
+                    else if(rightToken.index() == 1)
+                        MAKE_ERROR("Недопустимый операнд");
+                    else {
+                        nodes.push_back(std::get<2>(rightToken));
+                        uint16_t index = nodes.size()-1;
+                        newNode.Val2 = index;
+                        tokens.erase(tokens.begin()+pos+1);
+                    }
+                      
+                    tokens[pos] = newNode;
+                }
+            }
+
+            for(ssize_t pos = 0; pos < tokens.size(); pos++) {
+                // Проверка на < <= => >
+
+                auto& token = tokens[pos];
+                if(token.index() != 1 || (std::get<1>(token) != '<' && std::get<1>(token) != '>'))
+                    continue;
+
+                // Слева и справа должны быть операнды
+                if(pos == 0 || pos == tokens.size()-1) {
+                    MAKE_ERROR("Отсутствует операнд");
+                }
+
+                uint8_t oper = std::get<1>(token) == '<' ? 0 : 2;
+                auto* leftToken = &tokens[pos-1];
+                auto* rightToken = &tokens[pos+1];
+
+                if(rightToken->index() == 1) {
+                    if(std::get<1>(*rightToken) == '=') {
+                        oper++;
+                        if(pos+2 >= tokens.size())
+                            MAKE_ERROR("Отсутствует операнд");
+                        
+                        rightToken = &tokens[pos+2];
+                        if(rightToken->index() == 1)
+                            MAKE_ERROR("Недопустимый операнд");
+                    } else
+                        MAKE_ERROR("Недопустимый операнд");
+                }
+
+                if((leftToken->index() == 0 && rightToken->index() == 0)
+                    && std::isdigit(std::get<0>(*leftToken)[0])
+                    && std::isdigit(std::get<0>(*rightToken)[0])
+                ) {
+                    // Можно высчитать на месте
+                    int leftVal = std::stoi(std::get<0>(*leftToken));
+                    int rightVal = std::stoi(std::get<0>(*rightToken));
+
+                    if(oper == 0)
+                        token = leftVal < rightVal ? "1" : "0";
+                    else if(oper == 1)
+                        token = leftVal <= rightVal ? "1" : "0";
+                    else if(oper == 2)
+                        token = leftVal > rightVal ? "1" : "0";
+                    else if(oper == 3)
+                        token = leftVal >= rightVal ? "1" : "0";
+                    
+                    tokens.erase(tokens.begin()+pos+1);
+                    if(oper == 1 || oper == 3)
+                        tokens.erase(tokens.begin()+pos+1);
+
+                    tokens.erase(tokens.begin()+pos-1);
+                    pos--;
+                } else {
+                    Node newNode;
+                    newNode.Func = oper;
+
+                    if(leftToken->index() == 0)
+                        newNode.Val1 = std::get<0>(*leftToken);
+                    else if(leftToken->index() == 1)
+                        MAKE_ERROR("Недопустимый операнд");
+                    else {
+                        nodes.push_back(std::get<2>(*leftToken));
+                        uint16_t index = nodes.size()-1;
+                        newNode.Val1 = index;
+                        tokens.erase(tokens.begin()+pos-1);
+                        pos--;
+                    }
+
+                    if(rightToken->index() == 0)
+                        newNode.Val2 = std::get<0>(*rightToken);
+                    else if(rightToken->index() == 1)
+                        MAKE_ERROR("Недопустимый операнд");
+                    else {
+                        nodes.push_back(std::get<2>(*rightToken));
+                        uint16_t index = nodes.size()-1;
+                        newNode.Val2 = index;
+                        tokens.erase(tokens.begin()+pos+1);
+                        if(oper == 1 || oper == 3)
+                            tokens.erase(tokens.begin()+pos+1);
+                    }
+                      
+                    tokens[pos] = newNode;
+                }
+            }
+
+            for(ssize_t pos = 0; pos < tokens.size(); pos++) {
+                // Проверка на != ==
+
+                auto& token = tokens[pos];
+                if(token.index() != 1 || (std::get<1>(token) != '!' && std::get<1>(token) != '='))
+                    continue;
+
+                // Слева и справа должны быть операнды
+                if(pos == 0 || pos == tokens.size()-1) {
+                    MAKE_ERROR("Отсутствует операнд");
+                }
+
+                uint8_t oper = std::get<1>(token);
+                auto* leftToken = &tokens[pos-1];
+                auto* rightToken = &tokens[pos+1];
+
+                if(rightToken->index() == 1) {
+                    if(std::get<1>(*rightToken) == '=') {
+                        if(pos+2 >= tokens.size())
+                            MAKE_ERROR("Отсутствует операнд");
+                        
+                        rightToken = &tokens[pos+2];
+                        if(rightToken->index() == 1)
+                            MAKE_ERROR("Недопустимый операнд");
+                    } else
+                        MAKE_ERROR("Недопустимый оператор");
+                } else
+                    continue;
+
+                if((leftToken->index() == 0 && rightToken->index() == 0)
+                    && std::isdigit(std::get<0>(*leftToken)[0])
+                    && std::isdigit(std::get<0>(*rightToken)[0])
+                ) {
+                    // Можно высчитать на месте
+                    int leftVal = std::stoi(std::get<0>(*leftToken));
+                    int rightVal = std::stoi(std::get<0>(*rightToken));
+
+                    if(oper == '!')
+                        token = leftVal != rightVal ? "1" : "0";
+                    else if(oper == '=')
+                        token = leftVal == rightVal ? "1" : "0";
+                    
+                    tokens.erase(tokens.begin()+pos+1);
+                    tokens.erase(tokens.begin()+pos+1);
+                    tokens.erase(tokens.begin()+pos-1);
+                    pos--;
+                } else {
+                    Node newNode;
+                    newNode.Func = oper == '!' ? '@' : '=';
+
+                    if(leftToken->index() == 0)
+                        newNode.Val1 = std::get<0>(*leftToken);
+                    else if(leftToken->index() == 1)
+                        MAKE_ERROR("Недопустимый операнд");
+                    else {
+                        nodes.push_back(std::get<2>(*leftToken));
+                        uint16_t index = nodes.size()-1;
+                        newNode.Val1 = index;
+                        tokens.erase(tokens.begin()+pos-1);
+                        pos--;
+                    }
+
+                    if(rightToken->index() == 0)
+                        newNode.Val2 = std::get<0>(*rightToken);
+                    else if(rightToken->index() == 1)
+                        MAKE_ERROR("Недопустимый операнд");
+                    else {
+                        nodes.push_back(std::get<2>(*rightToken));
+                        uint16_t index = nodes.size()-1;
+                        newNode.Val2 = index;
+                        tokens.erase(tokens.begin()+pos+1);
+                        tokens.erase(tokens.begin()+pos+1);
+                    }
+                      
+                    tokens[pos] = newNode;
+                }
+            }
+
+            for(ssize_t pos = 0; pos < tokens.size(); pos++) {
+                // Проверка на &
+
+                auto& token = tokens[pos];
+                if(token.index() != 1 || std::get<1>(token) != '&')
+                    continue;
+
+                // Слева и справа должны быть операнды
+                if(pos == 0 || pos == tokens.size()-1) {
+                    MAKE_ERROR("Отсутствует операнд");
+                }
+
+                uint8_t oper = std::get<1>(token);
+                auto* leftToken = &tokens[pos-1];
+                auto* rightToken = &tokens[pos+1];
+
+                if((leftToken->index() == 0 && rightToken->index() == 0)
+                    && std::isdigit(std::get<0>(*leftToken)[0])
+                    && std::isdigit(std::get<0>(*rightToken)[0])
+                ) {
+                    // Можно высчитать на месте
+                    int leftVal = std::stoi(std::get<0>(*leftToken));
+                    int rightVal = std::stoi(std::get<0>(*rightToken));
+
+                    token = leftVal && rightVal ? "1" : "0";
+                    
+                    tokens.erase(tokens.begin()+pos+1);
+                    tokens.erase(tokens.begin()+pos-1);
+                    pos--;
+                } else {
+                    Node newNode;
+                    newNode.Func = oper;
+
+                    if(leftToken->index() == 0)
+                        newNode.Val1 = std::get<0>(*leftToken);
+                    else if(leftToken->index() == 1)
+                        MAKE_ERROR("Недопустимый операнд");
+                    else {
+                        nodes.push_back(std::get<2>(*leftToken));
+                        uint16_t index = nodes.size()-1;
+                        newNode.Val1 = index;
+                        tokens.erase(tokens.begin()+pos-1);
+                        pos--;
+                    }
+
+                    if(rightToken->index() == 0)
+                        newNode.Val2 = std::get<0>(*rightToken);
+                    else if(rightToken->index() == 1)
+                        MAKE_ERROR("Недопустимый операнд");
+                    else {
+                        nodes.push_back(std::get<2>(*rightToken));
+                        uint16_t index = nodes.size()-1;
+                        newNode.Val2 = index;
+                        tokens.erase(tokens.begin()+pos+1);
+                    }
+                      
+                    tokens[pos] = newNode;
+                }
+            }
+
+            for(ssize_t pos = 0; pos < tokens.size(); pos++) {
+                // Проверка на |
+
+                auto& token = tokens[pos];
+                if(token.index() != 1 || std::get<1>(token) != '|')
+                    continue;
+
+                // Слева и справа должны быть операнды
+                if(pos == 0 || pos == tokens.size()-1) {
+                    MAKE_ERROR("Отсутствует операнд");
+                }
+
+                uint8_t oper = std::get<1>(token);
+                auto* leftToken = &tokens[pos-1];
+                auto* rightToken = &tokens[pos+1];
+
+                if((leftToken->index() == 0 && rightToken->index() == 0)
+                    && std::isdigit(std::get<0>(*leftToken)[0])
+                    && std::isdigit(std::get<0>(*rightToken)[0])
+                ) {
+                    // Можно высчитать на месте
+                    int leftVal = std::stoi(std::get<0>(*leftToken));
+                    int rightVal = std::stoi(std::get<0>(*rightToken));
+
+                    token = leftVal || rightVal ? "1" : "0";
+                    
+                    tokens.erase(tokens.begin()+pos+1);
+                    tokens.erase(tokens.begin()+pos-1);
+                    pos--;
+                } else {
+                    Node newNode;
+                    newNode.Func = oper;
+
+                    if(leftToken->index() == 0)
+                        newNode.Val1 = std::get<0>(*leftToken);
+                    else if(leftToken->index() == 1)
+                        MAKE_ERROR("Недопустимый операнд");
+                    else {
+                        nodes.push_back(std::get<2>(*leftToken));
+                        uint16_t index = nodes.size()-1;
+                        newNode.Val1 = index;
+                        tokens.erase(tokens.begin()+pos-1);
+                        pos--;
+                    }
+
+                    if(rightToken->index() == 0)
+                        newNode.Val2 = std::get<0>(*rightToken);
+                    else if(rightToken->index() == 1)
+                        MAKE_ERROR("Недопустимый операнд");
+                    else {
+                        nodes.push_back(std::get<2>(*rightToken));
+                        uint16_t index = nodes.size()-1;
+                        newNode.Val2 = index;
+                        tokens.erase(tokens.begin()+pos+1);
+                    }
+                      
+                    tokens[pos] = newNode;
+                }
+            }
+
+            if(tokens.empty())
+                MAKE_ERROR("Пустое выражение");
+            else if(tokens.size() == 1) {
+                assert(tokens[0].index() != 1);
+                if(tokens[0].index() == 0)
+                    return std::get<0>(tokens[0]);
+                else
+                    return std::get<2>(tokens[0]);
+            } else {
+                MAKE_ERROR("Выражение не корректно");
             }
         };
 
         const std::string exp = TOS::Str::replace(expression, " ", "");
         // exp = TOS::Str::replace(expression, "\0", "");
-        lambda(exp);
+        std::variant<std::string, Node> result = lambda(exp);
 
         for(int meta = 0; meta < 256; meta++) {
             CT[meta] = true;

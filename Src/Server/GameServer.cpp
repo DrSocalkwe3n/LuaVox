@@ -1596,6 +1596,62 @@ void GameServer::run() {
     LOG.info() << "Сервер завершил работу";
 }
 
+DefNode_t GameServer::createNodeProfileByLua(const sol::table& profile) {
+    DefNode_t result;
+
+    {
+        std::variant<std::monostate, std::string, sol::table> parent = profile["parent"];
+        if(const sol::table* table = std::get_if<sol::table>(&parent)) {
+            result = createNodeProfileByLua(*table);
+        } else if(const std::string* key = std::get_if<std::string>(&parent)) {
+            auto regResult = TOS::Str::match(*key, "(?:([\\w\\d_]+):)?([\\w\\d_]+)");
+            if(!regResult)
+                MAKE_ERROR("Недействительный ключ в определении parent");
+
+            std::string realKey;
+
+            if(regResult->at(1)) {
+                realKey = *key;
+            } else {
+                realKey = "core:" + *regResult->at(2);
+            }
+
+            DefNodeId_t parentId;
+
+            {
+                auto& list = Content.ContentKeyToId[(int) EnumDefContent::Node];
+                auto iter = list.find(realKey);
+                if(iter == list.end())
+                    MAKE_ERROR("Идентификатор parent не найден");
+
+                parentId = iter->second;
+            }
+
+            result = Content.ContentIdToDef_Node.at(parentId);
+        }
+    }
+
+    {
+        std::optional<sol::table> nodestate = profile["nodestate"];
+    }
+
+    {
+        std::optional<sol::table> render = profile["render"];
+    }
+
+    {
+        std::optional<sol::table> collision = profile["collision"];
+    }
+
+    {
+        std::optional<sol::table> events = profile["events"];
+    }
+
+    result.NodeAdvancementFactory = profile["node_advancement_factory"];
+
+    return result;
+}
+
 void GameServer::initLuaPre() {
     auto &lua = LuaMainState;
 
@@ -1608,9 +1664,6 @@ void GameServer::initLuaPre() {
         }
         
         auto &result = *result_o;
-
-        DefNode_t node;
-
         ResourceId_t sId;
 
         if(result[1])
@@ -1618,7 +1671,7 @@ void GameServer::initLuaPre() {
         else
             sId = Content.registerContent(CurrentModId+":"+*result[2], EnumDefContent::Node);
 
-        Content.ContentIdToDef_Node.insert({sId, std::move(node)});
+        Content.ContentIdToDef_Node.insert({sId, createNodeProfileByLua(profile)});
     });
 }
 

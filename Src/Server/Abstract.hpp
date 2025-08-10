@@ -12,6 +12,7 @@
 #include <string>
 #include <unordered_map>
 #include <boost/json.hpp>
+#include <variant>
 
 
 namespace LV::Server {
@@ -167,167 +168,46 @@ struct NodestateEntry {
     std::vector<std::string> ValueNames;
 };
 
-struct NodestateExpression {
-    std::bitset<256> CT;
+using NodeStateCondition = std::bitset<256>;
+NodeStateCondition nodestateExpression(const std::vector<NodestateEntry>& entries, const std::string& expression);
 
-    NodestateExpression(std::vector<NodestateEntry>, const std::string& expression) {
-        // Скомпилировать выражение и просчитать таблицу CT
-
-        // Парсинг токенов
-        enum class EnumTokenKind {
-            LParen, RParen,
-            Plus, Minus, Star, Slash, Percent,
-            Not, And, Or,
-            LT, LE, GT, GE, EQ, NE
-        };
-
-        std::vector<std::variant<EnumTokenKind, std::string, int>> tokens;
-        ssize_t pos = 0;
-        auto skipWS = [&](){ while(pos<expression.size() && std::isspace((unsigned char) expression[pos])) ++pos; };
-
-        for(; pos < expression.size(); pos++) {
-            skipWS();
-
-            char c = expression[pos];
-
-            // Числа
-            if(std::isdigit(c)) {
-                ssize_t npos = pos;
-                for(; npos < expression.size() && std::isdigit(expression[npos]); npos++);
-                int value = std::stoi(expression.substr(pos, npos-pos));
-                tokens.push_back(value);
-                continue;
-            }
-
-            // Переменные
-            if(std::isalpha(c)) {
-                ssize_t npos = pos;
-                for(; npos < expression.size() && std::isalpha(expression[npos]); npos++);
-                std::string value = expression.substr(pos, npos-pos);
-                if(value == "true")
-                    tokens.push_back(1);
-                else if(value == "false")
-                    tokens.push_back(0);
-                else
-                    tokens.push_back(value);
-                continue;
-            }
-
-            // Двойные операторы
-            if(pos-1 < expression.size()) {
-                char n = expression[pos+1];
-
-                if(c == '<' && n == '=') {
-                    tokens.push_back(EnumTokenKind::LE);
-                    pos++;
-                    continue;
-                } else if(c == '>' && n == '=') {
-                    tokens.push_back(EnumTokenKind::GE);
-                    pos++;
-                    continue;
-                } else if(c == '=' && n == '=') {
-                    tokens.push_back(EnumTokenKind::EQ);
-                    pos++;
-                    continue;
-                } else if(c == '!' && n == '=') {
-                    tokens.push_back(EnumTokenKind::NE);
-                    pos++;
-                    continue;
-                }
-            }
-
-            // Операторы
-            switch(c) {
-                case '(': tokens.push_back(EnumTokenKind::LParen);
-                case ')': tokens.push_back(EnumTokenKind::RParen);
-                case '+': tokens.push_back(EnumTokenKind::Plus);
-                case '-': tokens.push_back(EnumTokenKind::Minus);
-                case '*': tokens.push_back(EnumTokenKind::Star);
-                case '/': tokens.push_back(EnumTokenKind::Slash);
-                case '%': tokens.push_back(EnumTokenKind::Percent);
-                case '!': tokens.push_back(EnumTokenKind::Not);
-                case '&': tokens.push_back(EnumTokenKind::And);
-                case '|': tokens.push_back(EnumTokenKind::Or);
-                case '<': tokens.push_back(EnumTokenKind::LT);
-                case '>': tokens.push_back(EnumTokenKind::GT);
-            }
-
-            MAKE_ERROR("Недопустимый символ: " << c);
-        }
-
-        // Разбор токенов
-        enum class Op {
-            Add, Sub, Mul, Div, Mod,
-            LT, LE, GT, GE, EQ, NE,
-            And, Or,
-            Pos, Neg, Not
-        };
-
-        std::vector<Node> nodes;
-
-        struct Node {
-            struct Num { int v; };
-            struct Var { std::string name; };
-            struct Unary { Op op; uint16_t rhs; };
-            struct Binary { Op op; uint16_t lhs, rhs; };
-            std::variant<Num, Var, Unary, Binary> v;
-        };
-
-        // Рекурсивный разбор выражений в скобках
-        std::function<uint16_t(const std::string_view&)> lambda = [&](const std::string_view& exp) -> uint16_t {
-            
-        };
-
-        const std::string exp = TOS::Str::replace(expression, " ", "");
-        // exp = TOS::Str::replace(expression, "\0", "");
-        std::variant<std::string, Node> result = lambda(exp);
-
-        for(int meta = 0; meta < 256; meta++) {
-            CT[meta] = true;
-        }
-    }
-
-    bool operator()(uint8_t meta) {
-        return CT[meta];
-    }
+struct ModelTransform {
+    std::vector<BinModelId_t> Ids;
+    uint16_t Weight = 1;
+    bool UVLock = false;
 };
 
-struct DefNodeStates_t {
-    /*
-        Указать модель, текстуры и поворот по конкретным осям.
-        Может быть вариативность моделей относительно одного условия (случайность в зависимости от координат?)
-        Допускается активация нескольких условий одновременно
+/*
+    Указать модель, текстуры и поворот по конкретным осям.
+    Может быть вариативность моделей относительно одного условия (случайность в зависимости от координат?)
+    Допускается активация нескольких условий одновременно
 
-        условия snowy=false
+    условия snowy=false
 
-        "snowy=false": [{"model": "node/grass_node"}, {"model": "node/grass_node", transformations: ["y=90", "x=67"]}] <- модель будет выбрана случайно
-        или
-        : [{models: [], weight: 1}, {}] <- в models можно перечислить сразу несколько моделей, и они будут использоваться одновременно
-        или
-        "": {"model": "node/grass", weight <вес влияющий на шанс отображения именно этой модели>}
-        или просто
-        "model": "node/grass_node"
-        В условия добавить простые проверки !><=&|() in ['1', 2]
-        в задании параметров модели использовать формулы с применением состояний
+    "snowy=false": [{"model": "node/grass_node"}, {"model": "node/grass_node", transformations: ["y=90", "x=67"]}] <- модель будет выбрана случайно
+    или
+    : [{models: [], weight: 1}, {}] <- в models можно перечислить сразу несколько моделей, и они будут использоваться одновременно
+    или
+    "": {"model": "node/grass", weight <вес влияющий на шанс отображения именно этой модели>}
+    или просто
+    "model": "node/grass_node"
+    В условия добавить простые проверки !><=&|()
+    в задании параметров модели использовать формулы с применением состояний
 
-        uvlock ? https://minecraft.wiki/w/Blockstates_definition/format
-    */
+    uvlock ? https://minecraft.wiki/w/Blockstates_definition/format
+*/
 
-
-};
+using DefNodestates_t = std::unordered_map<NodeStateCondition, std::vector<ModelTransform>>;
 
 // Скомпилированный профиль ноды
 struct DefNode_t {
     // Зарегистрированные состояния (мета)
-    struct {
-        // Подгружается с файла assets/<modid>/blockstate/node/nodeId.json
-        DefNodeStates_t StateRouter;
-
-    } States;
+    // Подгружается с файла assets/<modid>/nodestate/node/nodeId.json
+    std::variant<DefNodestates_t, std::vector<ModelTransform>> StatesRouter;
 
     // Параметры рендера
     struct {
-        bool hasHalfTransparency = false;
+        bool HasHalfTransparency = false;
     } Render;
 
     // Параметры коллизии
@@ -345,9 +225,7 @@ struct DefNode_t {
     } Events;
 
     // Если нода умная, то для неё будет создаваться дополнительный более активный объект
-    sol::protected_function NodeAdvancementFactory;
-
-    
+    std::optional<sol::protected_function> NodeAdvancementFactory;
 };
 
 class Entity  {

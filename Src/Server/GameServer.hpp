@@ -38,6 +38,7 @@ struct ModRequest {
 
 struct ModInfo {
     std::string Id, Name, Description, Author;
+    std::vector<std::string> AlternativeIds;
     std::array<uint32_t, 4> Version;
     std::vector<ModRequest> Dependencies, Optional;
     float LoadPriority;
@@ -301,10 +302,6 @@ class GameServer : public AsyncObject {
     // Идентификатор текущегго мода, находящевося в обработке
     std::string CurrentModId;
 
-    struct {
-
-    };
-
 public:
     GameServer(asio::io_context &ioc, fs::path worldPath);
     virtual ~GameServer();
@@ -337,6 +334,8 @@ private:
     void init(fs::path worldPath);
     void prerun();
     void run();
+
+    DefNode_t createNodeProfileByLua(const sol::table& profile);
 
 
     void initLuaPre();

@@ -53,14 +53,15 @@ private:
     // Данные об отслеживаемых файлах
     struct DataEntry {
         // Время последнего изменения файла
-        size_t FileChangeTime;
+        fs::file_time_type FileChangeTime;
         Resource Res;
     };
 
     struct TableEntry {
+        static constexpr size_t ChunkSize = 4096;
         bool IsFull = false;
-        std::bitset<4096> Empty;
-        std::array<std::optional<DataEntry>, 4096> Entries;
+        std::bitset<ChunkSize> Empty;
+        std::array<std::optional<DataEntry>, ChunkSize> Entries;
 
         TableEntry() {
             Empty.reset();
@@ -101,13 +102,16 @@ public:
         /*
             У этих ресурсов приоритет выше, если их удастся получить,
             то использоваться будут именно они
+            Domain -> {key + data}
         */
-        std::vector<std::tuple<std::string, EnumAssets, void*>> Custom;
+        std::unordered_map<std::string, std::unordered_map<std::string, void*>> Custom[(int) EnumAssets::MAX_ENUM];
     };
 
     struct Out_recheckResources {
-        std::vector<std::tuple< ResourceId_t, EnumAssets, Resource >> NewOrChange;
-        std::vector<std::tuple< ResourceId_t, EnumAssets >> Lost;
+        // Потерянные ресурсы
+        std::unordered_map<std::string, std::vector<std::string>> Lost[(int) EnumAssets::MAX_ENUM];
+        // Домен и ключ ресурса
+        std::unordered_map<std::string, std::vector<std::tuple<std::string, Resource>>> NewOrChange[(int) EnumAssets::MAX_ENUM];
     };
 
     coro<Out_recheckResources> recheckResources(AssetsRegister) const;

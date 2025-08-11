@@ -388,27 +388,34 @@ struct Object_t {
 using ResourceId_t = uint32_t;
 
 /*
-    Bin привязывается к путю. Если по путю обновляется объект, пересчитывается его кеш и на клиентах обновляется
-*/
+    Объекты, собранные из папки assets или зарегистрированные модами.
+    Клиент получает полную информацию о таких объектах и при надобности
+    запрашивает получение файла.
+    Id -> Key + SHA256
 
-enum class EnumBinResource {
-    Texture, Animation, Model, Sound, Font, MAX_ENUM
+    Если объекты удаляются, то сторона клиента об этом не уведомляется
+*/
+enum class EnumAssets {
+   Nodestate, Patricle, Animation, Model, Texture, Sound, Font, MAX_ENUM
 };
+
+using AssetsNodestate   = ResourceId_t;
+using AssetsParticle    = ResourceId_t;
+using AssetsAnimation   = ResourceId_t;
+using AssetsModel       = ResourceId_t;
+using AssetsTexture     = ResourceId_t;
+using AssetsSound       = ResourceId_t;
+using AssetsFont        = ResourceId_t;
 
 using BinaryResource = std::shared_ptr<const std::u8string>;
 
-// Двоичные данные
-using BinTextureId_t = ResourceId_t;
-using BinAnimationId_t = ResourceId_t;
-using BinModelId_t = ResourceId_t;
-using BinSoundId_t = ResourceId_t;
-using BinFontId_t = ResourceId_t;
-
+/*
+    Определения контента, доставляются клиентам сразу
+*/
 enum class EnumDefContent {
-    Voxel, Node, Generator, World, Portal, Entity, Item, MAX_ENUM
+    Voxel, Node, World, Portal, Entity, Item, MAX_ENUM
 };
 
-// Игровые определения
 using DefVoxelId_t      = ResourceId_t;
 using DefNodeId_t       = ResourceId_t;
 using DefWorldId_t      = ResourceId_t;
@@ -416,9 +423,12 @@ using DefPortalId_t     = ResourceId_t;
 using DefEntityId_t     = ResourceId_t;
 using DefItemId_t       = ResourceId_t;
 
-// Контент, основанный на игровых определениях
+/*
+    Контент, основанный на определениях.
+    Отдельные свойства могут менятся в самих объектах
+*/
+
 using WorldId_t = ResourceId_t;
-using PortalId_t = ResourceId_t;
 
 // struct LightPrism {
 //     uint8_t R : 2, G : 2, B : 2;

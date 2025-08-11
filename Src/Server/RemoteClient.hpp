@@ -277,6 +277,7 @@ public:
     Pos::Object CameraPos = {0, 0, 0};
     ToServer::PacketQuat CameraQuat = {0};
     TOS::SpinlockObject<std::queue<uint8_t>> Actions;
+    ResourceId_t RecievedAssets[(int) EnumAssets::MAX_ENUM] = {0};
 
 public:
     RemoteClient(asio::io_context &ioc, tcp::socket socket, const std::string username, std::vector<ResourceFile::Hash_t> &&client_cache)

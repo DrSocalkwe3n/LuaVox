@@ -74,6 +74,7 @@ void BinaryResourceManager::run() {
 
             if(var.index() == 0) {
                 std::shared_ptr<ResourceFile> resource = std::get<0>(var);
+                resource = convertFormate(resource, (EnumBinResource) type);
                 resource->calcHash();
                 return resource;
             } else {
@@ -309,6 +310,10 @@ BinaryResourceManager::loadFile(const std::vector<fs::path>& assets, const std::
     } catch(const std::exception& exc) {
         return exc.what();
     }
+}
+
+std::shared_ptr<ResourceFile> convertFormate(std::shared_ptr<ResourceFile> file, EnumBinResource type) {
+    return file;
 }
 
 BinaryResourceManager::BinaryResourceManager(asio::io_context &ioc)

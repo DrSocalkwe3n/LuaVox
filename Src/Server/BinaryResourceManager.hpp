@@ -42,7 +42,7 @@ private:
 
 // Поток сервера
     // Последовательная регистрация ресурсов
-    ResourceId_t NextId[(int) EnumBinResource::MAX_ENUM] = {0};
+    ResourceId_t NextId[(int) EnumAssets::MAX_ENUM] = {0};
     // Известные ресурсы, им присвоен идентификатор
     // Нужно для потока загрузки
     std::unordered_map<std::string, ResourceId_t> KnownResource[(int) EnumBinResource::MAX_ENUM];
@@ -76,6 +76,7 @@ private:
     void run();
     std::variant<std::shared_ptr<ResourceFile>, std::string>
         loadFile(const std::vector<fs::path>& assets, const std::string& path, EnumBinResource type);
+    std::shared_ptr<ResourceFile> convertFormate(std::shared_ptr<ResourceFile> file, EnumBinResource type);
 
 public:
     // Если ресурс будет обновлён или загружен будет вызвано onResourceUpdate

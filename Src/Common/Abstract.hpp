@@ -499,7 +499,7 @@ enum struct TexturePipelineCMD : uint8_t {
 };
 
 struct TexturePipeline {
-    std::vector<BinTextureId_t> BinTextures;
+    std::vector<AssetsTexture> BinTextures;
     std::u8string Pipeline;
 };
 

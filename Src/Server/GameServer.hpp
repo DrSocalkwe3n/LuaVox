@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Server/AssetsManager.hpp"
 #define SOL_EXCEPTIONS_SAFE_PROPAGATION 1
 
 #include <Common/Net.hpp>
@@ -23,7 +24,7 @@
 #include "ContentEventController.hpp"
 
 #include "WorldDefManager.hpp"
-#include "BinaryResourceManager.hpp"
+#include "AssetsManager.hpp"
 #include "World.hpp"
 
 #include "SaveBackend.hpp"
@@ -71,7 +72,7 @@ class GameServer : public AsyncObject {
 
     struct ContentObj {
     public:
-        BinaryResourceManager BRM;
+        AssetsManager AM;
 
         ResourceId_t NextId[(int) EnumDefContent::MAX_ENUM] = {0};
         std::unordered_map<std::string, ResourceId_t> ContentKeyToId[(int) EnumDefContent::MAX_ENUM]; // EnumDefContent
@@ -117,7 +118,7 @@ class GameServer : public AsyncObject {
 
 
         ContentObj(asio::io_context& ioc)
-            : BRM(ioc)
+            : AM(ioc)
         {}
     } Content;
 

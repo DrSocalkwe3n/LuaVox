@@ -172,7 +172,7 @@ using NodeStateCondition = std::bitset<256>;
 NodeStateCondition nodestateExpression(const std::vector<NodestateEntry>& entries, const std::string& expression);
 
 struct ModelTransform {
-    std::vector<BinModelId_t> Ids;
+    std::vector<AssetsModel> Ids;
     uint16_t Weight = 1;
     bool UVLock = false;
 };

@@ -2,6 +2,7 @@
 
 #include "Abstract.hpp"
 #include "Common/Abstract.hpp"
+#include "TOSLib.hpp"
 #include "boost/asio/io_context.hpp"
 #include "sha2.hpp"
 #include <boost/interprocess/file_mapping.hpp>
@@ -14,6 +15,11 @@ namespace LV::Server {
 
 namespace fs = std::filesystem;
 
+/*
+    Работает с ресурсами из папок assets.
+    Использует папку server_cache/assets для хранения
+    преобразованных ресурсов
+*/
 class AssetsManager {
 public:
     struct Resource {
@@ -64,21 +70,27 @@ private:
         std::array<std::optional<DataEntry>, ChunkSize> Entries;
 
         TableEntry() {
-            Empty.reset();
+            Empty.set();
         }
     };
 
-    // Данные не меняются в процессе работы сервера.
-    // Изменения возможны при синхронизации всего сервера
-    // и перехода в режим перезагрузки модов
+    struct Local {
+        // Связь ресурсов по идентификаторам
+        std::vector<std::unique_ptr<TableEntry>> Table[(int) EnumAssets::MAX_ENUM];
+        // Связь домены -> {ключ -> идентификатор}
+        std::unordered_map<std::string, std::unordered_map<std::string, ResourceId_t>> KeyToId[(int) EnumAssets::MAX_ENUM];
+        
+        std::tuple<ResourceId_t, std::optional<DataEntry>&> nextId(EnumAssets type);
+    };
 
-    // Связь ресурсов по идентификаторам
-    std::vector<std::unique_ptr<TableEntry>> Table[(int) EnumAssets::MAX_ENUM];
-    // Связь домены -> {ключ -> идентификатор}
-    std::unordered_map<std::string, std::unordered_map<std::string, ResourceId_t>> KeyToId[(int) EnumAssets::MAX_ENUM];
+    TOS::SpinlockObject<Local> LocalObj;
 
-    DataEntry& getEntry(EnumAssets type, ResourceId_t id);
-
+    /*
+        Загрузка ресурса с файла. При необходимости приводится
+        к внутреннему формату и сохраняется в кеше
+    */
+    coro<Resource> loadResourceFromFile(EnumAssets type, fs::path path) const;
+    coro<Resource> loadResourceFromLua(EnumAssets type, void*) const;
 
 public:
     AssetsManager(asio::io_context& ioc);
@@ -111,10 +123,28 @@ public:
         // Потерянные ресурсы
         std::unordered_map<std::string, std::vector<std::string>> Lost[(int) EnumAssets::MAX_ENUM];
         // Домен и ключ ресурса
-        std::unordered_map<std::string, std::vector<std::tuple<std::string, Resource>>> NewOrChange[(int) EnumAssets::MAX_ENUM];
+        std::unordered_map<std::string, std::vector<std::tuple<std::string, Resource, fs::file_time_type>>> NewOrChange[(int) EnumAssets::MAX_ENUM];
     };
 
-    coro<Out_recheckResources> recheckResources(AssetsRegister) const;
+    coro<Out_recheckResources> recheckResources(AssetsRegister);
+
+    /*
+        Применяет расчитанные изменения.
+        Раздаёт идентификаторы ресурсам и записывает их в таблицу
+    */
+    struct Out_applyResourceChange {
+        std::vector<ResourceId_t> Lost[(int) EnumAssets::MAX_ENUM];
+        std::vector<std::pair<ResourceId_t, Resource>> NewOrChange[(int) EnumAssets::MAX_ENUM];
+    };
+
+    Out_applyResourceChange applyResourceChange(const Out_recheckResources& orr);
+
+
+    /*
+        Выдаёт идентификатор ресурса, даже если он не существует или был удалён.
+        resource должен содержать домен и путь
+    */
+    ResourceId_t getId(EnumAssets type, const std::string& domain, const std::string& key);
 };
 
 }

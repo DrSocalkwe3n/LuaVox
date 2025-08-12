@@ -7,14 +7,55 @@
 
 namespace LV::Server {
 
+coro<AssetsManager::Resource> AssetsManager::loadResourceFromFile(EnumAssets type, fs::path path) const {
+    co_return AssetsManager::Resource(path);
+}
 
-coro<AssetsManager::Out_recheckResources> AssetsManager::recheckResources(AssetsRegister info) const {
+coro<AssetsManager::Resource> AssetsManager::loadResourceFromLua(EnumAssets type, void*) const {
+    co_return AssetsManager::Resource("assets/null");
+}
+
+std::tuple<ResourceId_t, std::optional<AssetsManager::DataEntry>&> AssetsManager::Local::nextId(EnumAssets type) {
+    auto& table = Table[(int) type];
+    ResourceId_t id = -1;
+    std::optional<DataEntry> *data = nullptr;
+
+    for(size_t index = 0; index < table.size(); index++) {
+        auto& entry = *table[index];
+
+        if(entry.IsFull)
+            continue;
+
+        uint32_t pos = entry.Empty._Find_first();
+        entry.Empty.reset(pos);
+
+        if(entry.Empty._Find_first() == entry.Empty.size())
+            entry.IsFull = true;
+
+        id = index*TableEntry::ChunkSize + pos;
+        data = &entry.Entries[pos];
+    }
+
+    if(!data) {
+        table.emplace_back(std::make_unique<TableEntry>());
+        id = (table.size()-1)*TableEntry::ChunkSize;
+        data = &table.back()->Entries[0];
+    }
+
+    return {id, *data};
+}
+
+coro<AssetsManager::Out_recheckResources> AssetsManager::recheckResources(AssetsRegister info) {
     Out_recheckResources result;
 
     // Найти пропавшие ресурсы
     for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++) {
-        for(auto& [domain, resources] : KeyToId[type]) {
+        auto lock = LocalObj.lock();
+        for(auto& [domain, resources] : lock->KeyToId[type]) {
             for(auto& [key, id] : resources) {
+                if(!lock->Table[type][id / TableEntry::ChunkSize]->Entries[id % TableEntry::ChunkSize])
+                    continue;
+
                 bool exists = false;
 
                 for(const fs::path& path : info.Assets) {
@@ -60,9 +101,10 @@ coro<AssetsManager::Out_recheckResources> AssetsManager::recheckResources(Assets
 
     // Найти новые или изменённые ресурсы
     for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++) {
-        const auto& keyToId = KeyToId[type];
 
         for(auto& [domain, resources] : info.Custom[type]) {
+            auto lock = LocalObj.lock();
+            const auto& keyToId = lock->KeyToId[type];
             auto iterDomain = keyToId.find(domain);
             auto& findList = findedResources[type][domain];
 
@@ -72,7 +114,7 @@ coro<AssetsManager::Out_recheckResources> AssetsManager::recheckResources(Assets
                 for(auto& [key, id] : resources) {
                     // Подобрать идентификатор
                     // TODO: реализовать регистрации ресурсов из lua
-                    domainList.emplace_back(key, Resource("assets/null"));
+                    domainList.emplace_back(key, Resource("assets/null"), fs::file_time_type::min());
                     findList.insert(key);
                 }
             } else {
@@ -82,9 +124,10 @@ coro<AssetsManager::Out_recheckResources> AssetsManager::recheckResources(Assets
                         continue;
                     else if(iterDomain->second.contains(key)) {
                         // Ресурс уже есть, TODO: нужно проверить его изменение
+                        result.NewOrChange[type][domain].emplace_back(key, co_await loadResourceFromFile((EnumAssets) type, "assets/null"), fs::file_time_type::min());
                     } else {
                         // Ресурс не был известен
-                        result.NewOrChange[type][domain].emplace_back(key, Resource("assets/null"));
+                        result.NewOrChange[type][domain].emplace_back(key, co_await loadResourceFromFile((EnumAssets) type, "assets/null"), fs::file_time_type::min());
                     }
 
                     findList.insert(key);
@@ -117,7 +160,8 @@ coro<AssetsManager::Out_recheckResources> AssetsManager::recheckResources(Assets
                 }
 
                 auto& findList = findedResources[type][domain];
-                auto iterDomain = KeyToId[type].find(domain);
+                auto lock = LocalObj.lock();
+                auto iterDomain = lock->KeyToId[type].find(domain);
 
                 if(!fs::exists(resourcesPath) || !fs::is_directory(resourcesPath))
                     continue;
@@ -132,20 +176,19 @@ coro<AssetsManager::Out_recheckResources> AssetsManager::recheckResources(Assets
                     if(findList.contains(key))
                         // Ресурс уже был найден в вышестоящей директории
                         continue;
-
-                    else if(iterDomain != KeyToId[type].end() && iterDomain->second.contains(key)) {
+                    else if(iterDomain != lock->KeyToId[type].end() && iterDomain->second.contains(key)) {
                         // Ресурс уже есть, TODO: нужно проверить его изменение
                         ResourceId_t id = iterDomain->second.at(key);
-                        DataEntry& entry = *Table[type][id / TableEntry::ChunkSize]->Entries[id % TableEntry::ChunkSize];
+                        DataEntry& entry = *lock->Table[type][id / TableEntry::ChunkSize]->Entries[id % TableEntry::ChunkSize];
                         
                         fs::file_time_type lwt = fs::last_write_time(file);
-                        if(lwt <= entry.FileChangeTime)
-                            continue;
-
-                        
+                        if(lwt != entry.FileChangeTime)
+                            // Будем считать что ресурс изменился
+                            result.NewOrChange[type][domain].emplace_back(key, co_await loadResourceFromFile((EnumAssets) type, file), lwt);
                     } else {
                         // Ресурс не был известен
-                        result.NewOrChange[type][domain].emplace_back(key, Resource("assets/null"));
+                        fs::file_time_type lwt = fs::last_write_time(file);
+                        result.NewOrChange[type][domain].emplace_back(key, co_await loadResourceFromFile((EnumAssets) type, file), lwt);
                     }
 
                     findList.insert(key);
@@ -156,6 +199,90 @@ coro<AssetsManager::Out_recheckResources> AssetsManager::recheckResources(Assets
     }
 
     co_return result;
+}
+
+AssetsManager::Out_applyResourceChange AssetsManager::applyResourceChange(const Out_recheckResources& orr) {
+    // Потерянные и обновлённые идентификаторы
+    Out_applyResourceChange result;
+
+    // Удаляем ресурсы
+    /*
+        Удаляются только ресурсы, при этом за ними остаётся бронь на идентификатор
+        Уже скомпилированные зависимости к ресурсам не будут
+        перекомпилироваться для смены идентификатора. Если нужный ресурс
+        появится, то привязка останется. Новые клиенты не получат ресурс
+        которого нет, но он может использоваться
+    */
+    for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++) {
+        for(auto& [domain, resources] : orr.Lost[type]) {
+            auto lock = LocalObj.lock();
+            auto& keyToIdDomain = lock->KeyToId[type].at(domain);
+
+            for(const std::string& key : resources) {
+                auto iter = keyToIdDomain.find(key);
+                assert(iter != keyToIdDomain.end());
+
+                ResourceId_t resId = iter->second;
+                // keyToIdDomain.erase(iter);
+                // lost[type].push_back(resId);
+
+                uint32_t localId = resId % TableEntry::ChunkSize;
+                auto& chunk = lock->Table[type][resId / TableEntry::ChunkSize];
+                // chunk->IsFull = false;
+                // chunk->Empty.set(localId);
+                chunk->Entries[localId].reset();
+            }
+        }
+    }
+
+    // Добавляем
+    for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++) {
+        for(auto& [domain, resources] : orr.NewOrChange[type]) {
+            auto lock = LocalObj.lock();
+            auto& keyToIdDomain = lock->KeyToId[type][domain];
+
+            for(auto& [key, resource, lwt] : resources) {
+                ResourceId_t id = -1;
+                std::optional<DataEntry>* data = nullptr;
+
+                if(auto iterId = keyToIdDomain.find(key); iterId != keyToIdDomain.end()) {
+                    id = iterId->second;
+                    data = &lock->Table[(int) type][id / TableEntry::ChunkSize]->Entries[id % TableEntry::ChunkSize];
+                } else {
+                    auto [_id, _data] = lock->nextId((EnumAssets) type);
+                    id = _id;
+                    data = &_data;
+                }
+
+                result.NewOrChange[type].push_back({id, resource});
+                keyToIdDomain[key] = id;
+
+                data->emplace(lwt, resource);
+            }
+        }
+
+        // Удалённые идентификаторы не считаются удалёнными, если были изменены
+        std::unordered_set<ResourceId_t> noc(result.NewOrChange[type].begin(), result.NewOrChange[type].end());
+        std::unordered_set<ResourceId_t> l(result.Lost[type].begin(), result.Lost[type].end());
+        result.Lost[type].clear();
+        std::set_difference(l.begin(), l.end(), noc.begin(), noc.end(), std::back_inserter(result.Lost[type]));
+    }
+
+    return result;
+}
+
+ResourceId_t AssetsManager::getId(EnumAssets type, const std::string& domain, const std::string& key) {
+    auto lock = LocalObj.lock();
+    auto& keyToId = lock->KeyToId[(int) type];
+    if(auto iterKTI = keyToId.find(domain); iterKTI != keyToId.end()) {
+        if(auto iterKey = iterKTI->second.find(key); iterKey != iterKTI->second.end()) {
+            return iterKey->second;
+        }
+    }
+
+    auto [id, entry] = lock->nextId(type);
+    keyToId[domain][key] = id;
+    return id;
 }
 
 }

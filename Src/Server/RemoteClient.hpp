@@ -279,6 +279,11 @@ public:
     TOS::SpinlockObject<std::queue<uint8_t>> Actions;
     ResourceId_t RecievedAssets[(int) EnumAssets::MAX_ENUM] = {0};
 
+    // Регионы, наблюдаемые клиентом
+    ContentViewInfo ContentViewState;
+    // Если игрок пересекал границы региона (для перерасчёта ContentViewState)
+    bool CrossedRegion = true;
+
 public:
     RemoteClient(asio::io_context &ioc, tcp::socket socket, const std::string username, std::vector<ResourceFile::Hash_t> &&client_cache)
         : LOG("RemoteClient " + username), Socket(ioc, std::move(socket)), Username(username), ClientBinaryCache(std::move(client_cache))
@@ -300,24 +305,46 @@ public:
 
     /*
         Сервер собирает изменения миров, сжимает их и раздаёт на отправку игрокам
-    
     */
 
     // Функции подготавливают пакеты к отправке
     // Отслеживаемое игроком использование контента
 
-    // maybe созданны для использования в многопотоке, если ресурс сейчас занят вернёт false, потом нужно повторить запрос
+    TOS::Spinlock MurkyLock;
+    // marky используются в BackingChunkPressure_t в GameServer во время заморозки мира от записи.
+    // В это время просматриваются изменённые объекты и рассылаются изменения клиентам
+    
+    /*
+        Все пробегаются по игрокам, и смотрят наблюдаемые миры.
+        Если идентификатор мира % количество потоков == 0, то проверяем что 
+        этот мир наблюдается игроком и готовим информацию о нём для отправки,
+        отправляем
+
+        Синхронизация этапа с группой
+
+        Потоки рассылки изменений соблюдают пакетность изменений.
+        Изменение чанков, потеря регионов, изменения чанков, потеря регионов
+
+        игрок % потоки == 0
+        Информируем о потерянных регионах
+        Информируем о потерянных мирах
+
+        Синхронизация этапа с группой
+    */
+
     // В зоне видимости добавился чанк или изменились его воксели
-    bool maybe_prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_voxels,
+    void murky_prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_voxels,
         const std::vector<DefVoxelId_t>& uniq_sorted_defines);
     // В зоне видимости добавился чанк или изменились его ноды
-    bool maybe_prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_nodes,
+    void murky_prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_nodes,
         const std::vector<DefNodeId_t>& uniq_sorted_defines);
     // void prepareChunkUpdate_LightPrism(WorldId_t worldId, Pos::GlobalChunk chunkPos, const LightPrism *lights);
-
-
     // Регион удалён из зоны видимости
-    void prepareRegionRemove(WorldId_t worldId, Pos::GlobalRegion regionPos);
+    void murky_prepareRegionRemove(WorldId_t worldId, std::vector<Pos::GlobalRegion> regionPoses);
+    // Мир появился в зоне видимости
+    void murky_prepareWorldUpdate(WorldId_t worldId, World* world);
+    // Мир удалён из зоны видимости
+    void murky_prepareWorldRemove(WorldId_t worldId);
 
     // В зоне видимости добавилась новая сущность или она изменилась
     void prepareEntityUpdate(ServerEntityId_t entityId, const Entity *entity);
@@ -326,15 +353,10 @@ public:
     // Клиент перестал наблюдать за сущностью
     void prepareEntityRemove(ServerEntityId_t entityId);
 
-    // В зоне видимости добавился мир или он изменился
-    void prepareWorldUpdate(WorldId_t worldId, World* world);
-    // Клиент перестал наблюдать за миром
-    void prepareWorldRemove(WorldId_t worldId);
-
     // В зоне видимости добавился порта или он изменился
-    void preparePortalUpdate(PortalId_t portalId, void* portal);
+    // void preparePortalUpdate(PortalId_t portalId, void* portal);
     // Клиент перестал наблюдать за порталом
-    void preparePortalRemove(PortalId_t portalId);
+    // void preparePortalRemove(PortalId_t portalId);
 
     // Прочие моменты
     void prepareCameraSetEntity(ServerEntityId_t entityId);

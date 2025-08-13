@@ -78,9 +78,9 @@ private:
         // Связь ресурсов по идентификаторам
         std::vector<std::unique_ptr<TableEntry>> Table[(int) EnumAssets::MAX_ENUM];
         // Связь домены -> {ключ -> идентификатор}
-        std::unordered_map<std::string, std::unordered_map<std::string, ResourceId_t>> KeyToId[(int) EnumAssets::MAX_ENUM];
+        std::unordered_map<std::string, std::unordered_map<std::string, ResourceId>> KeyToId[(int) EnumAssets::MAX_ENUM];
         
-        std::tuple<ResourceId_t, std::optional<DataEntry>&> nextId(EnumAssets type);
+        std::tuple<ResourceId, std::optional<DataEntry>&> nextId(EnumAssets type);
     };
 
     TOS::SpinlockObject<Local> LocalObj;
@@ -133,8 +133,8 @@ public:
         Раздаёт идентификаторы ресурсам и записывает их в таблицу
     */
     struct Out_applyResourceChange {
-        std::vector<ResourceId_t> Lost[(int) EnumAssets::MAX_ENUM];
-        std::vector<std::pair<ResourceId_t, Resource>> NewOrChange[(int) EnumAssets::MAX_ENUM];
+        std::vector<ResourceId> Lost[(int) EnumAssets::MAX_ENUM];
+        std::vector<std::pair<ResourceId, Resource>> NewOrChange[(int) EnumAssets::MAX_ENUM];
     };
 
     Out_applyResourceChange applyResourceChange(const Out_recheckResources& orr);
@@ -143,7 +143,7 @@ public:
         Выдаёт идентификатор ресурса, даже если он не существует или был удалён.
         resource должен содержать домен и путь
     */
-    ResourceId_t getId(EnumAssets type, const std::string& domain, const std::string& key);
+    ResourceId getId(EnumAssets type, const std::string& domain, const std::string& key);
 };
 
 }

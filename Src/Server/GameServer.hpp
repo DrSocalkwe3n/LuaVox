@@ -21,10 +21,10 @@
 #include <sol/state.hpp>
 #include <thread>
 #include <unordered_map>
-#include "ContentEventController.hpp"
 
 #include "WorldDefManager.hpp"
 #include "AssetsManager.hpp"
+#include "ContentManager.hpp"
 #include "World.hpp"
 
 #include "SaveBackend.hpp"
@@ -73,57 +73,19 @@ class GameServer : public AsyncObject {
     struct ContentObj {
     public:
         AssetsManager AM;
-
-        ResourceId_t NextId[(int) EnumDefContent::MAX_ENUM] = {0};
-        std::unordered_map<std::string, ResourceId_t> ContentKeyToId[(int) EnumDefContent::MAX_ENUM]; // EnumDefContent
-
-        std::unordered_map<DefVoxelId_t,    DefVoxel_t>    ContentIdToDef_Voxel;
-        std::unordered_map<DefNodeId_t,     DefNode_t>      ContentIdToDef_Node;
-        std::unordered_map<DefWorldId_t,    DefWorld_t>    ContentIdToDef_World;
-        std::unordered_map<DefPortalId_t,   DefPortal_t>  ContentIdToDef_Portal;
-        std::unordered_map<DefEntityId_t,   DefEntity_t>  ContentIdToDef_Entity;
-        std::unordered_map<DefItemId_t,     DefItem_t>      ContentIdToDef_Item;
-
-        ResourceId_t registerContent(const std::string& key, EnumDefContent def) {
-            int index = int(def);
-            assert(index < (int) EnumDefContent::MAX_ENUM);
-
-            auto &container = ContentKeyToId[index];
-            auto iter = container.find(key);
-            if(iter == container.end()) {
-                assert(NextId[index] != ResourceId_t(-1));
-                ResourceId_t nextId = NextId[index]++;
-                container.insert(iter, {key, nextId});
-                return nextId;
-            }
-
-            MAKE_ERROR("Повторная регистрация контента: " << key << " тип " << int(def));
-        }
-
-        ResourceId_t getContentDefId(const std::string& key, EnumDefContent def) {
-            int index = int(def);
-            assert(index < (int) EnumDefContent::MAX_ENUM);
-
-            auto &container = ContentKeyToId[index];
-            auto iter = container.find(key);
-            if(iter == container.end()) {
-                return ResourceId_t(-1);
-            }
-
-            return iter->second;
-        }
+        ContentManager CM;
 
         // Если контент был перерегистрирован (исключая двоичные ресурсы), то профили будут повторно разосланы
         ResourceRequest OnContentChanges;
 
 
         ContentObj(asio::io_context& ioc)
-            : AM(ioc)
+            : AM(ioc), CM(ioc)
         {}
     } Content;
 
     struct {
-        std::vector<std::shared_ptr<ContentEventController>> CECs;
+        std::vector<std::shared_ptr<RemoteClient>> RemoteClients;
         ServerTime AfterStartTime = {0, 0};
 
     } Game;
@@ -336,9 +298,6 @@ private:
     void init(fs::path worldPath);
     void prerun();
     void run();
-
-    DefNode_t createNodeProfileByLua(const sol::table& profile);
-
 
     void initLuaAssets();
     void initLuaPre();

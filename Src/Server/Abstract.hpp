@@ -432,4 +432,105 @@ inline void convertChunkVoxelsToRegion(const std::unordered_map<Pos::bvec4u, std
     regions = VoxelCuboidsFuncs<VoxelCube_Region>::optimizeVoxelRegions(regions);
 }
 
+
+struct ServerObjectPos {
+    WorldId_t WorldId;
+    Pos::Object ObjectPos;
+};
+
+/*
+    Разница между информацией о наблюдаемых регионах
+*/
+struct ContentViewInfo_Diff {
+    // Изменения на уровне миров (увиден или потерян)
+    std::vector<WorldId_t> WorldsNew, WorldsLost;
+    // Изменения на уровне регионов
+    std::unordered_map<WorldId_t, std::vector<Pos::GlobalRegion>> RegionsNew, RegionsLost;
+
+    bool empty() const {
+        return WorldsNew.empty() && WorldsLost.empty() && RegionsNew.empty() && RegionsLost.empty();
+    }
+};
+
+/*
+    То, какие регионы наблюдает игрок
+*/
+struct ContentViewInfo {
+    // std::vector<Pos::GlobalRegion> - сортированный и с уникальными значениями
+    std::unordered_map<WorldId_t, std::vector<Pos::GlobalRegion>> Regions;
+
+    // Что изменилось относительно obj
+    // Перерасчёт должен проводится при смещении игрока или ContentBridge за границу региона
+    ContentViewInfo_Diff diffWith(const ContentViewInfo& obj) const {
+        ContentViewInfo_Diff out;
+
+        // Проверяем новые миры и регионы
+        for(const auto& [key, regions] : Regions) {
+            auto iterWorld = obj.Regions.find(key);
+
+            if(iterWorld == obj.Regions.end()) {
+                out.WorldsNew.push_back(key);
+                out.RegionsNew[key] = regions;
+            } else {
+                auto &vec = out.RegionsNew[key];
+                vec.reserve(8*8);
+                std::set_difference(
+                    regions.begin(), regions.end(),
+                    iterWorld->second.begin(), iterWorld->second.end(),
+                    std::back_inserter(vec)
+                );
+            }
+        }
+
+        // Проверяем потерянные миры и регионы
+        for(const auto& [key, regions] : obj.Regions) {
+            auto iterWorld = Regions.find(key);
+
+            if(iterWorld == Regions.end()) {
+                out.WorldsLost.push_back(key);
+                out.RegionsLost[key] = regions;
+            } else {
+                auto &vec = out.RegionsLost[key];
+                vec.reserve(8*8);
+                std::set_difference(
+                    regions.begin(), regions.end(),
+                    iterWorld->second.begin(), iterWorld->second.end(),
+                    std::back_inserter(vec)
+                );
+            }
+        }
+
+        // shrink_to_feet
+        for(auto& [_, regions] : out.RegionsNew)
+            regions.shrink_to_fit();
+        for(auto& [_, regions] : out.RegionsLost)
+            regions.shrink_to_fit();
+
+        return out;
+    }
+};
+
+/*
+    Мост контента, для отслеживания событий из удалённых точек
+    По типу портала, через который можно видеть контент на расстоянии
+*/
+struct ContentBridge {
+    /* 
+        false -> Из точки Left видно контент в точки Right 
+        true -> Контент виден в обе стороны
+    */
+    bool IsTwoWay = false;
+    WorldId_t LeftWorld;
+    Pos::GlobalRegion LeftPos;
+    WorldId_t RightWorld;
+    Pos::GlobalRegion RightPos;
+};
+
+struct ContentViewCircle {
+    WorldId_t WorldId;
+    Pos::GlobalRegion Pos;
+    // Радиус в регионах в квадрате
+    int16_t Range;
+};
+
 }

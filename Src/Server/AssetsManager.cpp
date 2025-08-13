@@ -22,9 +22,9 @@ AssetsManager::AssetsManager(asio::io_context& ioc)
 
 AssetsManager::~AssetsManager() = default;
 
-std::tuple<ResourceId_t, std::optional<AssetsManager::DataEntry>&> AssetsManager::Local::nextId(EnumAssets type) {
+std::tuple<ResourceId, std::optional<AssetsManager::DataEntry>&> AssetsManager::Local::nextId(EnumAssets type) {
     auto& table = Table[(int) type];
-    ResourceId_t id = -1;
+    ResourceId id = -1;
     std::optional<DataEntry> *data = nullptr;
 
     for(size_t index = 0; index < table.size(); index++) {
@@ -185,7 +185,7 @@ AssetsManager::Out_recheckResources AssetsManager::recheckResources(const Assets
                         continue;
                     else if(iterDomain != lock->KeyToId[type].end() && iterDomain->second.contains(key)) {
                         // Ресурс уже есть, TODO: нужно проверить его изменение
-                        ResourceId_t id = iterDomain->second.at(key);
+                        ResourceId id = iterDomain->second.at(key);
                         DataEntry& entry = *lock->Table[type][id / TableEntry::ChunkSize]->Entries[id % TableEntry::ChunkSize];
                         
                         fs::file_time_type lwt = fs::last_write_time(file);
@@ -229,7 +229,7 @@ AssetsManager::Out_applyResourceChange AssetsManager::applyResourceChange(const 
                 auto iter = keyToIdDomain.find(key);
                 assert(iter != keyToIdDomain.end());
 
-                ResourceId_t resId = iter->second;
+                ResourceId resId = iter->second;
                 // keyToIdDomain.erase(iter);
                 // lost[type].push_back(resId);
 
@@ -249,7 +249,7 @@ AssetsManager::Out_applyResourceChange AssetsManager::applyResourceChange(const 
             auto& keyToIdDomain = lock->KeyToId[type][domain];
 
             for(auto& [key, resource, lwt] : resources) {
-                ResourceId_t id = -1;
+                ResourceId id = -1;
                 std::optional<DataEntry>* data = nullptr;
 
                 if(auto iterId = keyToIdDomain.find(key); iterId != keyToIdDomain.end()) {
@@ -269,8 +269,8 @@ AssetsManager::Out_applyResourceChange AssetsManager::applyResourceChange(const 
         }
 
         // Удалённые идентификаторы не считаются удалёнными, если были изменены
-        std::unordered_set<ResourceId_t> noc(result.NewOrChange[type].begin(), result.NewOrChange[type].end());
-        std::unordered_set<ResourceId_t> l(result.Lost[type].begin(), result.Lost[type].end());
+        std::unordered_set<ResourceId> noc(result.NewOrChange[type].begin(), result.NewOrChange[type].end());
+        std::unordered_set<ResourceId> l(result.Lost[type].begin(), result.Lost[type].end());
         result.Lost[type].clear();
         std::set_difference(l.begin(), l.end(), noc.begin(), noc.end(), std::back_inserter(result.Lost[type]));
     }
@@ -278,7 +278,7 @@ AssetsManager::Out_applyResourceChange AssetsManager::applyResourceChange(const 
     return result;
 }
 
-ResourceId_t AssetsManager::getId(EnumAssets type, const std::string& domain, const std::string& key) {
+ResourceId AssetsManager::getId(EnumAssets type, const std::string& domain, const std::string& key) {
     auto lock = LocalObj.lock();
     auto& keyToId = lock->KeyToId[(int) type];
     if(auto iterKTI = keyToId.find(domain); iterKTI != keyToId.end()) {

@@ -107,13 +107,15 @@ class SpinlockObject {
 public:
     template<typename... Args>
     explicit SpinlockObject(Args&&... args)
-        : value(std::forward<Args>(args)...) {}
+        : Value(std::forward<Args>(args)...) {}
 
     class Lock {
     public:
-        Lock(SpinlockObject* obj, std::atomic_flag& flag)
-            : Obj(obj), Flag(&flag) {
-            while (flag.test_and_set(std::memory_order_acquire));
+        Lock(SpinlockObject* obj, std::atomic_flag& flag, bool locked = false)
+            : Obj(obj), Flag(&flag) 
+		{
+			if(obj && !locked)
+            	while(flag.test_and_set(std::memory_order_acquire));
         }
 
         ~Lock() {
@@ -143,9 +145,9 @@ public:
 			return *this;
 		}
 
-        T& get() const { assert(Obj); return Obj->value; }
-		T* operator->() const { assert(Obj); return &Obj->value; }
-		T& operator*() const { assert(Obj); return Obj->value; }
+        T& get() const { assert(Obj); return Obj->Value; }
+		T* operator->() const { assert(Obj); return &Obj->Value; }
+		T& operator*() const { assert(Obj); return Obj->Value; }
 
 		void unlock() { assert(Obj); Obj = nullptr; Flag->clear(std::memory_order_release);}
 
@@ -155,14 +157,83 @@ public:
     };
 
     Lock lock() {
-        return Lock(this, mutex);
+        return Lock(this, Flag);
     }
 
-	const T& get_read() { return value; }
+	Lock tryLock() {
+		if(Flag.test_and_set(std::memory_order_acquire))
+			return Lock(nullptr, Flag);
+		else
+		 	return Lock(this, Flag, true);
+	}
+
+	const T& get_read() { return Value; }
 
 private:
-    T value;
-    std::atomic_flag mutex = ATOMIC_FLAG_INIT;
+    T Value;
+    std::atomic_flag Flag = ATOMIC_FLAG_INIT;
+};
+
+class Spinlock {
+public:
+    Spinlock() {}
+
+    class Lock {
+    public:
+        Lock(Spinlock* obj, std::atomic_flag& flag, bool locked = false)
+            : Obj(obj), Flag(&flag) 
+		{
+			if(obj && !locked)
+            	while(flag.test_and_set(std::memory_order_acquire));
+        }
+
+        ~Lock() {
+			if(Obj)
+            	Flag->clear(std::memory_order_release);
+        }
+
+		Lock(const Lock&) = delete;
+		Lock(Lock&& obj)
+			: Obj(obj.Obj), Flag(obj.Flag)
+		{
+			obj.Obj = nullptr;
+		}
+
+		Lock& operator=(const Lock&) = delete;
+		Lock& operator=(Lock&& obj) {
+			if(this == &obj)
+				return *this;
+
+			if(Obj)
+				unlock();
+
+			Obj = obj.Obj;
+			obj.Obj = nullptr;
+			Flag = obj.Flag;
+			
+			return *this;
+		}
+
+		void unlock() { assert(Obj); Obj = nullptr; Flag->clear(std::memory_order_release);}
+
+    private:
+        Spinlock *Obj;
+        std::atomic_flag *Flag;
+    };
+
+    Lock lock() {
+        return Lock(this, Flag);
+    }
+
+	Lock tryLock() {
+		if(Flag.test_and_set(std::memory_order_acquire))
+			return Lock(nullptr, Flag);
+		else
+		 	return Lock(this, Flag, true);
+	}
+
+private:
+    std::atomic_flag Flag = ATOMIC_FLAG_INIT;
 };
 
 #if __BYTE_ORDER == __LITTLE_ENDIAN

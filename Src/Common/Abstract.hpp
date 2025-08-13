@@ -385,7 +385,7 @@ struct Object_t {
 }
 
 
-using ResourceId_t = uint32_t;
+using ResourceId = uint32_t;
 
 /*
     Объекты, собранные из папки assets или зарегистрированные модами.
@@ -399,13 +399,13 @@ enum class EnumAssets {
    Nodestate, Patricle, Animation, Model, Texture, Sound, Font, MAX_ENUM
 };
 
-using AssetsNodestate   = ResourceId_t;
-using AssetsParticle    = ResourceId_t;
-using AssetsAnimation   = ResourceId_t;
-using AssetsModel       = ResourceId_t;
-using AssetsTexture     = ResourceId_t;
-using AssetsSound       = ResourceId_t;
-using AssetsFont        = ResourceId_t;
+using AssetsNodestate   = ResourceId;
+using AssetsParticle    = ResourceId;
+using AssetsAnimation   = ResourceId;
+using AssetsModel       = ResourceId;
+using AssetsTexture     = ResourceId;
+using AssetsSound       = ResourceId;
+using AssetsFont        = ResourceId;
 
 using BinaryResource = std::shared_ptr<const std::u8string>;
 
@@ -416,19 +416,19 @@ enum class EnumDefContent {
     Voxel, Node, World, Portal, Entity, Item, MAX_ENUM
 };
 
-using DefVoxelId_t      = ResourceId_t;
-using DefNodeId_t       = ResourceId_t;
-using DefWorldId_t      = ResourceId_t;
-using DefPortalId_t     = ResourceId_t;
-using DefEntityId_t     = ResourceId_t;
-using DefItemId_t       = ResourceId_t;
+using DefVoxelId      = ResourceId;
+using DefNodeId       = ResourceId;
+using DefWorldId      = ResourceId;
+using DefPortalId     = ResourceId;
+using DefEntityId     = ResourceId;
+using DefItemId       = ResourceId;
 
 /*
     Контент, основанный на определениях.
     Отдельные свойства могут менятся в самих объектах
 */
 
-using WorldId_t = ResourceId_t;
+using WorldId_t = ResourceId;
 
 // struct LightPrism {
 //     uint8_t R : 2, G : 2, B : 2;
@@ -439,10 +439,10 @@ using WorldId_t = ResourceId_t;
 struct VoxelCube {
     union {
         struct {
-            DefVoxelId_t VoxelId : 24, Meta : 8;
+            DefVoxelId VoxelId : 24, Meta : 8;
         };
 
-        DefVoxelId_t Data = 0;
+        DefVoxelId Data = 0;
     };
 
     Pos::bvec256u Pos, Size; // Размер+1, 0 это единичный размер
@@ -465,7 +465,7 @@ struct VoxelCube {
 struct CompressedVoxels {
     std::u8string Compressed;
     // Уникальный сортированный список идентификаторов вокселей
-    std::vector<DefVoxelId_t> Defines;
+    std::vector<DefVoxelId> Defines;
 };
 
 CompressedVoxels compressVoxels(const std::vector<VoxelCube>& voxels, bool fast = true);
@@ -474,16 +474,16 @@ std::vector<VoxelCube> unCompressVoxels(const std::u8string& compressed);
 struct Node {
     union {
         struct {
-            DefNodeId_t NodeId : 24, Meta : 8;
+            DefNodeId NodeId : 24, Meta : 8;
         };
-        DefNodeId_t Data;
+        DefNodeId Data;
     };
 };
 
 struct CompressedNodes {
     std::u8string Compressed;
     // Уникальный сортированный список идентификаторов нод
-    std::vector<DefNodeId_t> Defines;
+    std::vector<DefNodeId> Defines;
 };
 
 CompressedNodes compressNodes(const Node* nodes, bool fast = true);

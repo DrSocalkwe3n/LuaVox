@@ -388,5 +388,14 @@ NodeStateCondition nodestateExpression(const std::vector<NodestateEntry>& entrie
 
     return ct;
 }
+}
 
+namespace std {
+
+template <>
+struct hash<LV::Server::ServerObjectPos> {
+    std::size_t operator()(const LV::Server::ServerObjectPos& obj) const {
+        return std::hash<uint32_t>()(obj.WorldId) ^ std::hash<LV::Pos::Object>()(obj.ObjectPos); 
+    } 
+};
 }

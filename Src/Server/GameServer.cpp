@@ -3,6 +3,7 @@
 #include "Common/Net.hpp"
 #include "Common/Packets.hpp"
 #include "Server/Abstract.hpp"
+#include "Server/AssetsManager.hpp"
 #include "Server/ContentEventController.hpp"
 #include <algorithm>
 #include <array>
@@ -1407,15 +1408,6 @@ void GameServer::init(fs::path worldPath) {
 
     LOG.info() << "Загрузка инстансов модов";
 
-
-    // Тест луа
-
-    
-    // sol::function func = res.call<>();
-    // int type = func();
-
-    // LOG.debug() << type;
-
     LoadedMods = mlt.LoadChain;
 
     LuaMainState.open_libraries();
@@ -1428,72 +1420,60 @@ void GameServer::init(fs::path worldPath) {
         ModInstances.emplace_back(info.Id, res.call<sol::table>());
     }
 
-    LOG.info() << "Пре Инициализация";
-    initLuaPre();
+    std::function<void(const std::string&)> pushEvent = [&](const std::string& function) {
+        for(auto& [id, core] : ModInstances) {
+            std::optional<sol::protected_function> func = core.get<std::optional<sol::protected_function>>(function);
+            if(func) {
+                sol::protected_function_result result;
+                try {
+                    result = func->operator()();
+                } catch(const std::exception &exc) {
+                    MAKE_ERROR("Ошибка инициализации мода " << id << ":\n" << exc.what());
+                }
 
-    for(auto& [id, core] : ModInstances) {
-        std::optional<sol::protected_function> func = core.get<std::optional<sol::protected_function>>("preInit");
-        if(func) {
-            sol::protected_function_result result;
-            try {
-                result = func->operator()();
-            } catch(const std::exception &exc) {
-                MAKE_ERROR("Ошибка инициализации мода " << id << ":\n" << exc.what());
-            }
-
-            if(!result.valid()) {
-                sol::error err = result;
-                MAKE_ERROR("Ошибка инициализации мода " << id << ":\n" << err.what());
+                if(!result.valid()) {
+                    sol::error err = result;
+                    MAKE_ERROR("Ошибка инициализации мода " << id << ":\n" << err.what());
+                }
             }
         }
+    };
+
+    initLuaAssets();
+    pushEvent("initAssets");
+    for(ssize_t index = mlt.LoadChain.size(); index >= 0; index--) {
+        AssetsInit.Assets.push_back(mlt.LoadChain[index].Path / "assets");
     }
+
+    Content.AM.applyResourceChange(Content.AM.recheckResources(AssetsInit));
+
+    LOG.info() << "Пре Инициализация";
+    initLuaPre();
+    pushEvent("lowPreInit");
+
+    // TODO: регистрация контента из mod/content/*
+
+    pushEvent("preInit");
+    pushEvent("highPreInit");
+
 
     LOG.info() << "Инициализация";
     initLua();
-
-    for(auto& [id, core] : ModInstances) {
-        CurrentModId = id;
-        std::optional<sol::protected_function> func = core.get<std::optional<sol::protected_function>>("init");
-        if(func) {
-            sol::protected_function_result result;
-            try {
-                result = func->operator()();
-            } catch(...) {
-                MAKE_ERROR("Ошибка инициализации мода " << id << ":\n");
-            }
-
-            if(!result.valid()) {
-                sol::error err = result;
-                MAKE_ERROR("Ошибка инициализации мода " << id << ":\n" << err.what());
-            }
-        }
-    }
+    pushEvent("init");
 
     LOG.info() << "Пост Инициализация";
     initLuaPost();
-
-    for(auto& [id, core] : ModInstances) {
-        CurrentModId = id;
-        std::optional<sol::protected_function> func = core.get<std::optional<sol::protected_function>>("postInit");
-        if(func) {
-            sol::protected_function_result result;
-            try {
-                result = func->operator()();
-            } catch(const std::exception &exc) {
-                MAKE_ERROR("Ошибка инициализации мода " << id << ":\n" << exc.what());
-            }
-
-            if(!result.valid()) {
-                sol::error err = result;
-                MAKE_ERROR("Ошибка инициализации мода " << id << ":\n" << err.what());
-            }
-        }
-    }
+    pushEvent("postInit");
 
     // Загрузить миры с существующими профилями
+    LOG.info() << "Загрузка существующих миров...";
 
     Expanse.Worlds[0] = std::make_unique<World>(0);
 
+    LOG.info() << "Оповещаем моды о завершении загрузки";
+    pushEvent("serverReady");
+
+    LOG.info() << "Загрузка существующих миров...";
     BackingChunkPressure.Threads.resize(4);
     BackingChunkPressure.Worlds = &Expanse.Worlds;
     for(size_t iter = 0; iter < BackingChunkPressure.Threads.size(); iter++) {
@@ -1652,10 +1632,53 @@ DefNode_t GameServer::createNodeProfileByLua(const sol::table& profile) {
     return result;
 }
 
+void GameServer::initLuaAssets() {
+    auto &lua = LuaMainState;
+    std::optional<sol::table> core = lua["core"];
+    if(!core)
+        core = lua.create_named_table("core");
+
+    std::function<void(EnumAssets, const std::string&, const sol::table&)> reg
+        = [this](EnumAssets type, const std::string& key, const sol::table& profile)
+    {
+        std::optional<std::vector<std::optional<std::string>>> result_o = TOS::Str::match(key, "^(?:([\\w\\d_]+):)?([\\w\\d_]+)$");
+
+        if(!result_o) {
+            MAKE_ERROR("Недействительный идентификатор ноды: " << key);
+        }
+        
+        auto &result = *result_o;
+        if(result[1])
+            AssetsInit.Custom[(int) type][*result[1]][*result[2]] = nullptr;
+        else
+            AssetsInit.Custom[(int) type][CurrentModId][*result[2]] = nullptr;
+    };
+
+    core->set_function("register_nodestate",    std::bind(reg, EnumAssets::Nodestate, std::placeholders::_1, std::placeholders::_2));
+    core->set_function("register_particle",     std::bind(reg, EnumAssets::Patricle, std::placeholders::_1, std::placeholders::_2));
+    core->set_function("register_animation",    std::bind(reg, EnumAssets::Animation, std::placeholders::_1, std::placeholders::_2));
+    core->set_function("register_model",        std::bind(reg, EnumAssets::Model, std::placeholders::_1, std::placeholders::_2));
+    core->set_function("register_texture",      std::bind(reg, EnumAssets::Texture, std::placeholders::_1, std::placeholders::_2));
+    core->set_function("register_sound",        std::bind(reg, EnumAssets::Sound, std::placeholders::_1, std::placeholders::_2));
+    core->set_function("register_font",         std::bind(reg, EnumAssets::Font, std::placeholders::_1, std::placeholders::_2));
+    
+    return resources;
+}
+
 void GameServer::initLuaPre() {
     auto &lua = LuaMainState;
+    sol::table core = lua["core"];
 
-    sol::table core = lua.create_named_table("core");
+    auto lambdaError = [](sol::this_state L) {
+        luaL_error(L.lua_state(), "Данная функция может использоваться только в стадии [assetsInit]");
+    };
+
+    for(const char* name : {"register_nodestate", "register_particle", "register_animation", 
+            "register_model", "register_texture", "register_sound", "register_font"})
+        core.set_function(name, lambdaError);
+
+
+
     core.set_function("register_node", [&](const std::string& id, const sol::table& profile) {
         std::optional<std::vector<std::optional<std::string>>> result_o = TOS::Str::match(id, "^(?:([\\w\\d_]+):)?([\\w\\d_]+)$");
 

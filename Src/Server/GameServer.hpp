@@ -302,6 +302,7 @@ class GameServer : public AsyncObject {
     std::vector<std::pair<std::string, sol::table>> ModInstances;
     // Идентификатор текущегго мода, находящевося в обработке
     std::string CurrentModId;
+    AssetsManager::AssetsRegister AssetsInit;
 
 public:
     GameServer(asio::io_context &ioc, fs::path worldPath);
@@ -339,6 +340,7 @@ private:
     DefNode_t createNodeProfileByLua(const sol::table& profile);
 
 
+    void initLuaAssets();
     void initLuaPre();
     void initLua();
     void initLuaPost();

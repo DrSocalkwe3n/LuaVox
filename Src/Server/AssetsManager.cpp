@@ -7,13 +7,20 @@
 
 namespace LV::Server {
 
-coro<AssetsManager::Resource> AssetsManager::loadResourceFromFile(EnumAssets type, fs::path path) const {
-    co_return AssetsManager::Resource(path);
+AssetsManager::Resource AssetsManager::loadResourceFromFile(EnumAssets type, fs::path path) const {
+    return AssetsManager::Resource(path);
 }
 
-coro<AssetsManager::Resource> AssetsManager::loadResourceFromLua(EnumAssets type, void*) const {
-    co_return AssetsManager::Resource("assets/null");
+AssetsManager::Resource AssetsManager::loadResourceFromLua(EnumAssets type, void*) const {
+    return AssetsManager::Resource("assets/null");
 }
+
+AssetsManager::AssetsManager(asio::io_context& ioc)
+{
+
+}
+
+AssetsManager::~AssetsManager() = default;
 
 std::tuple<ResourceId_t, std::optional<AssetsManager::DataEntry>&> AssetsManager::Local::nextId(EnumAssets type) {
     auto& table = Table[(int) type];
@@ -45,7 +52,7 @@ std::tuple<ResourceId_t, std::optional<AssetsManager::DataEntry>&> AssetsManager
     return {id, *data};
 }
 
-coro<AssetsManager::Out_recheckResources> AssetsManager::recheckResources(AssetsRegister info) {
+AssetsManager::Out_recheckResources AssetsManager::recheckResources(const AssetsRegister& info) {
     Out_recheckResources result;
 
     // Найти пропавшие ресурсы
@@ -124,10 +131,10 @@ coro<AssetsManager::Out_recheckResources> AssetsManager::recheckResources(Assets
                         continue;
                     else if(iterDomain->second.contains(key)) {
                         // Ресурс уже есть, TODO: нужно проверить его изменение
-                        result.NewOrChange[type][domain].emplace_back(key, co_await loadResourceFromFile((EnumAssets) type, "assets/null"), fs::file_time_type::min());
+                        result.NewOrChange[type][domain].emplace_back(key, loadResourceFromFile((EnumAssets) type, "assets/null"), fs::file_time_type::min());
                     } else {
                         // Ресурс не был известен
-                        result.NewOrChange[type][domain].emplace_back(key, co_await loadResourceFromFile((EnumAssets) type, "assets/null"), fs::file_time_type::min());
+                        result.NewOrChange[type][domain].emplace_back(key, loadResourceFromFile((EnumAssets) type, "assets/null"), fs::file_time_type::min());
                     }
 
                     findList.insert(key);
@@ -184,11 +191,11 @@ coro<AssetsManager::Out_recheckResources> AssetsManager::recheckResources(Assets
                         fs::file_time_type lwt = fs::last_write_time(file);
                         if(lwt != entry.FileChangeTime)
                             // Будем считать что ресурс изменился
-                            result.NewOrChange[type][domain].emplace_back(key, co_await loadResourceFromFile((EnumAssets) type, file), lwt);
+                            result.NewOrChange[type][domain].emplace_back(key, loadResourceFromFile((EnumAssets) type, file), lwt);
                     } else {
                         // Ресурс не был известен
                         fs::file_time_type lwt = fs::last_write_time(file);
-                        result.NewOrChange[type][domain].emplace_back(key, co_await loadResourceFromFile((EnumAssets) type, file), lwt);
+                        result.NewOrChange[type][domain].emplace_back(key, loadResourceFromFile((EnumAssets) type, file), lwt);
                     }
 
                     findList.insert(key);
@@ -198,7 +205,7 @@ coro<AssetsManager::Out_recheckResources> AssetsManager::recheckResources(Assets
 
     }
 
-    co_return result;
+    return result;
 }
 
 AssetsManager::Out_applyResourceChange AssetsManager::applyResourceChange(const Out_recheckResources& orr) {

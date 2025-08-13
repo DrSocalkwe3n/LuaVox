@@ -89,8 +89,8 @@ private:
         Загрузка ресурса с файла. При необходимости приводится
         к внутреннему формату и сохраняется в кеше
     */
-    coro<Resource> loadResourceFromFile(EnumAssets type, fs::path path) const;
-    coro<Resource> loadResourceFromLua(EnumAssets type, void*) const;
+    Resource loadResourceFromFile(EnumAssets type, fs::path path) const;
+    Resource loadResourceFromLua(EnumAssets type, void*) const;
 
 public:
     AssetsManager(asio::io_context& ioc);
@@ -126,7 +126,7 @@ public:
         std::unordered_map<std::string, std::vector<std::tuple<std::string, Resource, fs::file_time_type>>> NewOrChange[(int) EnumAssets::MAX_ENUM];
     };
 
-    coro<Out_recheckResources> recheckResources(AssetsRegister);
+    Out_recheckResources recheckResources(const AssetsRegister&);
 
     /*
         Применяет расчитанные изменения.
@@ -138,7 +138,6 @@ public:
     };
 
     Out_applyResourceChange applyResourceChange(const Out_recheckResources& orr);
-
 
     /*
         Выдаёт идентификатор ресурса, даже если он не существует или был удалён.

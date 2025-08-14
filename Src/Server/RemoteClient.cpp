@@ -68,13 +68,9 @@ void RemoteClient::shutdown(EnumDisconnect type, const std::string reason) {
     LOG.info() << "Игрок '" << Username << "' отключился " << info;
 }
 
-bool RemoteClient::maybe_prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_voxels,
-    const std::vector<DefVoxelId_t>& uniq_sorted_defines)
+void RemoteClient::murky_prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_voxels,
+    const std::vector<DefVoxelId>& uniq_sorted_defines)
 {
-    bool lock = ResUses.RefChunkLock.exchange(1);
-    if(lock)
-        return false;
-
     Pos::bvec4u localChunk = chunkPos & 0x3;
     Pos::GlobalRegion regionPos = chunkPos >> 2;
 
@@ -84,12 +80,12 @@ bool RemoteClient::maybe_prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::Globa
         Отправить всё клиенту
     */
 
-    std::vector<DefVoxelId_t>
+    std::vector<DefVoxelId>
         newTypes, /* Новые типы вокселей */
         lostTypes /* Потерянные типы вокселей */;
 
     // Отметим использование этих вокселей
-    for(const DefVoxelId_t& id : uniq_sorted_defines) {
+    for(const DefVoxelId& id : uniq_sorted_defines) {
         auto iter = ResUses.DefVoxel.find(id);
         if(iter == ResUses.DefVoxel.end()) {
             // Новый тип
@@ -109,7 +105,7 @@ bool RemoteClient::maybe_prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::Globa
         auto iterRegion = iterWorld->second.find(regionPos);
         if(iterRegion != iterWorld->second.end()) {
             // Уменьшим счётчик зависимостей
-            for(const DefVoxelId_t& id : iterRegion->second[localChunk.pack()].Voxel) {
+            for(const DefVoxelId& id : iterRegion->second[localChunk.pack()].Voxel) {
                 auto iter = ResUses.DefVoxel.find(id);
                 assert(iter != ResUses.DefVoxel.end()); // Воксель должен быть в зависимостях
                 if(--iter->second == 0) {
@@ -129,12 +125,12 @@ bool RemoteClient::maybe_prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::Globa
     if(!newTypes.empty()) {
         // Добавляем новые типы в запрос
         NextRequest.Voxel.insert(NextRequest.Voxel.end(), newTypes.begin(), newTypes.end());
-        for(DefVoxelId_t voxel : newTypes)
+        for(DefVoxelId voxel : newTypes)
             ResUses.RefDefVoxel[voxel] = {};
     }
 
     if(!lostTypes.empty()) {
-        for(const DefVoxelId_t& id : lostTypes) {
+        for(const DefVoxelId& id : lostTypes) {
             auto iter = ResUses.RefDefVoxel.find(id);
             assert(iter != ResUses.RefDefVoxel.end()); // Должны быть описаны зависимости вокселя
             decrementBinary(std::move(iter->second));
@@ -147,32 +143,25 @@ bool RemoteClient::maybe_prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::Globa
         }
     }
 
-    checkPacketBorder(4+4+8+2+4+compressed_voxels.size());
-    NextPacket << (uint8_t) ToClient::L1::Content
+    murkyCheckPacketBorder(4+4+8+2+4+compressed_voxels.size());
+    MurkyNextPacket << (uint8_t) ToClient::L1::Content
         << (uint8_t) ToClient::L2Content::ChunkVoxels
         << worldId << chunkPos.pack() << uint32_t(compressed_voxels.size());
-    NextPacket.write((const std::byte*) compressed_voxels.data(), compressed_voxels.size());
-
-    ResUses.RefChunkLock.exchange(0);
-    return true;
+    MurkyNextPacket.write((const std::byte*) compressed_voxels.data(), compressed_voxels.size());
 }
 
-bool RemoteClient::maybe_prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_nodes,
-    const std::vector<DefNodeId_t>& uniq_sorted_defines)
+void RemoteClient::maybe_prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_nodes,
+    const std::vector<DefNodeId>& uniq_sorted_defines)
 {
-    bool lock = ResUses.RefChunkLock.exchange(1);
-    if(lock)
-        return false;
-
     Pos::bvec4u localChunk = chunkPos & 0x3;
     Pos::GlobalRegion regionPos = chunkPos >> 2;
 
-    std::vector<DefNodeId_t>
+    std::vector<DefNodeId>
         newTypes, /* Новые типы нод */
         lostTypes /* Потерянные типы нод */;
 
     // Отметим использование этих нод
-    for(const DefNodeId_t& id : uniq_sorted_defines) {
+    for(const DefNodeId& id : uniq_sorted_defines) {
         auto iter = ResUses.DefNode.find(id);
         if(iter == ResUses.DefNode.end()) {
             // Новый тип
@@ -192,7 +181,7 @@ bool RemoteClient::maybe_prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::Global
         auto iterRegion = iterWorld->second.find(regionPos);
         if(iterRegion != iterWorld->second.end()) {
             // Уменьшим счётчик зависимостей
-            for(const DefNodeId_t& id : iterRegion->second[localChunk.pack()].Node) {
+            for(const DefNodeId& id : iterRegion->second[localChunk.pack()].Node) {
                 auto iter = ResUses.DefNode.find(id);
                 assert(iter != ResUses.DefNode.end()); // Нода должна быть в зависимостях
                 if(--iter->second == 0) {
@@ -212,38 +201,35 @@ bool RemoteClient::maybe_prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::Global
     if(!newTypes.empty()) {
         // Добавляем новые типы в запрос
         NextRequest.Node.insert(NextRequest.Node.end(), newTypes.begin(), newTypes.end());
-        for(DefNodeId_t node : newTypes)
+        for(DefNodeId node : newTypes)
             ResUses.RefDefNode[node] = {};
     }
 
     if(!lostTypes.empty()) {
-        for(const DefNodeId_t& id : lostTypes) {
+        for(const DefNodeId& id : lostTypes) {
             auto iter = ResUses.RefDefNode.find(id);
             assert(iter != ResUses.RefDefNode.end()); // Должны быть описаны зависимости ноды
             decrementBinary(std::move(iter->second));
             ResUses.RefDefNode.erase(iter);
 
             checkPacketBorder(16);
-            NextPacket << (uint8_t) ToClient::L1::Definition
+            MurkyNextPacket << (uint8_t) ToClient::L1::Definition
                 << (uint8_t) ToClient::L2Definition::FreeNode
                 << id;
         }
     }
 
     checkPacketBorder(4+4+8+4+compressed_nodes.size());
-    NextPacket << (uint8_t) ToClient::L1::Content
+    MurkyNextPacket << (uint8_t) ToClient::L1::Content
         << (uint8_t) ToClient::L2Content::ChunkNodes
         << worldId << chunkPos.pack() << uint32_t(compressed_nodes.size());
-    NextPacket.write((const std::byte*) compressed_nodes.data(), compressed_nodes.size());
-
-    ResUses.RefChunkLock.exchange(0);
-    return true;
+    MurkyNextPacket.write((const std::byte*) compressed_nodes.data(), compressed_nodes.size());
 }
 
 void RemoteClient::prepareRegionRemove(WorldId_t worldId, Pos::GlobalRegion regionPos) {
-    std::vector<DefVoxelId_t>
+    std::vector<DefVoxelId>
         lostTypesV /* Потерянные типы вокселей */;
-    std::vector<DefNodeId_t>
+    std::vector<DefNodeId>
         lostTypesN /* Потерянные типы нод */;
 
     // Уменьшаем зависимости вокселей и нод
@@ -257,7 +243,7 @@ void RemoteClient::prepareRegionRemove(WorldId_t worldId, Pos::GlobalRegion regi
             return;
          
         for(const auto &iterChunk : iterRegion->second) {
-            for(const DefVoxelId_t& id : iterChunk.Voxel) {
+            for(const DefVoxelId& id : iterChunk.Voxel) {
                 auto iter = ResUses.DefVoxel.find(id);
                 assert(iter != ResUses.DefVoxel.end()); // Воксель должен быть в зависимостях
                 if(--iter->second == 0) {
@@ -267,7 +253,7 @@ void RemoteClient::prepareRegionRemove(WorldId_t worldId, Pos::GlobalRegion regi
                 }
             }
 
-            for(const DefNodeId_t& id : iterChunk.Node) {
+            for(const DefNodeId& id : iterChunk.Node) {
                 auto iter = ResUses.DefNode.find(id);
                 assert(iter != ResUses.DefNode.end()); // Нода должна быть в зависимостях
                 if(--iter->second == 0) {
@@ -282,7 +268,7 @@ void RemoteClient::prepareRegionRemove(WorldId_t worldId, Pos::GlobalRegion regi
     }
 
     if(!lostTypesV.empty()) {
-        for(const DefVoxelId_t& id : lostTypesV) {
+        for(const DefVoxelId& id : lostTypesV) {
             auto iter = ResUses.RefDefVoxel.find(id);
             assert(iter != ResUses.RefDefVoxel.end()); // Должны быть описаны зависимости вокселя
             decrementBinary(std::move(iter->second));
@@ -296,7 +282,7 @@ void RemoteClient::prepareRegionRemove(WorldId_t worldId, Pos::GlobalRegion regi
     }
 
     if(!lostTypesN.empty()) {
-        for(const DefNodeId_t& id : lostTypesN) {
+        for(const DefNodeId& id : lostTypesN) {
             auto iter = ResUses.RefDefNode.find(id);
             assert(iter != ResUses.RefDefNode.end()); // Должны быть описаны зависимости ноды
             decrementBinary(std::move(iter->second));
@@ -564,10 +550,10 @@ void RemoteClient::informateIdToHash(const std::unordered_map<ResourceId_t, Reso
     }
 }
 
-void RemoteClient::informateDefVoxel(const std::unordered_map<DefVoxelId_t, DefVoxel_t*> &voxels)
+void RemoteClient::informateDefVoxel(const std::unordered_map<DefVoxelId, DefVoxel_t*> &voxels)
 {
     for(auto pair : voxels) {
-        DefVoxelId_t id = pair.first;
+        DefVoxelId id = pair.first;
         if(!ResUses.DefVoxel.contains(id))
             continue;
 
@@ -577,7 +563,7 @@ void RemoteClient::informateDefVoxel(const std::unordered_map<DefVoxelId_t, DefV
     }
 }
 
-void RemoteClient::informateDefNode(const std::unordered_map<DefNodeId_t, DefNode_t*> &nodes)
+void RemoteClient::informateDefNode(const std::unordered_map<DefNodeId, DefNode_t*> &nodes)
 {
     for(auto& [id, def] : nodes) {
         if(!ResUses.DefNode.contains(id))

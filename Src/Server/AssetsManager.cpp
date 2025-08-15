@@ -144,6 +144,9 @@ AssetsManager::Out_recheckResources AssetsManager::recheckResources(const Assets
     }
 
     for(const fs::path& path : info.Assets) {
+        if(!fs::exists(path))
+            continue;
+        
         for(auto begin = fs::directory_iterator(path), end = fs::directory_iterator(); begin != end; begin++) {
             if(!begin->is_directory())
                 continue;
@@ -264,32 +267,21 @@ AssetsManager::Out_applyResourceChange AssetsManager::applyResourceChange(const 
                 result.NewOrChange[type].push_back({id, resource});
                 keyToIdDomain[key] = id;
 
-                data->emplace(lwt, resource);
+                data->emplace(lwt, resource, domain, key);
             }
         }
 
         // Удалённые идентификаторы не считаются удалёнными, если были изменены
-        std::unordered_set<ResourceId> noc(result.NewOrChange[type].begin(), result.NewOrChange[type].end());
+        std::unordered_set<ResourceId> noc;
+        for(auto& [id, _] : result.NewOrChange[type])
+            noc.insert(id);
+        
         std::unordered_set<ResourceId> l(result.Lost[type].begin(), result.Lost[type].end());
         result.Lost[type].clear();
         std::set_difference(l.begin(), l.end(), noc.begin(), noc.end(), std::back_inserter(result.Lost[type]));
     }
 
     return result;
-}
-
-ResourceId AssetsManager::getId(EnumAssets type, const std::string& domain, const std::string& key) {
-    auto lock = LocalObj.lock();
-    auto& keyToId = lock->KeyToId[(int) type];
-    if(auto iterKTI = keyToId.find(domain); iterKTI != keyToId.end()) {
-        if(auto iterKey = iterKTI->second.find(key); iterKey != iterKTI->second.end()) {
-            return iterKey->second;
-        }
-    }
-
-    auto [id, entry] = lock->nextId(type);
-    keyToId[domain][key] = id;
-    return id;
 }
 
 }

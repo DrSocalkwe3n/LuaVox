@@ -18,15 +18,15 @@ struct SB_Region_In {
     // Список вокселей всех чанков
     std::unordered_map<Pos::bvec4u, VoxelCube> Voxels;
     // Привязка вокселей к ключу профиля
-    std::vector<std::pair<DefVoxelId_t, std::string>> VoxelsMap;
+    std::vector<std::pair<DefVoxelId, std::string>> VoxelsMap;
     // Ноды всех чанков
     std::array<std::array<Node, 16*16*16>, 4*4*4> Nodes;
     // Привязка нод к ключу профиля
-    std::vector<std::pair<DefNodeId_t, std::string>> NodeMap;
+    std::vector<std::pair<DefNodeId, std::string>> NodeMap;
     // Сущности
     std::vector<Entity> Entityes;
     // Привязка идентификатора к ключу профиля
-    std::vector<std::pair<DefEntityId_t, std::string>> EntityMap;
+    std::vector<std::pair<DefEntityId, std::string>> EntityMap;
 };
 
 struct DB_Region_Out {

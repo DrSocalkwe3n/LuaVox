@@ -24,8 +24,8 @@ void VulkanRenderSession::ThreadVertexObj_t::run() {
     LOG.debug() << "Старт потока подготовки чанков к рендеру";
 
     // Контейнеры событий
-    std::vector<DefVoxelId_t> changedDefines_Voxel;
-    std::vector<DefNodeId_t> changedDefines_Node;
+    std::vector<DefVoxelId> changedDefines_Voxel;
+    std::vector<DefNodeId> changedDefines_Node;
     std::unordered_map<WorldId_t, std::vector<Pos::GlobalChunk>> changedContent_Chunk;
     std::unordered_map<WorldId_t, std::vector<Pos::GlobalRegion>> changedContent_RegionRemove;
 
@@ -991,11 +991,11 @@ void VulkanRenderSession::onBinaryResourceAdd(std::vector<Hash_t>) {
 
 }
 
-void VulkanRenderSession::onContentDefinesAdd(std::unordered_map<EnumDefContent, std::vector<ResourceId_t>>) {
+void VulkanRenderSession::onContentDefinesAdd(std::unordered_map<EnumDefContent, std::vector<ResourceId>>) {
 
 }
 
-void VulkanRenderSession::onContentDefinesLost(std::unordered_map<EnumDefContent, std::vector<ResourceId_t>>) {
+void VulkanRenderSession::onContentDefinesLost(std::unordered_map<EnumDefContent, std::vector<ResourceId>>) {
 
 }
 

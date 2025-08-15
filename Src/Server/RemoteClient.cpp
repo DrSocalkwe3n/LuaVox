@@ -3,6 +3,7 @@
 #include "Common/Abstract.hpp"
 #include "Common/Net.hpp"
 #include "Server/Abstract.hpp"
+#include "Server/World.hpp"
 #include <algorithm>
 #include <boost/asio/error.hpp>
 #include <boost/system/system_error.hpp>
@@ -49,7 +50,8 @@ void RemoteClient::shutdown(EnumDisconnect type, const std::string reason) {
 
     IsGoingShutdown = true;
 
-    NextPacket << (uint8_t) ToClient::L1::System
+    Net::Packet packet;
+    packet << (uint8_t) ToClient::L1::System
         << (uint8_t) ToClient::L2System::Disconnect
         << (uint8_t) type << reason;
 
@@ -61,10 +63,12 @@ void RemoteClient::shutdown(EnumDisconnect type, const std::string reason) {
     else if(type == EnumDisconnect::ProtocolError)
         info = "ошибка протокола (сервер) " + reason;
 
+    Socket.pushPacket(std::move(packet));
+
     LOG.info() << "Игрок '" << Username << "' отключился " << info;
 }
 
-void RemoteClient::murky_prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_voxels,
+void RemoteClient::NetworkAndResource_t::prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_voxels,
     const std::vector<DefVoxelId>& uniq_sorted_defines)
 {
     Pos::bvec4u localChunk = chunkPos & 0x3;
@@ -129,7 +133,7 @@ void RemoteClient::murky_prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::Globa
         for(const DefVoxelId& id : lostTypes) {
             auto iter = ResUses.RefDefVoxel.find(id);
             assert(iter != ResUses.RefDefVoxel.end()); // Должны быть описаны зависимости вокселя
-            decrementBinary(std::move(iter->second));
+            decrementAssets(std::move(iter->second));
             ResUses.RefDefVoxel.erase(iter);
 
             checkPacketBorder(16);
@@ -139,14 +143,14 @@ void RemoteClient::murky_prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::Globa
         }
     }
 
-    murkyCheckPacketBorder(4+4+8+2+4+compressed_voxels.size());
-    MurkyNextPacket << (uint8_t) ToClient::L1::Content
+    checkPacketBorder(4+4+8+2+4+compressed_voxels.size());
+    NextPacket << (uint8_t) ToClient::L1::Content
         << (uint8_t) ToClient::L2Content::ChunkVoxels
         << worldId << chunkPos.pack() << uint32_t(compressed_voxels.size());
-    MurkyNextPacket.write((const std::byte*) compressed_voxels.data(), compressed_voxels.size());
+    NextPacket.write((const std::byte*) compressed_voxels.data(), compressed_voxels.size());
 }
 
-void RemoteClient::maybe_prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_nodes,
+void RemoteClient::NetworkAndResource_t::prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_nodes,
     const std::vector<DefNodeId>& uniq_sorted_defines)
 {
     Pos::bvec4u localChunk = chunkPos & 0x3;
@@ -205,29 +209,31 @@ void RemoteClient::maybe_prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::Global
         for(const DefNodeId& id : lostTypes) {
             auto iter = ResUses.RefDefNode.find(id);
             assert(iter != ResUses.RefDefNode.end()); // Должны быть описаны зависимости ноды
-            decrementBinary(std::move(iter->second));
+            decrementAssets(std::move(iter->second));
             ResUses.RefDefNode.erase(iter);
 
             checkPacketBorder(16);
-            MurkyNextPacket << (uint8_t) ToClient::L1::Definition
+            NextPacket << (uint8_t) ToClient::L1::Definition
                 << (uint8_t) ToClient::L2Definition::FreeNode
                 << id;
         }
     }
 
     checkPacketBorder(4+4+8+4+compressed_nodes.size());
-    MurkyNextPacket << (uint8_t) ToClient::L1::Content
+    NextPacket << (uint8_t) ToClient::L1::Content
         << (uint8_t) ToClient::L2Content::ChunkNodes
         << worldId << chunkPos.pack() << uint32_t(compressed_nodes.size());
-    MurkyNextPacket.write((const std::byte*) compressed_nodes.data(), compressed_nodes.size());
+    NextPacket.write((const std::byte*) compressed_nodes.data(), compressed_nodes.size());
 }
 
-void RemoteClient::prepareRegionRemove(WorldId_t worldId, Pos::GlobalRegion regionPos) {
+void RemoteClient::NetworkAndResource_t::prepareRegionsRemove(WorldId_t worldId, std::vector<Pos::GlobalRegion> regionPoses)
+{
     std::vector<DefVoxelId>
         lostTypesV /* Потерянные типы вокселей */;
     std::vector<DefNodeId>
         lostTypesN /* Потерянные типы нод */;
 
+    for(Pos::GlobalRegion regionPos : regionPoses)
     // Уменьшаем зависимости вокселей и нод
     {
         auto iterWorld = ResUses.RefChunk.find(worldId);
@@ -267,7 +273,7 @@ void RemoteClient::prepareRegionRemove(WorldId_t worldId, Pos::GlobalRegion regi
         for(const DefVoxelId& id : lostTypesV) {
             auto iter = ResUses.RefDefVoxel.find(id);
             assert(iter != ResUses.RefDefVoxel.end()); // Должны быть описаны зависимости вокселя
-            decrementBinary(std::move(iter->second));
+            decrementAssets(std::move(iter->second));
             ResUses.RefDefVoxel.erase(iter);
 
             checkPacketBorder(16);
@@ -281,7 +287,7 @@ void RemoteClient::prepareRegionRemove(WorldId_t worldId, Pos::GlobalRegion regi
         for(const DefNodeId& id : lostTypesN) {
             auto iter = ResUses.RefDefNode.find(id);
             assert(iter != ResUses.RefDefNode.end()); // Должны быть описаны зависимости ноды
-            decrementBinary(std::move(iter->second));
+            decrementAssets(std::move(iter->second));
             ResUses.RefDefNode.erase(iter);
 
             checkPacketBorder(16);
@@ -291,100 +297,107 @@ void RemoteClient::prepareRegionRemove(WorldId_t worldId, Pos::GlobalRegion regi
         }
     }
 
-    checkPacketBorder(16);
-    NextPacket << (uint8_t) ToClient::L1::Content
-        << (uint8_t) ToClient::L2Content::RemoveRegion
-        << worldId << regionPos.pack();
+
+    for(Pos::GlobalRegion regionPos : regionPoses) {
+        checkPacketBorder(16);
+        NextPacket << (uint8_t) ToClient::L1::Content
+            << (uint8_t) ToClient::L2Content::RemoveRegion
+            << worldId << regionPos.pack();
+    }
 }
 
-void RemoteClient::prepareEntityUpdate(ServerEntityId_t entityId, const Entity *entity)
+void RemoteClient::NetworkAndResource_t::prepareEntitiesUpdate(const std::vector<std::tuple<ServerEntityId_t, const Entity*>>& entities)
 {
-    // Сопоставим с идентификатором клиента
-    ClientEntityId_t ceId = ResRemap.Entityes.toClient(entityId);
+    for(auto& [entityId, entity] : entities) {
+        // Сопоставим с идентификатором клиента
+        ClientEntityId_t ceId = ReMapEntities.toClient(entityId);
 
-    // Профиль новый
-    {
-        DefEntityId_t profile = entity->getDefId();
-        auto iter = ResUses.DefEntity.find(profile);
-        if(iter == ResUses.DefEntity.end()) {
-            // Клиенту неизвестен профиль
-            NextRequest.Entity.push_back(profile);
-            ResUses.DefEntity[profile] = 1;
-        } else
-            iter->second++;
+        // Профиль новый
+        {
+            DefEntityId profile = entity->getDefId();
+            auto iter = ResUses.DefEntity.find(profile);
+            if(iter == ResUses.DefEntity.end()) {
+                // Клиенту неизвестен профиль
+                NextRequest.Entity.push_back(profile);
+                ResUses.DefEntity[profile] = 1;
+            } else
+                iter->second++;
+        }
+
+        // Добавление модификационных зависимостей
+        // incrementBinary({}, {}, {}, {}, {});
+
+        // Старые данные
+        {
+            auto iterEntity = ResUses.RefEntity.find(entityId);
+            if(iterEntity != ResUses.RefEntity.end()) {
+                // Убавляем зависимость к старому профилю
+                auto iterProfile = ResUses.DefEntity.find(iterEntity->second.Profile);
+                assert(iterProfile != ResUses.DefEntity.end()); // Старый профиль должен быть
+                if(--iterProfile->second == 0) {
+                    // Старый профиль больше не нужен
+                    auto iterProfileRef = ResUses.RefDefEntity.find(iterEntity->second.Profile);
+                    decrementAssets(std::move(iterProfileRef->second));
+                    ResUses.DefEntity.erase(iterProfile);
+                }
+
+                // Убавляем зависимость к модификационным данным
+                // iterEntity->second.
+                // decrementBinary({}, {}, {}, {}, {});
+            }
+        }
+
+        // TODO: отправить клиенту
     }
+}
 
-    // Добавление модификационных зависимостей
-    // incrementBinary({}, {}, {}, {}, {});
+void RemoteClient::NetworkAndResource_t::prepareEntitySwap(ServerEntityId_t prev, ServerEntityId_t next)
+{
+    ReMapEntities.rebindClientKey(prev, next);
+}
 
-    // Старые данные
-    {
-        auto iterEntity = ResUses.RefEntity.find(entityId);
-        if(iterEntity != ResUses.RefEntity.end()) {
-            // Убавляем зависимость к старому профилю
+void RemoteClient::NetworkAndResource_t::prepareEntitiesRemove(const std::vector<ServerEntityId_t>& entityIds)
+{
+    for(ServerEntityId_t entityId : entityIds) {
+        ClientEntityId_t cId = ReMapEntities.erase(entityId);
+
+        // Убавляем старые данные
+        {
+            auto iterEntity = ResUses.RefEntity.find(entityId);
+            assert(iterEntity != ResUses.RefEntity.end()); // Зависимости должны быть
+
+            // Убавляем модификационные заависимости
+            //decrementBinary(std::vector<BinTextureId_t> &&textures, std::vector<BinAnimationId_t> &&animation, std::vector<BinSoundId_t> &&sounds, std::vector<BinModelId_t> &&models, std::vector<BinFontId_t> &&fonts)
+            
+            // Убавляем зависимость к профилю
             auto iterProfile = ResUses.DefEntity.find(iterEntity->second.Profile);
-            assert(iterProfile != ResUses.DefEntity.end()); // Старый профиль должен быть
+            assert(iterProfile != ResUses.DefEntity.end()); // Профиль должен быть
             if(--iterProfile->second == 0) {
-                // Старый профиль больше не нужен
+                // Профиль больше не используется
                 auto iterProfileRef = ResUses.RefDefEntity.find(iterEntity->second.Profile);
-                decrementBinary(std::move(iterProfileRef->second));
+
+                decrementAssets(std::move(iterProfileRef->second));
+            
+                ResUses.RefDefEntity.erase(iterProfileRef);
                 ResUses.DefEntity.erase(iterProfile);
             }
-
-            // Убавляем зависимость к модификационным данным
-            // iterEntity->second.
-            // decrementBinary({}, {}, {}, {}, {});
         }
+
+        checkPacketBorder(16);
+        NextPacket << (uint8_t) ToClient::L1::Content
+            << (uint8_t) ToClient::L2Content::RemoveEntity
+            << cId;
     }
-
-    // TODO: отправить клиенту
 }
 
-void RemoteClient::prepareEntitySwap(ServerEntityId_t prev, ServerEntityId_t next)
-{
-    ResRemap.Entityes.rebindClientKey(prev, next);
-}
-
-void RemoteClient::prepareEntityRemove(ServerEntityId_t entityId)
-{
-    ClientEntityId_t cId = ResRemap.Entityes.erase(entityId);
-
-    // Убавляем старые данные
-    {
-        auto iterEntity = ResUses.RefEntity.find(entityId);
-        assert(iterEntity != ResUses.RefEntity.end()); // Зависимости должны быть
-
-        // Убавляем модификационные заависимости
-        //decrementBinary(std::vector<BinTextureId_t> &&textures, std::vector<BinAnimationId_t> &&animation, std::vector<BinSoundId_t> &&sounds, std::vector<BinModelId_t> &&models, std::vector<BinFontId_t> &&fonts)
-        
-        // Убавляем зависимость к профилю
-        auto iterProfile = ResUses.DefEntity.find(iterEntity->second.Profile);
-        assert(iterProfile != ResUses.DefEntity.end()); // Профиль должен быть
-        if(--iterProfile->second == 0) {
-            // Профиль больше не используется
-            auto iterProfileRef = ResUses.RefDefEntity.find(iterEntity->second.Profile);
-
-            decrementBinary(std::move(iterProfileRef->second));
-        
-            ResUses.RefDefEntity.erase(iterProfileRef);
-            ResUses.DefEntity.erase(iterProfile);
-        }
-    }
-
-    checkPacketBorder(16);
-    NextPacket << (uint8_t) ToClient::L1::Content
-        << (uint8_t) ToClient::L2Content::RemoveEntity
-        << cId;
-}
-
-void RemoteClient::prepareWorldUpdate(WorldId_t worldId, World* world)
+void RemoteClient::NetworkAndResource_t::prepareWorldUpdate(WorldId_t worldId, World* world)
 {
     // Добавление зависимостей
     ResUses.RefChunk[worldId];
 
     // Профиль
     {
-        DefWorldId_t defWorld = world->getDefId();
+        DefWorldId defWorld = world->getDefId();
         auto iterWorldProf = ResUses.DefWorld.find(defWorld);
         if(iterWorldProf == ResUses.DefWorld.end()) {
             // Профиль мира неизвестен клиенту
@@ -412,7 +425,7 @@ void RemoteClient::prepareWorldUpdate(WorldId_t worldId, World* world)
                 ResUses.DefWorld.erase(iterWorldProf);
                 auto iterWorldProfRef = ResUses.RefDefWorld.find(iterWorld->second.Profile);
                 assert(iterWorldProfRef != ResUses.RefDefWorld.end()); // Зависимости предыдущего профиля также должны быть
-                decrementBinary(std::move(iterWorldProfRef->second));
+                decrementAssets(std::move(iterWorldProfRef->second));
                 ResUses.RefDefWorld.erase(iterWorldProfRef);
             }
         }
@@ -424,7 +437,7 @@ void RemoteClient::prepareWorldUpdate(WorldId_t worldId, World* world)
     // TODO: отправить мир
 }
 
-void RemoteClient::prepareWorldRemove(WorldId_t worldId)
+void RemoteClient::NetworkAndResource_t::prepareWorldRemove(WorldId_t worldId)
 {
     // Чанки уже удалены prepareChunkRemove
     // Обновление зависимостей
@@ -442,7 +455,7 @@ void RemoteClient::prepareWorldRemove(WorldId_t worldId)
         // Убавляем зависимости профиля
         auto iterWorldProfDef = ResUses.RefDefWorld.find(iterWorld->second.Profile);
         assert(iterWorldProfDef != ResUses.RefDefWorld.end()); // Зависимости профиля должны быть
-        decrementBinary(std::move(iterWorldProfDef->second));
+        decrementAssets(std::move(iterWorldProfDef->second));
         ResUses.RefDefWorld.erase(iterWorldProfDef);
     }
 
@@ -453,80 +466,67 @@ void RemoteClient::prepareWorldRemove(WorldId_t worldId)
     ResUses.RefChunk.erase(iter);
 }
 
-void RemoteClient::preparePortalUpdate(PortalId_t portalId, void* portal) {}
-void RemoteClient::preparePortalRemove(PortalId_t portalId) {}
+// void RemoteClient::NetworkAndResource_t::preparePortalUpdate(PortalId portalId, void* portal) {}
+// void RemoteClient::NetworkAndResource_t::preparePortalRemove(PortalId portalId) {}
 
 void RemoteClient::prepareCameraSetEntity(ServerEntityId_t entityId) {
 
 }
 
 ResourceRequest RemoteClient::pushPreparedPackets() {
-    if(NextPacket.size())
-        SimplePackets.push_back(std::move(NextPacket));
+    std::vector<Net::Packet> toSend;
+    ResourceRequest nextRequest;
 
-    Socket.pushPackets(&SimplePackets);
-    SimplePackets.clear();
+    {
+        auto lock = NetworkAndResource.lock();
 
-    NextRequest.uniq();
+        if(lock->NextPacket.size())
+            lock->SimplePackets.push_back(std::move(lock->NextPacket));
 
-    return std::move(NextRequest);
-}
-
-void RemoteClient::informateBinary(const std::vector<std::shared_ptr<ResourceFile>>& resources) {
-    for(auto& resource : resources) {
-        auto &hash = resource->Hash;
-
-        auto iter = std::find(NeedToSend.begin(), NeedToSend.end(), hash);
-        if(iter == NeedToSend.end())
-            continue; // Клиенту не требуется этот ресурс
-
-        {
-            auto it = std::lower_bound(ClientBinaryCache.begin(), ClientBinaryCache.end(), hash);
-
-            if(it == ClientBinaryCache.end() || *it != hash)
-                ClientBinaryCache.insert(it, hash);
-        }
-
-        // Полная отправка ресурса
-        checkPacketBorder(2+4+32+4);
-        NextPacket << (uint8_t) ToClient::L1::Resource    // Принудительная полная отправка
-            << (uint8_t) ToClient::L2Resource::InitResSend
-            << uint32_t(resource->Data.size());
-        NextPacket.write((const std::byte*) hash.data(), hash.size());
-
-        NextPacket << uint32_t(resource->Data.size());
-
-        size_t pos = 0;
-        while(pos < resource->Data.size()) {
-            checkPacketBorder(0);
-            size_t need = std::min(resource->Data.size()-pos, std::min<size_t>(NextPacket.size(), 64000));
-            NextPacket.write((const std::byte*) resource->Data.data()+pos, need);
-            pos += need;
-        }
-        
+        toSend = std::move(lock->SimplePackets);
+        nextRequest = std::move(lock->NextRequest);
     }
+
+    Socket.pushPackets(&toSend);
+    toSend.clear();
+
+    nextRequest.uniq();
+
+    return std::move(nextRequest);
 }
 
-void RemoteClient::informateIdToHash(const std::unordered_map<ResourceId_t, ResourceFile::Hash_t>* resourcesLink) {
-    std::vector<std::tuple<EnumBinResource, ResourceId_t, Hash_t>> newForClient;
+void RemoteClient::informateAssets(const std::vector<std::tuple<EnumAssets, ResourceId, const std::string, const std::string, AssetsManager::Resource>>& resources)
+{
+    std::vector<std::tuple<EnumAssets, ResourceId, const std::string, const std::string, Hash_t>> newForClient;
 
-    for(int type = 0; type < (int) EnumBinResource::MAX_ENUM; type++) {
-        for(auto& [id, hash] : resourcesLink[type]) {
+    for(auto& [type, resId, domain, key, resource] : resources) {
+        auto hash = resource.hash();
+
+        // Проверка запрашиваемых клиентом ресурсов
+        {
+            auto iter = std::find(AssetsInWork.ClientRequested.begin(), AssetsInWork.ClientRequested.end(), hash);
+            if(iter != AssetsInWork.ClientRequested.end())
+            {
+                auto it = std::lower_bound(AssetsInWork.OnClient.begin(), AssetsInWork.OnClient.end(), hash);
+
+                if(it == AssetsInWork.OnClient.end() || *it != hash)
+                    AssetsInWork.OnClient.insert(it, hash);
+
+                AssetsInWork.ToSend.emplace_back(type, domain, key, resId, resource, 0);
+            }
+        }
+
+        auto lock = NetworkAndResource.lock();
+        // Информирование клиента о привязках ресурсов к идентификатору
+        {
             // Посмотрим что известно клиенту
-            auto iter = ResUses.BinUse[uint8_t(type)].find(id);
-            if(iter != ResUses.BinUse[uint8_t(type)].end()) {
-                if(std::get<1>(iter->second) != hash) {
-                    // Требуется перепривязать идентификатор к новому хешу
-                    newForClient.push_back({(EnumBinResource) type, id, hash});
-                    std::get<1>(iter->second) = hash;
-                    // Проверить есть ли хеш на стороне клиента
-                    if(!std::binary_search(ClientBinaryCache.begin(), ClientBinaryCache.end(), hash)) {
-                        NeedToSend.push_back(hash);
-                        NextRequest.Hashes.push_back(hash);
-                    }
-                }
-            } else {
-                // Ресурс не отслеживается клиентом
+            if(auto iter = lock->ResUses.AssetsUse[(int) type].find(resId); 
+                iter != lock->ResUses.AssetsUse[(int) type].end() 
+                && std::get<Hash_t>(iter->second) != hash
+            ) {
+                // Требуется перепривязать идентификатор к новому хешу
+                newForClient.push_back({(EnumAssets) type, resId, domain, key, hash});
+                std::get<Hash_t>(iter->second) = hash;
             }
         }
     }
@@ -534,19 +534,21 @@ void RemoteClient::informateIdToHash(const std::unordered_map<ResourceId_t, Reso
     // Отправляем новые привязки ресурсов
     if(!newForClient.empty()) {
         assert(newForClient.size() < 65535*4);
+        auto lock = NetworkAndResource.lock();
 
-        checkPacketBorder(2+4+newForClient.size()*(1+4+32));
-        NextPacket << (uint8_t) ToClient::L1::Resource    // Оповещение
+        lock->checkPacketBorder(2+4+newForClient.size()*(1+4+32));
+        lock->NextPacket << (uint8_t) ToClient::L1::Resource    // Оповещение
             << ((uint8_t) ToClient::L2Resource::Bind) << uint32_t(newForClient.size());
 
-        for(auto& [type, id, hash] : newForClient) {
-            NextPacket << uint8_t(type) << uint32_t(id);
-            NextPacket.write((const std::byte*) hash.data(), hash.size());
+        for(auto& [type, resId, domain, key, hash] : newForClient) {
+            // TODO: может внести ограничение на длину домена и ключа?
+            lock->NextPacket << uint8_t(type) << uint32_t(resId) << domain << key;
+            lock->NextPacket.write((const std::byte*) hash.data(), hash.size());
         }
     }
 }
 
-void RemoteClient::informateDefVoxel(const std::unordered_map<DefVoxelId, DefVoxel_t*> &voxels)
+void RemoteClient::NetworkAndResource_t::informateDefVoxel(const std::vector<std::pair<DefVoxelId, DefVoxel*>>& voxels)
 {
     for(auto pair : voxels) {
         DefVoxelId id = pair.first;
@@ -559,110 +561,104 @@ void RemoteClient::informateDefVoxel(const std::unordered_map<DefVoxelId, DefVox
     }
 }
 
-void RemoteClient::informateDefNode(const std::unordered_map<DefNodeId, DefNode_t*> &nodes)
+void RemoteClient::NetworkAndResource_t::informateDefNode(const std::vector<std::pair<DefNodeId, DefNode*>>& nodes)
 {
-    for(auto& [id, def] : nodes) {
-        if(!ResUses.DefNode.contains(id))
-            continue;
+    // for(auto& [id, def] : nodes) {
+    //     if(!ResUses.DefNode.contains(id))
+    //         continue;
         
-        size_t reserve = 0;
-        for(int iter = 0; iter < 6; iter++)
-            reserve += def->Texs[iter].Pipeline.size();
+    //     size_t reserve = 0;
+    //     for(int iter = 0; iter < 6; iter++)
+    //         reserve += def->Texs[iter].Pipeline.size();
 
-        checkPacketBorder(1+1+4+1+2*6+reserve);
-        NextPacket << (uint8_t) ToClient::L1::Definition
-            << (uint8_t) ToClient::L2Definition::Node
-            << id << (uint8_t) def->DrawType;
+    //     checkPacketBorder(1+1+4+1+2*6+reserve);
+    //     NextPacket << (uint8_t) ToClient::L1::Definition
+    //         << (uint8_t) ToClient::L2Definition::Node
+    //         << id << (uint8_t) def->DrawType;
 
-        for(int iter = 0; iter < 6; iter++) {
-            NextPacket << (uint16_t) def->Texs[iter].Pipeline.size();
-            NextPacket.write((const std::byte*) def->Texs[iter].Pipeline.data(), def->Texs[iter].Pipeline.size());
-        }
+    //     for(int iter = 0; iter < 6; iter++) {
+    //         NextPacket << (uint16_t) def->Texs[iter].Pipeline.size();
+    //         NextPacket.write((const std::byte*) def->Texs[iter].Pipeline.data(), def->Texs[iter].Pipeline.size());
+    //     }
 
-        ResUsesObj::RefDefBin_t refs;
-        {
-            auto &array = refs.Resources[(uint8_t) EnumBinResource::Texture];
-            for(int iter = 0; iter < 6; iter++) {
-                array.insert(array.end(), def->Texs[iter].BinTextures.begin(), def->Texs[iter].BinTextures.end());
-            }
+    //     ResUsesObj::RefDefBin_t refs;
+    //     {
+    //         auto &array = refs.Resources[(uint8_t) EnumBinResource::Texture];
+    //         for(int iter = 0; iter < 6; iter++) {
+    //             array.insert(array.end(), def->Texs[iter].BinTextures.begin(), def->Texs[iter].BinTextures.end());
+    //         }
 
-            std::sort(array.begin(), array.end());
-            auto eraseLast = std::unique(array.begin(), array.end());
-            array.erase(eraseLast, array.end());
+    //         std::sort(array.begin(), array.end());
+    //         auto eraseLast = std::unique(array.begin(), array.end());
+    //         array.erase(eraseLast, array.end());
 
-            incrementBinary(refs);
-        }
+    //         incrementBinary(refs);
+    //     }
 
         
-        {
-            auto iterDefRef = ResUses.RefDefNode.find(id);
-            if(iterDefRef != ResUses.RefDefNode.end()) {
-                decrementBinary(std::move(iterDefRef->second));
-                iterDefRef->second = std::move(refs);
-            } else {
-                ResUses.RefDefNode[id] = std::move(refs);
-            }
-        }
+    //     {
+    //         auto iterDefRef = ResUses.RefDefNode.find(id);
+    //         if(iterDefRef != ResUses.RefDefNode.end()) {
+    //             decrementBinary(std::move(iterDefRef->second));
+    //             iterDefRef->second = std::move(refs);
+    //         } else {
+    //             ResUses.RefDefNode[id] = std::move(refs);
+    //         }
+    //     }
 
-    }
+    // }
 }
 
-void RemoteClient::informateDefWorld(const std::unordered_map<DefWorldId_t, DefWorld_t*> &worlds)
+void RemoteClient::NetworkAndResource_t::informateDefWorld(const std::vector<std::pair<DefWorldId, DefWorld*>>& worlds)
 {
-    for(auto pair : worlds) {
-        DefWorldId_t id = pair.first;
-        if(!ResUses.DefWorld.contains(id))
-            continue;
+    // for(auto pair : worlds) {
+    //     DefWorldId_t id = pair.first;
+    //     if(!ResUses.DefWorld.contains(id))
+    //         continue;
 
-        NextPacket << (uint8_t) ToClient::L1::Definition
-            << (uint8_t) ToClient::L2Definition::World
-            << id;
-    }
+    //     NextPacket << (uint8_t) ToClient::L1::Definition
+    //         << (uint8_t) ToClient::L2Definition::World
+    //         << id;
+    // }
 }
 
-void RemoteClient::informateDefPortal(const std::unordered_map<DefPortalId_t, DefPortal_t*> &portals)
+void RemoteClient::NetworkAndResource_t::informateDefPortal(const std::vector<std::pair<DefPortalId, DefPortal*>>& portals)
 {
-    for(auto pair : portals) {
-        DefPortalId_t id = pair.first;
-        if(!ResUses.DefPortal.contains(id))
-            continue;
+    // for(auto pair : portals) {
+    //     DefPortalId_t id = pair.first;
+    //     if(!ResUses.DefPortal.contains(id))
+    //         continue;
 
-        NextPacket << (uint8_t) ToClient::L1::Definition
-            << (uint8_t) ToClient::L2Definition::Portal
-            << id;
-    }
+    //     NextPacket << (uint8_t) ToClient::L1::Definition
+    //         << (uint8_t) ToClient::L2Definition::Portal
+    //         << id;
+    // }
 }
 
-void RemoteClient::informateDefEntity(const std::unordered_map<DefEntityId_t, DefEntity_t*> &entityes)
+void RemoteClient::NetworkAndResource_t::informateDefEntity(const std::vector<std::pair<DefEntityId, DefEntity*>>& entityes)
 {
-    for(auto pair : entityes) {
-        DefEntityId_t id = pair.first;
-        if(!ResUses.DefEntity.contains(id))
-            continue;
+    // for(auto pair : entityes) {
+    //     DefEntityId_t id = pair.first;
+    //     if(!ResUses.DefEntity.contains(id))
+    //         continue;
 
-        NextPacket << (uint8_t) ToClient::L1::Definition
-            << (uint8_t) ToClient::L2Definition::Entity
-            << id;
-    }
+    //     NextPacket << (uint8_t) ToClient::L1::Definition
+    //         << (uint8_t) ToClient::L2Definition::Entity
+    //         << id;
+    // }
 }
 
-void RemoteClient::informateDefItem(const std::unordered_map<DefItemId_t, DefItem_t*> &items)
+void RemoteClient::NetworkAndResource_t::informateDefItem(const std::vector<std::pair<DefItemId, DefItem*>>& items)
 {
-    for(auto pair : items) {
-        DefItemId_t id = pair.first;
-        if(!ResUses.DefNode.contains(id))
-            continue;
+    // for(auto pair : items) {
+    //     DefItemId_t id = pair.first;
+    //     if(!ResUses.DefNode.contains(id))
+    //         continue;
 
-        NextPacket << (uint8_t) ToClient::L1::Definition
-            << (uint8_t) ToClient::L2Definition::FuncEntity
-            << id;
-    }
-}
-
-void RemoteClient::checkPacketBorder(uint16_t size) {
-    if(64000-NextPacket.size() < size || (NextPacket.size() != 0 && size == 0)) {
-        SimplePackets.push_back(std::move(NextPacket));
-    }
+    //     NextPacket << (uint8_t) ToClient::L1::Definition
+    //         << (uint8_t) ToClient::L2Definition::FuncEntity
+    //         << id;
+    // }
 }
 
 void RemoteClient::protocolError() {
@@ -725,31 +721,31 @@ coro<> RemoteClient::rP_System(Net::AsyncSocket &sock) {
     }
 }
 
-void RemoteClient::incrementBinary(const ResUsesObj::RefDefBin_t& bin) {
+void RemoteClient::NetworkAndResource_t::incrementAssets(const ResUses_t::RefAssets_t& bin) {
     for(int iter = 0; iter < 5; iter++) {
-        auto &use = ResUses.BinUse[iter];
+        auto &use = ResUses.AssetsUse[iter];
 
-        for(ResourceId_t id : bin.Resources[iter]) {
+        for(ResourceId id : bin.Resources[iter]) {
             if(++std::get<0>(use[id]) == 1) {
-                NextRequest.BinToHash[iter].push_back(id);
-                LOG.debug() << "Новое определение (тип " << iter << ") -> " << id;
+                NextRequest.AssetsInfo[iter].push_back(id);
+                // LOG.debug() << "Новое определение (тип " << iter << ") -> " << id;
             }
         }
     }
 }
 
-void RemoteClient::decrementBinary(ResUsesObj::RefDefBin_t&& bin) {
-    std::vector<std::tuple<EnumBinResource, ResourceId_t>> lost;
+void RemoteClient::NetworkAndResource_t::decrementAssets(ResUses_t::RefAssets_t&& bin) {
+    std::vector<std::tuple<EnumAssets, ResourceId>> lost;
 
-    for(int iter = 0; iter < 5; iter++) {
-        auto &use = ResUses.BinUse[iter];
+    for(int iter = 0; iter < (int) EnumAssets::MAX_ENUM; iter++) {
+        auto &use = ResUses.AssetsUse[iter];
 
-        for(ResourceId_t id : bin.Resources[iter]) {
+        for(ResourceId id : bin.Resources[iter]) {
             if(--std::get<0>(use[id]) == 0) {
                 use.erase(use.find(id));
 
-                lost.push_back({(EnumBinResource) iter, id});
-                LOG.debug() << "Потеряно определение (тип " << iter << ") -> " << id;
+                lost.push_back({(EnumAssets) iter, id});
+                // LOG.debug() << "Потеряно определение (тип " << iter << ") -> " << id;
             }
         }
     }
@@ -765,6 +761,14 @@ void RemoteClient::decrementBinary(ResUsesObj::RefDefBin_t&& bin) {
         for(auto& [type, id] : lost)
             NextPacket << uint8_t(type) << uint32_t(id);
     }
+}
+
+void RemoteClient::onUpdate() {
+
+}
+
+std::vector<std::tuple<WorldId_t, Pos::Object, uint8_t>> RemoteClient::getViewPoints() {
+    return {{0, CameraPos, 2}};
 }
 
 }

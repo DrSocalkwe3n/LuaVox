@@ -18,54 +18,62 @@ void ContentManager::registerBase_Node(ResourceId id, const sol::table& profile)
     DefNode& def = *node;
 
     {
-        std::variant<std::monostate, std::string, sol::table> parent = profile["parent"];
-        if(const sol::table* table = std::get_if<sol::table>(&parent)) {
-            // result = createNodeProfileByLua(*table);
-        } else if(const std::string* key = std::get_if<std::string>(&parent)) {
-            auto regResult = TOS::Str::match(*key, "(?:([\\w\\d_]+):)?([\\w\\d_]+)");
-            if(!regResult)
-                MAKE_ERROR("Недействительный ключ в определении parent");
+        std::optional<std::variant<std::string, sol::table>> parent = profile.get<std::optional<std::variant<std::string, sol::table>>>("parent");
+        if(parent) {
+            if(const sol::table* table = std::get_if<sol::table>(&*parent)) {
+                // result = createNodeProfileByLua(*table);
+            } else if(const std::string* key = std::get_if<std::string>(&*parent)) {
+                auto regResult = TOS::Str::match(*key, "(?:([\\w\\d_]+):)?([\\w\\d_]+)");
+                if(!regResult)
+                    MAKE_ERROR("Недействительный ключ в определении parent");
 
-            std::string realKey;
+                std::string realKey;
 
-            if(regResult->at(1)) {
-                realKey = *key;
-            } else {
-                realKey = "core:" + *regResult->at(2);
+                if(regResult->at(1)) {
+                    realKey = *key;
+                } else {
+                    realKey = "core:" + *regResult->at(2);
+                }
+
+                DefNodeId parentId;
+
+                // {
+                //     auto& list = Content.ContentKeyToId[(int) EnumDefContent::Node];
+                //     auto iter = list.find(realKey);
+                //     if(iter == list.end())
+                //         MAKE_ERROR("Идентификатор parent не найден");
+
+                //     parentId = iter->second;
+                // }
+
+                // result = Content.ContentIdToDef_Node.at(parentId);
             }
-
-            DefNodeId_t parentId;
-
-            // {
-            //     auto& list = Content.ContentKeyToId[(int) EnumDefContent::Node];
-            //     auto iter = list.find(realKey);
-            //     if(iter == list.end())
-            //         MAKE_ERROR("Идентификатор parent не найден");
-
-            //     parentId = iter->second;
-            // }
-
-            // result = Content.ContentIdToDef_Node.at(parentId);
         }
     }
 
     {
-        std::optional<sol::table> nodestate = profile["nodestate"];
+        std::optional<sol::table> nodestate = profile.get<std::optional<sol::table>>("nodestate");
     }
 
     {
-        std::optional<sol::table> render = profile["render"];
+        std::optional<sol::table> render = profile.get<std::optional<sol::table>>("render");
     }
 
     {
-        std::optional<sol::table> collision = profile["collision"];
+        std::optional<sol::table> collision = profile.get<std::optional<sol::table>>("collision");
     }
 
     {
-        std::optional<sol::table> events = profile["events"];
+        std::optional<sol::table> events = profile.get<std::optional<sol::table>>("events");
     }
 
     // result.NodeAdvancementFactory = profile["node_advancement_factory"];
+}
+
+void ContentManager::registerBase_World(ResourceId id, const sol::table& profile) {
+    std::optional<DefWorld>& world = getEntry_World(id);
+    if(!world)
+        world.emplace();
 }
 
 void ContentManager::registerBase(EnumDefContent type, const std::string& domain, const std::string& key, const sol::table& profile)
@@ -75,6 +83,8 @@ void ContentManager::registerBase(EnumDefContent type, const std::string& domain
 
     if(type == EnumDefContent::Node)
         registerBase_Node(id, profile);
+    else if(type == EnumDefContent::World)
+        registerBase_World(id, profile);
     else
         MAKE_ERROR("Не реализовано");
 }
@@ -105,6 +115,10 @@ ContentManager::Out_buildEndProfiles ContentManager::buildEndProfiles() {
         std::sort(keys.begin(), keys.end());
         auto iterErase = std::unique(keys.begin(), keys.end());
         keys.erase(iterErase, keys.end());
+    }
+
+    for(ResourceId id : ProfileChanges[(int) EnumDefContent::Voxel]) {
+
     }
 
     return result;

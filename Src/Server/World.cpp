@@ -6,7 +6,7 @@
 namespace LV::Server {
 
 
-World::World(DefWorldId_t defId)
+World::World(DefWorldId defId)
     : DefId(defId)
 {
 
@@ -16,7 +16,7 @@ World::~World() {
 
 }
 
-std::vector<Pos::GlobalRegion> World::onCEC_RegionsEnter(std::shared_ptr<ContentEventController> cec, const std::vector<Pos::GlobalRegion>& enter) {
+std::vector<Pos::GlobalRegion> World::onRemoteClient_RegionsEnter(std::shared_ptr<RemoteClient> cec, const std::vector<Pos::GlobalRegion>& enter) {
     std::vector<Pos::GlobalRegion> out;
 
     for(const Pos::GlobalRegion &pos : enter) {
@@ -27,8 +27,8 @@ std::vector<Pos::GlobalRegion> World::onCEC_RegionsEnter(std::shared_ptr<Content
         }
 
         auto &region = *iterRegion->second;
-        region.CECs.push_back(cec);
-        region.NewCECs.push_back(cec);
+        region.RMs.push_back(cec);
+        region.NewRMs.push_back(cec);
         // Отправить клиенту информацию о чанках и сущностях
         std::unordered_map<Pos::bvec4u, const std::vector<VoxelCube>*> voxels;
         std::unordered_map<Pos::bvec4u, const Node*> nodes;
@@ -49,13 +49,13 @@ std::vector<Pos::GlobalRegion> World::onCEC_RegionsEnter(std::shared_ptr<Content
     return out;
 }
 
-void World::onCEC_RegionsLost(std::shared_ptr<ContentEventController> cec, const std::vector<Pos::GlobalRegion> &lost) {
+void World::onRemoteClient_RegionsLost(std::shared_ptr<RemoteClient> cec, const std::vector<Pos::GlobalRegion> &lost) {
     for(const Pos::GlobalRegion &pos : lost) {
         auto region = Regions.find(pos);
         if(region == Regions.end())
             continue;
 
-        std::vector<std::shared_ptr<ContentEventController>> &CECs = region->second->CECs;
+        std::vector<std::shared_ptr<RemoteClient>> &CECs = region->second->RMs;
         for(size_t iter = 0; iter < CECs.size(); iter++) {
             if(CECs[iter] == cec) {
                 CECs.erase(CECs.begin()+iter);

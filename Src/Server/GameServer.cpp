@@ -4,6 +4,7 @@
 #include "Common/Packets.hpp"
 #include "Server/Abstract.hpp"
 #include "Server/AssetsManager.hpp"
+#include "Server/ContentManager.hpp"
 #include "Server/RemoteClient.hpp"
 #include <algorithm>
 #include <array>
@@ -546,14 +547,14 @@ void GameServer::BackingChunkPressure_t::run(int id) {
 
                     Dump dumpRegion;
 
-                    dumpRegion.CECs = regionObj.CECs;
+                    dumpRegion.CECs = regionObj.RMs;
                     dumpRegion.IsChunkChanged_Voxels = regionObj.IsChunkChanged_Voxels;
                     regionObj.IsChunkChanged_Voxels = 0;
                     dumpRegion.IsChunkChanged_Nodes = regionObj.IsChunkChanged_Nodes;
                     regionObj.IsChunkChanged_Nodes = 0;
                     
-                    if(!regionObj.NewCECs.empty()) {
-                        dumpRegion.NewCECs = std::move(regionObj.NewCECs);
+                    if(!regionObj.NewRMs.empty()) {
+                        dumpRegion.NewCECs = std::move(regionObj.NewRMs);
                         dumpRegion.Voxels = regionObj.Voxels;
 
                         for(int z = 0; z < 4; z++)
@@ -640,7 +641,7 @@ void GameServer::BackingChunkPressure_t::run(int id) {
                         Pos::GlobalChunk chunkPosR = (Pos::GlobalChunk(regionPos) << 2) + chunkPos;
 
                         for(auto& ptr : region.NewCECs) {
-                            bool accepted = ptr->Remote->maybe_prepareChunkUpdate_Voxels(worldId, 
+                            bool accepted = ptr->maybe_prepareChunkUpdate_Voxels(worldId, 
                                     chunkPosR, cmp.Compressed, cmp.Defines);
                             if(!accepted) {
                                 cecs.push_back(ptr.get());
@@ -660,7 +661,7 @@ void GameServer::BackingChunkPressure_t::run(int id) {
                                 if(skip)
                                     continue;
 
-                                bool accepted = ptr->Remote->maybe_prepareChunkUpdate_Voxels(worldId, 
+                                bool accepted = ptr->maybe_prepareChunkUpdate_Voxels(worldId, 
                                         chunkPosR, cmp.Compressed, cmp.Defines);
                                 if(!accepted) {
                                     cecs.push_back(ptr.get());
@@ -679,7 +680,7 @@ void GameServer::BackingChunkPressure_t::run(int id) {
                         Pos::GlobalChunk chunkPosR = (Pos::GlobalChunk(regionPos) << 2) + chunkPos;
 
                         for(auto& ptr : region.NewCECs) {
-                            bool accepted = ptr->Remote->maybe_prepareChunkUpdate_Nodes(worldId, 
+                            bool accepted = ptr->maybe_prepareChunkUpdate_Nodes(worldId, 
                                     chunkPosR, cmp.Compressed, cmp.Defines);
                             if(!accepted) {
                                 cecs.push_back(ptr.get());
@@ -699,7 +700,7 @@ void GameServer::BackingChunkPressure_t::run(int id) {
                                 if(skip)
                                     continue;
 
-                                bool accepted = ptr->Remote->maybe_prepareChunkUpdate_Nodes(worldId, 
+                                bool accepted = ptr->maybe_prepareChunkUpdate_Nodes(worldId, 
                                         chunkPosR, cmp.Compressed, cmp.Defines);
                                 if(!accepted) {
                                     cecs.push_back(ptr.get());
@@ -721,7 +722,7 @@ void GameServer::BackingChunkPressure_t::run(int id) {
                     while(begin != end) {
                         auto& [worldId, chunkPos, cmp] = begin->first;
                         for(RemoteClient* cec : begin->second) {
-                            bool accepted = cec->Remote->maybe_prepareChunkUpdate_Voxels(worldId, chunkPos, cmp.Compressed, cmp.Defines);
+                            bool accepted = cec->maybe_prepareChunkUpdate_Voxels(worldId, chunkPos, cmp.Compressed, cmp.Defines);
                             if(!accepted)
                                 cecs.push_back(cec);
                         }
@@ -741,7 +742,7 @@ void GameServer::BackingChunkPressure_t::run(int id) {
                     while(begin != end) {
                         auto& [worldId, chunkPos, cmp] = begin->first;
                         for(RemoteClient* cec : begin->second) {
-                            bool accepted = cec->Remote->maybe_prepareChunkUpdate_Nodes(worldId, chunkPos, cmp.Compressed, cmp.Defines);
+                            bool accepted = cec->maybe_prepareChunkUpdate_Nodes(worldId, chunkPos, cmp.Compressed, cmp.Defines);
                             if(!accepted)
                                 cecs.push_back(cec);
                         }
@@ -855,7 +856,7 @@ void GameServer::BackingAsyncLua_t::run(int id) {
                 for(int z = 0; z < 64; z++)
                     for(int y = 0; y < 64; y++)
                         for(int x = 0; x < 64; x++, ptr++) {
-                            DefVoxelId_t id = std::clamp(*ptr, 0.f, 1.f) * 3; //> 0.9 ? 1 : 0;
+                            DefVoxelId id = std::clamp(*ptr, 0.f, 1.f) * 3; //> 0.9 ? 1 : 0;
                             Pos::bvec64u nodePos(x, y, z);
                             auto &node = out.Nodes[Pos::bvec4u(nodePos >> 4).pack()][Pos::bvec16u(nodePos & 0xf).pack()];
                             node.NodeId = id;
@@ -1441,17 +1442,31 @@ void GameServer::init(fs::path worldPath) {
 
     initLuaAssets();
     pushEvent("initAssets");
-    for(ssize_t index = mlt.LoadChain.size(); index >= 0; index--) {
+    for(ssize_t index = mlt.LoadChain.size()-1; index >= 0; index--) {
         AssetsInit.Assets.push_back(mlt.LoadChain[index].Path / "assets");
     }
 
     Content.AM.applyResourceChange(Content.AM.recheckResources(AssetsInit));
 
     LOG.info() << "Пре Инициализация";
+
+    {
+        sol::table t = LuaMainState.create_table();
+        Content.CM.registerBase(EnumDefContent::Node, "core", "test0", t);
+        Content.CM.registerBase(EnumDefContent::Node, "core", "test1", t);
+        Content.CM.registerBase(EnumDefContent::Node, "core", "test2", t);
+        Content.CM.registerBase(EnumDefContent::Node, "core", "test3", t);
+        Content.CM.registerBase(EnumDefContent::Node, "core", "test4", t);
+        Content.CM.registerBase(EnumDefContent::Node, "core", "test5", t);
+        Content.CM.registerBase(EnumDefContent::World, "core", "devel_world", t);
+    }
+
     initLuaPre();
     pushEvent("lowPreInit");
 
     // TODO: регистрация контента из mod/content/*
+
+    Content.CM.buildEndProfiles();
 
     pushEvent("preInit");
     pushEvent("highPreInit");
@@ -1513,15 +1528,15 @@ void GameServer::run() {
 
         if(IsGoingShutdown) {
             // Отключить игроков
-            for(std::shared_ptr<RemoteClient> &cec : Game.CECs) {
-                cec->Remote->shutdown(EnumDisconnect::ByInterface, ShutdownReason);
+            for(std::shared_ptr<RemoteClient> &remoteClient : Game.RemoteClients) {
+                remoteClient->shutdown(EnumDisconnect::ByInterface, ShutdownReason);
             }
 
             {
                 // Отключить вновь подключившихся
                 auto lock = External.NewConnectedPlayers.lock_write();
 
-                for(std::unique_ptr<RemoteClient> &client : *lock) {
+                for(std::shared_ptr<RemoteClient> &client : *lock) {
                     client->shutdown(EnumDisconnect::ByInterface, ShutdownReason);
                 }
 
@@ -1578,7 +1593,7 @@ void GameServer::run() {
 
 void GameServer::initLuaAssets() {
     auto &lua = LuaMainState;
-    std::optional<sol::table> core = lua["core"];
+    std::optional<sol::table> core = lua.get<std::optional<sol::table>>("core");
     if(!core)
         core = lua.create_named_table("core");
 
@@ -1598,13 +1613,13 @@ void GameServer::initLuaAssets() {
             AssetsInit.Custom[(int) type][CurrentModId][*result[2]] = nullptr;
     };
 
-    core->set_function("register_nodestate",    std::bind(reg, EnumAssets::Nodestate, std::placeholders::_1, std::placeholders::_2));
-    core->set_function("register_particle",     std::bind(reg, EnumAssets::Patricle, std::placeholders::_1, std::placeholders::_2));
-    core->set_function("register_animation",    std::bind(reg, EnumAssets::Animation, std::placeholders::_1, std::placeholders::_2));
-    core->set_function("register_model",        std::bind(reg, EnumAssets::Model, std::placeholders::_1, std::placeholders::_2));
-    core->set_function("register_texture",      std::bind(reg, EnumAssets::Texture, std::placeholders::_1, std::placeholders::_2));
-    core->set_function("register_sound",        std::bind(reg, EnumAssets::Sound, std::placeholders::_1, std::placeholders::_2));
-    core->set_function("register_font",         std::bind(reg, EnumAssets::Font, std::placeholders::_1, std::placeholders::_2));
+    core->set_function("register_nodestate",    [&](const std::string& key, const sol::table& profile) { reg(EnumAssets::Nodestate, key, profile); });
+    core->set_function("register_particle",     [&](const std::string& key, const sol::table& profile) { reg(EnumAssets::Patricle, key, profile); });
+    core->set_function("register_animation",    [&](const std::string& key, const sol::table& profile) { reg(EnumAssets::Animation, key, profile); });
+    core->set_function("register_model",        [&](const std::string& key, const sol::table& profile) { reg(EnumAssets::Model, key, profile); });
+    core->set_function("register_texture",      [&](const std::string& key, const sol::table& profile) { reg(EnumAssets::Texture, key, profile); });
+    core->set_function("register_sound",        [&](const std::string& key, const sol::table& profile) { reg(EnumAssets::Sound, key, profile); });
+    core->set_function("register_font",         [&](const std::string& key, const sol::table& profile) { reg(EnumAssets::Font, key, profile); });
 }
 
 void GameServer::initLuaPre() {
@@ -1635,12 +1650,12 @@ void GameServer::initLuaPre() {
             Content.CM.registerBase(type, CurrentModId, *result[2], profile);
     };
 
-    core.set_function("register_voxel",    std::bind(reg, EnumDefContent::Voxel, std::placeholders::_1, std::placeholders::_2));
-    core.set_function("register_node",     std::bind(reg, EnumDefContent::Node, std::placeholders::_1, std::placeholders::_2));
-    core.set_function("register_world",    std::bind(reg, EnumDefContent::World, std::placeholders::_1, std::placeholders::_2));
-    core.set_function("register_portal",   std::bind(reg, EnumDefContent::Portal, std::placeholders::_1, std::placeholders::_2));
-    core.set_function("register_entity",   std::bind(reg, EnumDefContent::Entity, std::placeholders::_1, std::placeholders::_2));
-    core.set_function("register_item",     std::bind(reg, EnumDefContent::Item, std::placeholders::_1, std::placeholders::_2));
+    core.set_function("register_voxel",    [&](const std::string& key, const sol::table& profile) { reg(EnumDefContent::Voxel, key, profile); });
+    core.set_function("register_node",     [&](const std::string& key, const sol::table& profile) { reg(EnumDefContent::Node, key, profile); });
+    core.set_function("register_world",    [&](const std::string& key, const sol::table& profile) { reg(EnumDefContent::World, key, profile); });
+    core.set_function("register_portal",   [&](const std::string& key, const sol::table& profile) { reg(EnumDefContent::Portal, key, profile); });
+    core.set_function("register_entity",   [&](const std::string& key, const sol::table& profile) { reg(EnumDefContent::Entity, key, profile); });
+    core.set_function("register_item",     [&](const std::string& key, const sol::table& profile) { reg(EnumDefContent::Item, key, profile); });
 }
 
 void GameServer::initLua() {
@@ -1667,9 +1682,9 @@ void GameServer::stepConnections() {
     if(!External.NewConnectedPlayers.no_lock_readable().empty()) {
         auto lock = External.NewConnectedPlayers.lock_write();
 
-        for(std::unique_ptr<RemoteClient>& client : *lock) {
+        for(std::shared_ptr<RemoteClient>& client : *lock) {
             co_spawn(client->run());
-            Game.CECs.push_back(std::make_unique<RemoteClient>(std::move(client)));
+            Game.RemoteClients.push_back(client);
         }
 
         lock->clear();
@@ -1678,28 +1693,28 @@ void GameServer::stepConnections() {
     BackingChunkPressure.endCollectChanges();
 
     // Отключение игроков
-    for(std::shared_ptr<RemoteClient>& cec : Game.CECs) {
+    for(std::shared_ptr<RemoteClient>& cec : Game.RemoteClients) {
         // Убрать отключившихся
-        if(!cec->Remote->isConnected()) {
+        if(!cec->isConnected()) {
             // Отписываем наблюдателя от миров
             for(auto wPair : cec->ContentViewState.Regions) {
                 auto wIter = Expanse.Worlds.find(wPair.first);
                 assert(wIter != Expanse.Worlds.end());
 
-                wIter->second->onCEC_RegionsLost(cec, wPair.second);
+                wIter->second->onRemoteClient_RegionsLost(cec, wPair.second);
             }
 
-            std::string username = cec->Remote->Username;
+            std::string username = cec->Username;
             External.ConnectedPlayersSet.lock_write()->erase(username);
             
-            cec.reset();
+            cec = nullptr;
         }
     }
 
     // Вычистить невалидные ссылки на игроков
-    Game.CECs.erase(std::remove_if(Game.CECs.begin(), Game.CECs.end(),
+    Game.RemoteClients.erase(std::remove_if(Game.RemoteClients.begin(), Game.RemoteClients.end(),
             [](const std::shared_ptr<RemoteClient>& ptr) { return !ptr; }), 
-        Game.CECs.end());
+        Game.RemoteClients.end());
 }
 
 void GameServer::stepModInitializations() {
@@ -1709,44 +1724,56 @@ void GameServer::stepModInitializations() {
 IWorldSaveBackend::TickSyncInfo_Out GameServer::stepDatabaseSync() {
     IWorldSaveBackend::TickSyncInfo_In toDB;
     
-    for(std::shared_ptr<RemoteClient>& cec : Game.CECs) {
-        assert(cec);
+    for(std::shared_ptr<RemoteClient>& remoteClient : Game.RemoteClients) {
+        assert(remoteClient);
         // Пересчитать зоны наблюдения
-        if(cec->CrossedBorder) {
-            cec->CrossedBorder = false;
+        if(remoteClient->CrossedRegion) {
+            remoteClient->CrossedRegion = false;
             
             // Пересчёт зон наблюдения
-            ServerObjectPos oPos = cec->getPos();
+            std::vector<ContentViewCircle> newCVCs;
 
-            ContentViewCircle cvc;
-            cvc.WorldId = oPos.WorldId;
-            cvc.Pos = Pos::Object_t::asRegionsPos(oPos.ObjectPos);
-            cvc.Range = 2;
+            {
+                std::vector<std::tuple<WorldId_t, Pos::Object, uint8_t>> points = remoteClient->getViewPoints();
+                for(auto& [wId, pos, radius] : points) {
+                    assert(radius < 5);
+                    ContentViewCircle cvc;
+                    cvc.WorldId = wId;
+                    cvc.Pos = Pos::Object_t::asRegionsPos(pos);
+                    cvc.Range = radius*radius;
 
-            std::vector<ContentViewCircle> newCVCs = Expanse.accumulateContentViewCircles(cvc);
+                    std::vector<ContentViewCircle> list = Expanse.accumulateContentViewCircles(cvc);
+                    newCVCs.insert(newCVCs.end(), list.begin(), list.end());
+                }
+            }
+
             ContentViewInfo newCbg = Expanse_t::makeContentViewInfo(newCVCs);
 
-            ContentViewInfo_Diff diff = newCbg.diffWith(cec->ContentViewState);
+            ContentViewInfo_Diff diff = newCbg.diffWith(remoteClient->ContentViewState);
             if(!diff.WorldsNew.empty()) {
                 // Сообщить о новых мирах
                 for(const WorldId_t id : diff.WorldsNew) {
                     auto iter = Expanse.Worlds.find(id);
                     assert(iter != Expanse.Worlds.end());
 
-                    cec->onWorldUpdate(id, iter->second.get());
+                    remoteClient->prepareWorldUpdate(id, iter->second.get());
                 }
             }
 
-            cec->ContentViewState = newCbg;
+            remoteClient->ContentViewState = newCbg;
             // Вычистка не наблюдаемых регионов
-            cec->removeUnobservable(diff);
+            for(const auto& [worldId, regions] : diff.RegionsLost)
+                remoteClient->prepareRegionsRemove(worldId, regions);
+            // и миров
+            for(const WorldId_t worldId : diff.WorldsLost)
+                remoteClient->prepareWorldRemove(worldId);
 
             // Подписываем игрока на наблюдение за регионами
             for(const auto& [worldId, regions] : diff.RegionsNew) {
                 auto iterWorld = Expanse.Worlds.find(worldId);
                 assert(iterWorld != Expanse.Worlds.end());
 
-                std::vector<Pos::GlobalRegion> notLoaded = iterWorld->second->onCEC_RegionsEnter(cec, regions);
+                std::vector<Pos::GlobalRegion> notLoaded = iterWorld->second->onRemoteClient_RegionsEnter(remoteClient, regions);
                 if(!notLoaded.empty()) {
                     // Добавляем к списку на загрузку
                     std::vector<Pos::GlobalRegion> &tl = toDB.Load[worldId];
@@ -1759,7 +1786,7 @@ IWorldSaveBackend::TickSyncInfo_Out GameServer::stepDatabaseSync() {
                 auto iterWorld = Expanse.Worlds.find(worldId);
                 assert(iterWorld != Expanse.Worlds.end());
 
-                iterWorld->second->onCEC_RegionsLost(cec, regions);
+                iterWorld->second->onRemoteClient_RegionsLost(remoteClient, regions);
             }
         }
     }
@@ -1855,20 +1882,20 @@ void GameServer::stepGeneratorAndLuaAsync(IWorldSaveBackend::TickSyncInfo_Out db
 
         std::unordered_map<std::shared_ptr<RemoteClient>, std::vector<Pos::GlobalRegion>> toSubscribe;
         
-        for(auto& cec : Game.CECs) {
-            auto iterViewWorld = cec->ContentViewState.Regions.find(worldId);
-            if(iterViewWorld == cec->ContentViewState.Regions.end())
+        for(auto& remoteClient : Game.RemoteClients) {
+            auto iterViewWorld = remoteClient->ContentViewState.Regions.find(worldId);
+            if(iterViewWorld == remoteClient->ContentViewState.Regions.end())
                 continue;
 
             for(auto& pos : iterViewWorld->second) {
                 if(std::binary_search(newRegions.begin(), newRegions.end(), pos))
-                    toSubscribe[cec].push_back(pos);
+                    toSubscribe[remoteClient].push_back(pos);
             }
         }
 
         iterWorld->second->pushRegions(std::move(regions));
         for(auto& [cec, poses] : toSubscribe) {
-            iterWorld->second->onCEC_RegionsEnter(cec, poses);
+            iterWorld->second->onRemoteClient_RegionsEnter(cec, poses);
         }
     }
 }
@@ -2324,158 +2351,125 @@ void GameServer::stepGlobalStep() {
 }
 
 void GameServer::stepSyncContent() {
-    for(std::shared_ptr<RemoteClient>& cec : Game.CECs) {
-        cec->onUpdate();
+    for(std::shared_ptr<RemoteClient>& remoteClient : Game.RemoteClients) {
+        remoteClient->onUpdate();
 
         // Это для пробы строительства и ломания нод
-        while(!cec->Build.empty()) {
-            Pos::GlobalNode node = cec->Build.front();
-            cec->Build.pop();
+        // while(!cec->Build.empty()) {
+        //     Pos::GlobalNode node = cec->Build.front();
+        //     cec->Build.pop();
 
-            Pos::GlobalRegion rPos = node >> 6;
-            Pos::bvec4u cPos = (node >> 4) & 0x3;
-            Pos::bvec16u nPos = node & 0xf;
+        //     Pos::GlobalRegion rPos = node >> 6;
+        //     Pos::bvec4u cPos = (node >> 4) & 0x3;
+        //     Pos::bvec16u nPos = node & 0xf;
 
-            auto &region = Expanse.Worlds[0]->Regions[rPos];
-            region->Nodes[cPos.pack()][nPos.pack()].NodeId = 4;
-            region->IsChunkChanged_Nodes |= 1ull << cPos.pack();
-        }
+        //     auto &region = Expanse.Worlds[0]->Regions[rPos];
+        //     region->Nodes[cPos.pack()][nPos.pack()].NodeId = 4;
+        //     region->IsChunkChanged_Nodes |= 1ull << cPos.pack();
+        // }
 
-        while(!cec->Break.empty()) {
-            Pos::GlobalNode node = cec->Break.front();
-            cec->Break.pop();
+        // while(!cec->Break.empty()) {
+        //     Pos::GlobalNode node = cec->Break.front();
+        //     cec->Break.pop();
 
-            Pos::GlobalRegion rPos = node >> 6;
-            Pos::bvec4u cPos = (node >> 4) & 0x3;
-            Pos::bvec16u nPos = node & 0xf;
+        //     Pos::GlobalRegion rPos = node >> 6;
+        //     Pos::bvec4u cPos = (node >> 4) & 0x3;
+        //     Pos::bvec16u nPos = node & 0xf;
 
-            auto &region = Expanse.Worlds[0]->Regions[rPos];
-            region->Nodes[cPos.pack()][nPos.pack()].NodeId = 0;
-            region->IsChunkChanged_Nodes |= 1ull << cPos.pack();
-        }
+        //     auto &region = Expanse.Worlds[0]->Regions[rPos];
+        //     region->Nodes[cPos.pack()][nPos.pack()].NodeId = 0;
+        //     region->IsChunkChanged_Nodes |= 1ull << cPos.pack();
+        // }
     }
 
 
     // Сбор запросов на ресурсы и профили + отправка пакетов игрокам
     ResourceRequest full = std::move(Content.OnContentChanges);
-    for(std::shared_ptr<RemoteClient>& cec : Game.CECs) {
-        full.insert(cec->Remote->pushPreparedPackets());
+    for(std::shared_ptr<RemoteClient>& cec : Game.RemoteClients) {
+        full.insert(cec->pushPreparedPackets());
     }
 
-
     full.uniq();
-    // Запрашиваем двоичные ресурсы
-    // Content.BRM.needResourceResponse(full);
-    // Content.BRM.update(CurrentTickDuration);
-    // Получаем готовую информацию
-    // {
-    //     BinaryResourceManager::OutObj_t out = Content.BRM.takePreparedInformation();
-    //     bool hasData = false;
-    //     for(int iter = 0; iter < (int) EnumBinResource::MAX_ENUM; iter++)
-    //         hasData |= !out.BinToHash[iter].empty();
 
-    //     if(hasData) {
-    //         for(std::shared_ptr<RemoteClient>& cec : Game.CECs) {
-    //             cec->Remote->informateIdToHash(out.BinToHash);
-    //         }
-    //     }
+    // Информируем о запрошенных ассетах
+    std::vector<std::tuple<EnumAssets, ResourceId, const std::string, const std::string, AssetsManager::Resource>> resources;
+    for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++) {
+        for(ResourceId resId : full.AssetsInfo[type]) {
+            std::optional<std::tuple<AssetsManager::Resource, const std::string&, const std::string&>> result = Content.AM.getResource((EnumAssets) type, resId);
+            if(!result)
+                continue;
 
-    //     if(!out.HashToResource.empty())
-    //         for(std::shared_ptr<RemoteClient>& cec : Game.CECs) {
-    //             cec->Remote->informateBinary(out.HashToResource);
-    //         }
-    // }
+            auto& [resource, domain, key] = *result;
+            resources.emplace_back((EnumAssets) type, resId, domain, key, resource);
+        }
+        
+    }
 
-    // Оповещаем об игровых профилях
-    // if(!full.Voxel.empty()) {
-    //     std::unordered_map<DefVoxelId_t, DefVoxel_t*> defines;
+    // Информируем о запрошенных профилях
+    std::vector<std::pair<DefVoxelId, DefVoxel*>> voxels;
+    for(DefVoxelId id : full.Voxel) {
+        auto value = Content.CM.getProfile_Voxel(id);
+        if(!value)
+            continue;
 
-    //     for(DefVoxelId_t id : full.Node) {
-    //         auto iter = Content.ContentIdToDef_Voxel.find(id);
-    //         if(iter != Content.ContentIdToDef_Voxel.end()) {
-    //             defines[id] = &iter->second;
-    //         }
-    //     }
+        voxels.emplace_back(id, *value);
+    }
 
-    //     for(std::shared_ptr<RemoteClient>& cec : Game.CECs) {
-    //         cec->Remote->informateDefVoxel(defines);
-    //     }
-    // }
+    std::vector<std::pair<DefNodeId, DefNode*>> nodes;
+    for(DefNodeId id : full.Node) {
+        auto value = Content.CM.getProfile_Node(id);
+        if(!value)
+            continue;
 
-    // if(!full.Node.empty()) {
-    //     std::unordered_map<DefNodeId_t, DefNode_t*> defines;
+        nodes.emplace_back(id, *value);
+    }
 
-    //     for(DefNodeId_t id : full.Node) {
-    //         auto iter = Content.ContentIdToDef_Node.find(id);
-    //         if(iter != Content.ContentIdToDef_Node.end()) {
-    //             defines[id] = &iter->second;
-    //         }
-    //     }
+    std::vector<std::pair<DefWorldId, DefWorld*>> worlds;
+    for(DefWorldId id : full.World) {
+        auto value = Content.CM.getProfile_World(id);
+        if(!value)
+            continue;
 
-    //     for(std::shared_ptr<RemoteClient>& cec : Game.CECs) {
-    //         cec->Remote->informateDefNode(defines);
-    //     }
-    // }
+        worlds.emplace_back(id, *value);
+    }
 
-    // if(!full.World.empty()) {
-    //     std::unordered_map<DefWorldId_t, DefWorld_t*> defines;
+    std::vector<std::pair<DefPortalId, DefPortal*>> portals;
+    for(DefPortalId id : full.Portal) {
+        auto value = Content.CM.getProfile_Portal(id);
+        if(!value)
+            continue;
 
-    //     for(DefWorldId_t id : full.Node) {
-    //         auto iter = Content.ContentIdToDef_World.find(id);
-    //         if(iter != Content.ContentIdToDef_World.end()) {
-    //             defines[id] = &iter->second;
-    //         }
-    //     }
+        portals.emplace_back(id, *value);
+    }
 
-    //     for(std::shared_ptr<RemoteClient>& cec : Game.CECs) {
-    //         cec->Remote->informateDefWorld(defines);
-    //     }
-    // }
+    std::vector<std::pair<DefEntityId, DefEntity*>> entities;
+    for(DefEntityId id : full.Entity) {
+        auto value = Content.CM.getProfile_Entity(id);
+        if(!value)
+            continue;
 
-    // if(!full.Portal.empty()) {
-    //     std::unordered_map<DefPortalId_t, DefPortal_t*> defines;
+        entities.emplace_back(id, *value);
+    }
 
-    //     for(DefPortalId_t id : full.Node) {
-    //         auto iter = Content.ContentIdToDef_Portal.find(id);
-    //         if(iter != Content.ContentIdToDef_Portal.end()) {
-    //             defines[id] = &iter->second;
-    //         }
-    //     }
+    std::vector<std::pair<DefItemId, DefItem*>> items;
+    for(DefItemId id : full.Item) {
+        auto value = Content.CM.getProfile_Item(id);
+        if(!value)
+            continue;
 
-    //     for(std::shared_ptr<RemoteClient>& cec : Game.CECs) {
-    //         cec->Remote->informateDefPortal(defines);
-    //     }
-    // }
+        items.emplace_back(id, *value);
+    }
 
-    // if(!full.Entity.empty()) {
-    //     std::unordered_map<DefEntityId_t, DefEntity_t*> defines;
+    for(std::shared_ptr<RemoteClient>& remoteClient : Game.RemoteClients) {
+        remoteClient->informateAssets(resources);
+        remoteClient->informateDefVoxel(voxels);
+        remoteClient->informateDefNode(nodes);
+        remoteClient->informateDefWorld(worlds);
+        remoteClient->informateDefPortal(portals);
+        remoteClient->informateDefEntity(entities);
+        remoteClient->informateDefItem(items);
+    }
 
-    //     for(DefEntityId_t id : full.Node) {
-    //         auto iter = Content.ContentIdToDef_Entity.find(id);
-    //         if(iter != Content.ContentIdToDef_Entity.end()) {
-    //             defines[id] = &iter->second;
-    //         }
-    //     }
-
-    //     for(std::shared_ptr<RemoteClient>& cec : Game.CECs) {
-    //         cec->Remote->informateDefEntity(defines);
-    //     }
-    // }
-
-    // if(!full.Item.empty()) {
-    //     std::unordered_map<DefItemId_t, DefItem_t*> defines;
-
-    //     for(DefItemId_t id : full.Node) {
-    //         auto iter = Content.ContentIdToDef_Item.find(id);
-    //         if(iter != Content.ContentIdToDef_Item.end()) {
-    //             defines[id] = &iter->second;
-    //         }
-    //     }
-
-    //     for(std::shared_ptr<RemoteClient>& cec : Game.CECs) {
-    //         cec->Remote->informateDefItem(defines);
-    //     }
-    // }
 
     BackingChunkPressure.startCollectChanges();
 }

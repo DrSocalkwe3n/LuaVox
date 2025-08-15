@@ -96,9 +96,9 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
 
         struct ChunkObj_t {
             // Сортированный список уникальных значений
-            std::vector<DefVoxelId_t> VoxelDefines;
+            std::vector<DefVoxelId> VoxelDefines;
             VertexPool<VoxelVertexPoint>::Pointer VoxelPointer;
-            std::vector<DefNodeId_t> NodeDefines;
+            std::vector<DefNodeId> NodeDefines;
             VertexPool<NodeVertexStatic>::Pointer NodePointer;
         };
 
@@ -129,7 +129,7 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
 
         // Сюда входят добавленные/изменённые/удалённые определения нод и вокселей
         // Чтобы перерисовать чанки, связанные с ними
-        void onContentDefinesChange(const std::vector<DefVoxelId_t>& voxels, const std::vector<DefNodeId_t>& nodes) {
+        void onContentDefinesChange(const std::vector<DefVoxelId>& voxels, const std::vector<DefNodeId>& nodes) {
             ChangedDefines_Voxel.insert(ChangedDefines_Voxel.end(), voxels.begin(), voxels.end());
             ChangedDefines_Node.insert(ChangedDefines_Node.end(), nodes.begin(), nodes.end());
         }
@@ -239,8 +239,8 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
         VertexPool<VoxelVertexPoint> VertexPool_Voxels;
         VertexPool<NodeVertexStatic> VertexPool_Nodes;
         // Списки изменённых определений
-        std::vector<DefVoxelId_t> ChangedDefines_Voxel;
-        std::vector<DefNodeId_t> ChangedDefines_Node;
+        std::vector<DefVoxelId> ChangedDefines_Voxel;
+        std::vector<DefNodeId> ChangedDefines_Node;
         // Список чанков на перерисовку
         std::unordered_map<WorldId_t, std::vector<Pos::GlobalChunk>> ChangedContent_Chunk; 
         std::unordered_map<WorldId_t, std::vector<Pos::GlobalRegion>> ChangedContent_RegionRemove;
@@ -315,7 +315,7 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
         NodeStaticOpaquePipeline = VK_NULL_HANDLE,
         NodeStaticTransparentPipeline = VK_NULL_HANDLE;
 
-    std::map<BinTextureId_t, uint16_t> ServerToAtlas;
+    std::map<AssetsTexture, uint16_t> ServerToAtlas;
 
     struct {
     } External;
@@ -338,8 +338,8 @@ public:
     }
 
     virtual void onBinaryResourceAdd(std::vector<Hash_t>) override;
-    virtual void onContentDefinesAdd(std::unordered_map<EnumDefContent, std::vector<ResourceId_t>>) override;
-    virtual void onContentDefinesLost(std::unordered_map<EnumDefContent, std::vector<ResourceId_t>>) override;
+    virtual void onContentDefinesAdd(std::unordered_map<EnumDefContent, std::vector<ResourceId>>) override;
+    virtual void onContentDefinesLost(std::unordered_map<EnumDefContent, std::vector<ResourceId>>) override;
     virtual void onChunksChange(WorldId_t worldId, const std::unordered_set<Pos::GlobalChunk>& changeOrAddList, const std::unordered_set<Pos::GlobalRegion>& remove) override;
     virtual void setCameraPos(WorldId_t worldId, Pos::Object pos, glm::quat quat) override;
 

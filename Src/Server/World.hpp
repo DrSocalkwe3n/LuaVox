@@ -2,6 +2,7 @@
 
 #include "Common/Abstract.hpp"
 #include "Server/Abstract.hpp"
+#include "Server/RemoteClient.hpp"
 #include "Server/SaveBackend.hpp"
 #include <memory>
 #include <unordered_map>
@@ -24,10 +25,7 @@ public:
     std::array<std::array<Node, 16*16*16>, 4*4*4> Nodes;
 
     std::vector<Entity> Entityes;
-    std::vector<std::shared_ptr<ContentEventController>> CECs, NewCECs;
-    // Используется для прорежения количества проверок на наблюдаемые чанки и сущности
-    // В одно обновление региона - проверка одного наблюдателя
-    uint16_t CEC_NextChunkAndEntityesViewCheck = 0;
+    std::vector<std::shared_ptr<RemoteClient>> RMs, NewRMs;
 
     float LastSaveTime = 0;
 
@@ -134,13 +132,13 @@ public:
 };
 
 class World {
-    DefWorldId_t DefId;
+    DefWorldId DefId;
 
 public:
     std::unordered_map<Pos::GlobalRegion, std::unique_ptr<Region>> Regions;
 
 public:
-    World(DefWorldId_t defId);
+    World(DefWorldId defId);
     ~World();
 
     /*
@@ -148,8 +146,8 @@ public:
         Возвращает список не загруженных регионов, на которые соответственно игрока не получилось подписать
         При подписи происходит отправка всех чанков и сущностей региона
     */
-    std::vector<Pos::GlobalRegion> onCEC_RegionsEnter(std::shared_ptr<ContentEventController> cec, const std::vector<Pos::GlobalRegion> &enter);
-    void onCEC_RegionsLost(std::shared_ptr<ContentEventController> cec, const std::vector<Pos::GlobalRegion>& lost); 
+    std::vector<Pos::GlobalRegion> onRemoteClient_RegionsEnter(std::shared_ptr<RemoteClient> cec, const std::vector<Pos::GlobalRegion> &enter);
+    void onRemoteClient_RegionsLost(std::shared_ptr<RemoteClient> cec, const std::vector<Pos::GlobalRegion>& lost); 
     struct SaveUnloadInfo {
         std::vector<Pos::GlobalRegion> ToUnload;
         std::vector<std::pair<Pos::GlobalRegion, SB_Region_In>> ToSave;
@@ -173,7 +171,7 @@ public:
 
     */
 
-    DefWorldId_t getDefId() const { return DefId; }
+    DefWorldId getDefId() const { return DefId; }
 };
 
 

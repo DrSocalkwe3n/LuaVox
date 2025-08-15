@@ -51,38 +51,38 @@ struct PP_Content_RegionRemove : public ParsedPacket {
 };
 
 struct PP_Definition_Voxel : public ParsedPacket {
-    DefVoxelId_t Id;
+    DefVoxelId Id;
     DefVoxel_t Def;
 
-    PP_Definition_Voxel(DefVoxelId_t id, DefVoxel_t def)
+    PP_Definition_Voxel(DefVoxelId id, DefVoxel_t def)
         : ParsedPacket(ToClient::L1::Definition, (uint8_t) ToClient::L2Definition::Voxel), 
             Id(id), Def(def)
     {}
 };
 
 struct PP_Definition_FreeVoxel : public ParsedPacket {
-    DefVoxelId_t Id;
+    DefVoxelId Id;
 
-    PP_Definition_FreeVoxel(DefVoxelId_t id)
+    PP_Definition_FreeVoxel(DefVoxelId id)
         : ParsedPacket(ToClient::L1::Definition, (uint8_t) ToClient::L2Definition::FreeVoxel), 
             Id(id)
     {}
 };
 
 struct PP_Definition_Node : public ParsedPacket {
-    DefNodeId_t Id;
+    DefNodeId Id;
     DefNode_t Def;
 
-    PP_Definition_Node(DefNodeId_t id, DefNode_t def)
+    PP_Definition_Node(DefNodeId id, DefNode_t def)
         : ParsedPacket(ToClient::L1::Definition, (uint8_t) ToClient::L2Definition::Node), 
             Id(id), Def(def)
     {}
 };
 
 struct PP_Definition_FreeNode : public ParsedPacket {
-    DefNodeId_t Id;
+    DefNodeId Id;
 
-    PP_Definition_FreeNode(DefNodeId_t id)
+    PP_Definition_FreeNode(DefNodeId id)
         : ParsedPacket(ToClient::L1::Definition, (uint8_t) ToClient::L2Definition::FreeNode), 
             Id(id)
     {}
@@ -331,8 +331,8 @@ void ServerSession::atFreeDrawTime(GlobalTime gTime, float dTime) {
 
     {
         std::unordered_map<WorldId_t, std::tuple<std::unordered_set<Pos::GlobalChunk>, std::unordered_set<Pos::GlobalRegion>>> changeOrAddList_removeList;
-        std::unordered_map<EnumDefContent, std::vector<ResourceId_t>> onContentDefinesAdd;
-        std::unordered_map<EnumDefContent, std::vector<ResourceId_t>> onContentDefinesLost;
+        std::unordered_map<EnumDefContent, std::vector<ResourceId>> onContentDefinesAdd;
+        std::unordered_map<EnumDefContent, std::vector<ResourceId>> onContentDefinesLost;
 
         // Пакеты
         ParsedPacket *pack;
@@ -601,30 +601,30 @@ coro<> ServerSession::rP_Definition(Net::AsyncSocket &sock) {
 
     switch((ToClient::L2Definition) second) {
     case ToClient::L2Definition::World: {
-        DefWorldId_t cdId = co_await sock.read<DefWorldId_t>();
+        DefWorldId cdId = co_await sock.read<DefWorldId>();
 
         co_return;
     }
     case ToClient::L2Definition::FreeWorld: {
-        DefWorldId_t cdId = co_await sock.read<DefWorldId_t>();
+        DefWorldId cdId = co_await sock.read<DefWorldId>();
 
         co_return;
     }
     case ToClient::L2Definition::Voxel: {
-        DefVoxelId_t cdId = co_await sock.read<DefVoxelId_t>();
+        DefVoxelId cdId = co_await sock.read<DefVoxelId>();
 
         co_return;
     }
     case ToClient::L2Definition::FreeVoxel: {
-        DefVoxelId_t cdId = co_await sock.read<DefVoxelId_t>();
+        DefVoxelId cdId = co_await sock.read<DefVoxelId>();
     
         co_return;
     }
     case ToClient::L2Definition::Node:
     {
-        DefNodeId_t id;
+        DefNodeId id;
         DefNode_t def;
-        id = co_await sock.read<DefNodeId_t>();
+        id = co_await sock.read<DefNodeId>();
         def.DrawType = (DefNode_t::EnumDrawType) co_await sock.read<uint8_t>();
         for(int iter = 0; iter < 6; iter++) {
             auto &pl = def.Texs[iter].Pipeline;
@@ -643,7 +643,7 @@ coro<> ServerSession::rP_Definition(Net::AsyncSocket &sock) {
     }
     case ToClient::L2Definition::FreeNode:
     {
-        DefNodeId_t id = co_await sock.read<DefNodeId_t>();
+        DefNodeId id = co_await sock.read<DefNodeId>();
     
         PP_Definition_FreeNode *packet = new PP_Definition_FreeNode(
             id

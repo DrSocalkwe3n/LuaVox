@@ -210,7 +210,8 @@ class RemoteClient {
     struct NetworkAndResource_t {
         struct ResUses_t {
             // Счётчики использования двоичных кэшируемых ресурсов + хэш привязанный к идентификатору
-            std::map<ResourceId,      uint32_t>      AssetsUse[(int) EnumAssets::MAX_ENUM];
+            // Хэш используется для того, чтобы исключить повторные объявления неизменившихся ресурсов
+            std::map<ResourceId,      std::pair<uint32_t, Hash_t>>      AssetsUse[(int) EnumAssets::MAX_ENUM];
 
             // Зависимость профилей контента от профилей ресурсов
             // Нужно чтобы пересчитать зависимости к профилям ресурсов
@@ -260,9 +261,6 @@ class RemoteClient {
                 RefAssets_t Assets;
             };
             std::map<ServerEntityId_t, RefEntity_t> RefEntity;
-
-            void incrementBinary(const RefAssets_t& bin);
-            void decrementBinary(RefAssets_t&& bin);
         } ResUses;
 
         // Смена идентификаторов сервера на клиентские
@@ -271,8 +269,34 @@ class RemoteClient {
         // Запрос информации об ассетах и профилях контента
         ResourceRequest NextRequest;
 
+        void incrementAssets(const ResUses_t::RefAssets_t& bin);
+        void decrementAssets(ResUses_t::RefAssets_t&& bin);
+
         Net::Packet NextPacket;
         std::vector<Net::Packet> SimplePackets;
+        void checkPacketBorder(uint16_t size) {
+            if(64000-NextPacket.size() < size || (NextPacket.size() != 0 && size == 0)) {
+                SimplePackets.push_back(std::move(NextPacket));
+            }
+        }
+
+        void prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_voxels,
+            const std::vector<DefVoxelId>& uniq_sorted_defines);
+        void prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_nodes,
+            const std::vector<DefNodeId>& uniq_sorted_defines);
+        void prepareEntitiesRemove(const std::vector<ServerEntityId_t>& entityId);
+        void prepareRegionsRemove(WorldId_t worldId, std::vector<Pos::GlobalRegion> regionPoses);
+        void prepareWorldRemove(WorldId_t worldId);
+        void prepareEntitiesUpdate(const std::vector<std::tuple<ServerEntityId_t, const Entity*>>& entities);
+        void prepareEntitiesUpdate_Dynamic(const std::vector<std::tuple<ServerEntityId_t, const Entity*>>& entities);
+        void prepareEntitySwap(ServerEntityId_t prevEntityId, ServerEntityId_t nextEntityId);
+        void prepareWorldUpdate(WorldId_t worldId, World* world);
+        void informateDefVoxel(const std::vector<std::pair<DefVoxelId, DefVoxel*>>& voxels);
+        void informateDefNode(const std::vector<std::pair<DefNodeId, DefNode*>>& nodes);
+        void informateDefWorld(const std::vector<std::pair<DefWorldId, DefWorld*>>& worlds);
+        void informateDefPortal(const std::vector<std::pair<DefPortalId, DefPortal*>>& portals);
+        void informateDefEntity(const std::vector<std::pair<DefEntityId, DefEntity*>>& entityes);
+        void informateDefItem(const std::vector<std::pair<DefItemId, DefItem*>>& items);
     };
 
     struct {
@@ -284,9 +308,11 @@ class RemoteClient {
         */
 
         // Ресурсы, отправленные на клиент в этой сессии и запрошенные клиентом
+        /// TODO: ClientRequested здесь может быть засор
         std::vector<Hash_t> OnClient, ClientRequested;
-        // Отправляемые на клиент ресурсы (в конце текущее смещение по отправке)
-        std::vector<std::tuple<EnumAssets, ResourceId, AssetsManager::Resource, size_t>> ToSend;
+        // Отправляемые на клиент ресурсы
+        // Тип, домен, ключ, идентификатор, ресурс, количество отправленных байт
+        std::vector<std::tuple<EnumAssets, std::string, std::string, ResourceId, AssetsManager::Resource, size_t>> ToSend;
     } AssetsInWork;
 
     TOS::SpinlockObject<NetworkAndResource_t> NetworkAndResource;
@@ -335,26 +361,43 @@ public:
 
     // В зоне видимости добавился чанк или изменились его воксели
     bool maybe_prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_voxels,
-        const std::vector<DefVoxelId>& uniq_sorted_defines);
+        const std::vector<DefVoxelId>& uniq_sorted_defines)
+    {
+        auto lock = NetworkAndResource.tryLock();
+        if(!lock)
+            return false;
+
+        lock->prepareChunkUpdate_Voxels(worldId, chunkPos, compressed_voxels, uniq_sorted_defines);
+        return true;
+    }
+
     // В зоне видимости добавился чанк или изменились его ноды
     bool maybe_prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_nodes,
-        const std::vector<DefNodeId>& uniq_sorted_defines);
+        const std::vector<DefNodeId>& uniq_sorted_defines)
+    {
+        auto lock = NetworkAndResource.tryLock();
+        if(!lock)
+            return false;
+
+        lock->prepareChunkUpdate_Nodes(worldId, chunkPos, compressed_nodes, uniq_sorted_defines);
+        return true;
+    }
     // void prepareChunkUpdate_LightPrism(WorldId_t worldId, Pos::GlobalChunk chunkPos, const LightPrism *lights);
     
     // Клиент перестал наблюдать за сущностью
-    void prepareEntitiesRemove(const std::vector<ServerEntityId_t>& entityId);
+    void prepareEntitiesRemove(const std::vector<ServerEntityId_t>& entityId) { NetworkAndResource.lock()->prepareEntitiesRemove(entityId); }
     // Регион удалён из зоны видимости
-    void prepareRegionRemove(WorldId_t worldId, std::vector<Pos::GlobalRegion> regionPoses);
+    void prepareRegionsRemove(WorldId_t worldId, std::vector<Pos::GlobalRegion> regionPoses)  { NetworkAndResource.lock()->prepareRegionsRemove(worldId, regionPoses); }
     // Мир удалён из зоны видимости
-    void prepareWorldRemove(WorldId_t worldId);
+    void prepareWorldRemove(WorldId_t worldId)  { NetworkAndResource.lock()->prepareWorldRemove(worldId); }
 
     // В зоне видимости добавилась новая сущность или она изменилась
-    void prepareEntityUpdate(const std::vector<std::tuple<ServerEntityId_t, const Entity*>>& entities);
-    void prepareEntityUpdate_Dynamic(const std::vector<std::tuple<ServerEntityId_t, const Entity*>>& entities);
+    void prepareEntitiesUpdate(const std::vector<std::tuple<ServerEntityId_t, const Entity*>>& entities)  { NetworkAndResource.lock()->prepareEntitiesUpdate(entities); }
+    void prepareEntitiesUpdate_Dynamic(const std::vector<std::tuple<ServerEntityId_t, const Entity*>>& entities)  { NetworkAndResource.lock()->prepareEntitiesUpdate_Dynamic(entities); }
     // Наблюдаемая сущность пересекла границы региона, у неё изменился серверный идентификатор
-    void prepareEntitySwap(ServerEntityId_t prevEntityId, ServerEntityId_t nextEntityId);
+    void prepareEntitySwap(ServerEntityId_t prevEntityId, ServerEntityId_t nextEntityId)  { NetworkAndResource.lock()->prepareEntitySwap(prevEntityId, nextEntityId); }
     // Мир появился в зоне видимости или изменился
-    void prepareWorldUpdate(WorldId_t worldId, World* world);
+    void prepareWorldUpdate(WorldId_t worldId, World* world)  { NetworkAndResource.lock()->prepareWorldUpdate(worldId, world); }
 
     // В зоне видимости добавился порта или он изменился
     // void preparePortalUpdate(PortalId_t portalId, void* portal);
@@ -375,15 +418,16 @@ public:
     void informateAssets(const std::vector<std::tuple<EnumAssets, ResourceId, const std::string, const std::string, AssetsManager::Resource>>& resources);
 
     // Игровые определения
-    void informateDefVoxel(const std::unordered_map<DefVoxelId, DefVoxel*> &voxels);
-    void informateDefNode(const std::unordered_map<DefNodeId, DefNode*> &nodes);
-    void informateDefWorld(const std::unordered_map<DefWorldId, DefWorld*> &worlds);
-    void informateDefPortal(const std::unordered_map<DefPortalId, DefPortal*> &portals);
-    void informateDefEntity(const std::unordered_map<DefEntityId, DefEntity*> &entityes);
-    void informateDefItem(const std::unordered_map<DefItemId, DefItem_t*> &items);
+    void informateDefVoxel(const std::vector<std::pair<DefVoxelId, DefVoxel*>>& voxels)         { NetworkAndResource.lock()->informateDefVoxel(voxels); }
+    void informateDefNode(const std::vector<std::pair<DefNodeId, DefNode*>>& nodes)             { NetworkAndResource.lock()->informateDefNode(nodes); }
+    void informateDefWorld(const std::vector<std::pair<DefWorldId, DefWorld*>>& worlds)         { NetworkAndResource.lock()->informateDefWorld(worlds); }
+    void informateDefPortal(const std::vector<std::pair<DefPortalId, DefPortal*>>& portals)     { NetworkAndResource.lock()->informateDefPortal(portals); }
+    void informateDefEntity(const std::vector<std::pair<DefEntityId, DefEntity*>>& entityes)    { NetworkAndResource.lock()->informateDefEntity(entityes); }
+    void informateDefItem(const std::vector<std::pair<DefItemId, DefItem*>>& items)             { NetworkAndResource.lock()->informateDefItem(items); }
+
+    void onUpdate();
 
 private:
-    void checkPacketBorder(uint16_t size);
     void protocolError();
     coro<> readPacket(Net::AsyncSocket &sock);
     coro<> rP_System(Net::AsyncSocket &sock);

@@ -8,6 +8,7 @@
 #include <boost/interprocess/file_mapping.hpp>
 #include <boost/interprocess/mapped_region.hpp>
 #include <filesystem>
+#include <optional>
 #include <unordered_map>
 
 
@@ -61,6 +62,7 @@ private:
         // Время последнего изменения файла
         fs::file_time_type FileChangeTime;
         Resource Res;
+        std::string Domain, Key;
     };
 
     struct TableEntry {
@@ -143,7 +145,29 @@ public:
         Выдаёт идентификатор ресурса, даже если он не существует или был удалён.
         resource должен содержать домен и путь
     */
-    ResourceId getId(EnumAssets type, const std::string& domain, const std::string& key);
+    ResourceId getId(EnumAssets type, const std::string& domain, const std::string& key) {
+        auto lock = LocalObj.lock();
+        auto& keyToId = lock->KeyToId[(int) type];
+        if(auto iterKTI = keyToId.find(domain); iterKTI != keyToId.end()) {
+            if(auto iterKey = iterKTI->second.find(key); iterKey != iterKTI->second.end()) {
+                return iterKey->second;
+            }
+        }
+
+        auto [id, entry] = lock->nextId(type);
+        keyToId[domain][key] = id;
+        return id;
+    }
+
+    std::optional<std::tuple<Resource, const std::string&, const std::string&>> getResource(EnumAssets type, ResourceId id) {
+        auto lock = LocalObj.lock();
+        assert(id < lock->Table[(int) type].size()*TableEntry::ChunkSize);
+        auto& value = lock->Table[(int) type][id / TableEntry::ChunkSize]->Entries[id % TableEntry::ChunkSize];
+        if(value)
+            return {{value->Res, value->Domain, value->Key}};
+        else
+            return std::nullopt;
+    }
 };
 
 }

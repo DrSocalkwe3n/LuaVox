@@ -149,6 +149,10 @@ public:
 		T* operator->() const { assert(Obj); return &Obj->Value; }
 		T& operator*() const { assert(Obj); return Obj->Value; }
 
+		operator bool() const {
+			return Obj;
+		}
+
 		void unlock() { assert(Obj); Obj = nullptr; Flag->clear(std::memory_order_release);}
 
     private:

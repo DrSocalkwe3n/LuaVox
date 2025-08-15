@@ -12,8 +12,8 @@ namespace LV {
 
 CompressedVoxels compressVoxels_byte(const std::vector<VoxelCube>& voxels) {
     std::u8string compressed;
-    std::vector<DefVoxelId_t> defines;
-    DefVoxelId_t maxValue = 0;
+    std::vector<DefVoxelId> defines;
+    DefVoxelId maxValue = 0;
     defines.reserve(voxels.size());
 
     compressed.push_back(1);
@@ -55,7 +55,7 @@ CompressedVoxels compressVoxels_byte(const std::vector<VoxelCube>& voxels) {
         compressed.push_back((defines.size() >> 8) & 0xff);
 
         // Таблица
-        for(DefVoxelId_t id : defines) {
+        for(DefVoxelId id : defines) {
             compressed.push_back(id & 0xff);
             if(bytes_raw > 1)
                 compressed.push_back((id >> 8) & 0xff);
@@ -107,11 +107,11 @@ CompressedVoxels compressVoxels_byte(const std::vector<VoxelCube>& voxels) {
 }
 
 CompressedVoxels compressVoxels_bit(const std::vector<VoxelCube>& voxels) {
-    std::vector<DefVoxelId_t> profile;
-    std::vector<DefVoxelId_t> one_byte[7];
+    std::vector<DefVoxelId> profile;
+    std::vector<DefVoxelId> one_byte[7];
 
-    DefVoxelId_t maxValueProfile = 0;
-    DefVoxelId_t maxValues[7] = {0};
+    DefVoxelId maxValueProfile = 0;
+    DefVoxelId maxValues[7] = {0};
 
     profile.reserve(voxels.size());
     for(int iter = 0; iter < 7; iter++)
@@ -195,7 +195,7 @@ CompressedVoxels compressVoxels_bit(const std::vector<VoxelCube>& voxels) {
         write(bits_raw_profile, 5);
         write(bits_index_profile, 4);
 
-        for(DefNodeId_t id : profile)
+        for(DefNodeId id : profile)
             write(id, bits_raw_profile);
     } else {
         write(bits_raw_profile, 5);
@@ -274,11 +274,11 @@ std::vector<VoxelCube> unCompressVoxels_byte(const std::u8string& compressed) {
         uint8_t bytes_per_define = (cmd >> 1) & 0x1;
         uint8_t bytes_raw = (cmd >> 2) & 0x3;
 
-        std::vector<DefVoxelId_t> defines;
+        std::vector<DefVoxelId> defines;
         defines.resize(read() | (read() << 8));
 
         for(size_t iter = 0; iter < defines.size(); iter++) {
-            DefVoxelId_t id = read();
+            DefVoxelId id = read();
             if(bytes_raw > 1)
                 id |= read() << 8;
             if(bytes_raw > 2)
@@ -357,8 +357,8 @@ std::vector<VoxelCube> unCompressVoxels_bit(const std::u8string& compressed) {
     for(int iter = 0; iter < 7; iter++)
         indices[iter] = read(1);
 
-    std::vector<DefVoxelId_t> profile;
-    std::vector<DefVoxelId_t> one_byte[7];
+    std::vector<DefVoxelId> profile;
+    std::vector<DefVoxelId> one_byte[7];
     uint8_t bits_raw_profile;
     uint8_t bits_index_profile;
     size_t bits_raw[7];
@@ -435,13 +435,13 @@ std::vector<VoxelCube> unCompressVoxels(const std::u8string& compressed) {
 CompressedNodes compressNodes_byte(const Node* nodes) {
     std::u8string compressed;
 
-    std::vector<DefNodeId_t> profiles;
+    std::vector<DefNodeId> profiles;
 
     profiles.reserve(16*16*16);
 
     compressed.push_back(1);
 
-    DefNodeId_t maxValueProfile = 0;
+    DefNodeId maxValueProfile = 0;
 
     for(size_t iter = 0; iter < 16*16*16; iter++) {
         const Node &node = nodes[iter];
@@ -477,7 +477,7 @@ CompressedNodes compressNodes_byte(const Node* nodes) {
         compressed.push_back((profiles.size() >> 8) & 0xff);
         compressed.push_back((profiles.size() >> 16) & 0xff);
 
-        for(DefNodeId_t id : profiles) {
+        for(DefNodeId id : profiles) {
             if(bytes_raw_profile > 0)
                 compressed.push_back(id & 0xff);
             if(bytes_raw_profile > 1)
@@ -521,15 +521,15 @@ CompressedNodes compressNodes_byte(const Node* nodes) {
 CompressedNodes compressNodes_bit(const Node* nodes) {
     std::u8string compressed;
 
-    std::vector<DefNodeId_t> profiles;
-    std::vector<DefNodeId_t> meta;
+    std::vector<DefNodeId> profiles;
+    std::vector<DefNodeId> meta;
 
     profiles.reserve(16*16*16);
     meta.reserve(16*16*16);
 
     compressed.push_back(1);
 
-    DefNodeId_t maxValueProfile = 0,
+    DefNodeId maxValueProfile = 0,
         maxValueMeta = 0;
 
     for(size_t iter = 0; iter < 16*16*16; iter++) {
@@ -599,7 +599,7 @@ CompressedNodes compressNodes_bit(const Node* nodes) {
     if(indices_profile) {
         write(profiles.size(), 12);
 
-        for(DefNodeId_t id : profiles) {
+        for(DefNodeId id : profiles) {
             write(id, bits_raw_profile);
         }
     }
@@ -608,7 +608,7 @@ CompressedNodes compressNodes_bit(const Node* nodes) {
     if(indices_meta) {
         write(meta.size(), 8);
 
-        for(DefNodeId_t id : meta) {
+        for(DefNodeId id : meta) {
             write(id, bits_raw_meta);
         }
     }
@@ -636,13 +636,12 @@ CompressedNodes compressNodes_bit(const Node* nodes) {
     return {compressLinear(compressed), profiles};
 }
 
-
 CompressedNodes compressNodes(const Node* nodes, bool fast) {
     std::u8string data(16*16*16*sizeof(Node), '\0');
     const char8_t *ptr = (const char8_t*) nodes;
     std::copy(ptr, ptr+16*16*16*4, data.data());
 
-    std::vector<DefNodeId_t> node(16*16*16);
+    std::vector<DefNodeId> node(16*16*16);
     for(int iter = 0; iter < 16*16*16; iter++) {
         node[iter] = nodes[iter].NodeId;
     }
@@ -677,11 +676,11 @@ void unCompressNodes_byte(const std::u8string& compressed, Node* ptr) {
     bool indices_profile = value & 0x1;
 
     if(indices_profile) {
-        std::vector<DefNodeId_t> profiles;
+        std::vector<DefNodeId> profiles;
         profiles.resize(read() | (read() << 8) | (read() << 16));
 
         for(size_t iter = 0; iter < profiles.size(); iter++) {
-            DefNodeId_t id = 0;
+            DefNodeId id = 0;
             
             if(bytes_raw_profile > 0)
                 id = read();
@@ -694,7 +693,7 @@ void unCompressNodes_byte(const std::u8string& compressed, Node* ptr) {
         for(size_t iter = 0; iter < 16*16*16; iter++) {
             Node &node = ptr[iter];
 
-            DefNodeId_t index = read();
+            DefNodeId index = read();
             if(bytes_indices_profile > 1)
                 index |= read() << 8;
 
@@ -733,7 +732,7 @@ void unCompressNodes_bit(const std::u8string& compressed, Node* ptr) {
         return out;
     };
 
-    std::vector<DefNodeId_t> meta;
+    std::vector<DefNodeId> meta;
 
 
     bool indices_profile = read(1);
@@ -744,7 +743,7 @@ void unCompressNodes_bit(const std::u8string& compressed, Node* ptr) {
     uint8_t bits_raw_meta = read(3);
     uint8_t bits_indices_meta = read(3);
 
-    std::vector<DefNodeId_t> profiles;
+    std::vector<DefNodeId> profiles;
     
     // Таблицы
     if(indices_profile) {

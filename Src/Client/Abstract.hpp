@@ -48,7 +48,7 @@ class Entity {
 public:
     // PosQuat
     WorldId_t WorldId;
-    PortalId_t LastUsedPortal;
+    // PortalId LastUsedPortal;
     Pos::Object Pos;
     glm::quat Quat;
     static constexpr uint16_t HP_BS = 4096, HP_BS_Bit = 12;
@@ -66,8 +66,8 @@ public:
     // Подгрузка двоичных ресурсов
     virtual void onBinaryResourceAdd(std::vector<Hash_t>) = 0;
 
-    virtual void onContentDefinesAdd(std::unordered_map<EnumDefContent, std::vector<ResourceId_t>>) = 0;
-    virtual void onContentDefinesLost(std::unordered_map<EnumDefContent, std::vector<ResourceId_t>>) = 0;
+    virtual void onContentDefinesAdd(std::unordered_map<EnumDefContent, std::vector<ResourceId>>) = 0;
+    virtual void onContentDefinesLost(std::unordered_map<EnumDefContent, std::vector<ResourceId>>) = 0;
 
     // Сообщаем об изменившихся чанках
     virtual void onChunksChange(WorldId_t worldId, const std::unordered_set<Pos::GlobalChunk> &changeOrAddList, const std::unordered_set<Pos::GlobalRegion> &remove) = 0;
@@ -149,17 +149,17 @@ public:
     } Binary;
 
     struct {
-        std::unordered_map<DefVoxelId_t, DefVoxel_t>              DefVoxel;
-        std::unordered_map<DefNodeId_t, DefNode_t>                  DefNode;
-        std::unordered_map<DefWorldId_t, DefWorldInfo>              DefWorld;
-        std::unordered_map<DefPortalId_t, DefPortalInfo>            DefPortal;
-        std::unordered_map<DefEntityId_t, DefEntityInfo>            DefEntity;
-        std::unordered_map<DefItemId_t, DefItemInfo>                DefItem;
+        std::unordered_map<DefVoxelId, DefVoxel_t>              DefVoxel;
+        std::unordered_map<DefNodeId, DefNode_t>                  DefNode;
+        std::unordered_map<DefWorldId, DefWorldInfo>              DefWorld;
+        std::unordered_map<DefPortalId, DefPortalInfo>            DefPortal;
+        std::unordered_map<DefEntityId, DefEntityInfo>            DefEntity;
+        std::unordered_map<DefItemId, DefItemInfo>                DefItem;
     } Registry;
 
     struct {
         std::unordered_map<WorldId_t, WorldInfo>                    Worlds;
-        std::unordered_map<PortalId_t, PortalInfo>                  Portals;
+        // std::unordered_map<PortalId_t, PortalInfo>                  Portals;
         std::unordered_map<EntityId_t, EntityInfo>                  Entityes;
     } Data;
 

@@ -29,9 +29,9 @@ using ClientFuncEntityId_t = RegionFuncEntityId_t;
 using ServerFuncEntityId_t = std::tuple<WorldId_t, Pos::GlobalRegion, RegionFuncEntityId_t>;
 
 using MediaStreamId_t = uint16_t;
-using ContentBridgeId_t = ResourceId_t;
-using PlayerId_t = ResourceId_t;
-using DefGeneratorId_t = ResourceId_t;
+using ContentBridgeId_t = ResourceId;
+using PlayerId_t = ResourceId;
+using DefGeneratorId_t = ResourceId;
 
 
 /*
@@ -59,10 +59,10 @@ struct ServerTime {
 struct VoxelCube_Region {
     union {
         struct {
-            DefVoxelId_t VoxelId : 24, Meta : 8;
+            DefVoxelId VoxelId : 24, Meta : 8;
         };
 
-        DefVoxelId_t Data = 0;
+        DefVoxelId Data = 0;
     };
 
     Pos::bvec1024u Left, Right; // TODO: заменить на позицию и размер
@@ -229,13 +229,13 @@ struct DefNode_t {
 };
 
 class Entity  {
-    DefEntityId_t DefId;
+    DefEntityId DefId;
 
 public:
     LocalAABB ABBOX;
 
     // PosQuat
-    DefWorldId_t WorldId;
+    DefWorldId WorldId;
     Pos::Object Pos, Speed, Acceleration;
     glm::quat Quat;
     static constexpr uint16_t HP_BS = 4096, HP_BS_Bit = 12;
@@ -255,13 +255,13 @@ public:
         IsRemoved = false;
 
 public:
-    Entity(DefEntityId_t defId);
+    Entity(DefEntityId defId);
     
     AABB aabbAtPos() {
         return {Pos-Pos::Object(ABBOX.x/2, ABBOX.y/2, ABBOX.z/2), Pos+Pos::Object(ABBOX.x/2, ABBOX.y/2, ABBOX.z/2)};
     }
 
-    DefEntityId_t getDefId() const { return DefId; }
+    DefEntityId getDefId() const { return DefId; }
 };
 
 template<typename Vec>

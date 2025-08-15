@@ -6,19 +6,17 @@
 #include "Abstract.hpp"
 #include "Common/Packets.hpp"
 #include "Server/AssetsManager.hpp"
-#include "Server/ContentEventController.hpp"
-#include "assets.hpp"
+#include "Server/ContentManager.hpp"
 #include <Common/Abstract.hpp>
-#include <atomic>
 #include <bitset>
 #include <initializer_list>
 #include <queue>
-#include <set>
 #include <type_traits>
 #include <unordered_map>
-#include <unordered_set>
 
 namespace LV::Server {
+
+class World;
 
 template<typename ServerKey, typename ClientKey, std::enable_if_t<sizeof(ServerKey) >= sizeof(ClientKey), int> = 0>
 class CSChunkedMapper {
@@ -146,19 +144,19 @@ public:
 */
 struct ResourceRequest {
     std::vector<Hash_t>           Hashes;
-    std::vector<ResourceId>     BinToHash[5 /*EnumBinResource*/];
+    std::vector<ResourceId>     AssetsInfo[(int) EnumAssets::MAX_ENUM];
 
-    std::vector<DefVoxelId>       Voxel;
-    std::vector<DefNodeId>        Node;
-    std::vector<DefWorldId_t>       World;
-    std::vector<DefPortalId_t>      Portal;
-    std::vector<DefEntityId_t>      Entity;
-    std::vector<DefItemId_t>        Item;
+    std::vector<DefVoxelId>        Voxel;
+    std::vector<DefNodeId>          Node;
+    std::vector<DefWorldId>        World;
+    std::vector<DefPortalId>      Portal;
+    std::vector<DefEntityId>      Entity;
+    std::vector<DefItemId>          Item;
 
     void insert(const ResourceRequest &obj) {
         Hashes.insert(Hashes.end(), obj.Hashes.begin(), obj.Hashes.end());
-        for(int iter = 0; iter < 5; iter++)
-            BinToHash[iter].insert(BinToHash[iter].end(), obj.BinToHash[iter].begin(), obj.BinToHash[iter].end());
+        for(int iter = 0; iter < (int) EnumAssets::MAX_ENUM; iter++)
+            AssetsInfo[iter].insert(AssetsInfo[iter].end(), obj.AssetsInfo[iter].begin(), obj.AssetsInfo[iter].end());
 
         Voxel.insert(Voxel.end(), obj.Voxel.begin(), obj.Voxel.end());
         Node.insert(Node.end(), obj.Node.begin(), obj.Node.end());
@@ -180,9 +178,9 @@ struct ResourceRequest {
 
         for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++)
         {
-            std::sort(BinToHash[type].begin(), BinToHash[type].end());
-            auto last = std::unique(BinToHash[type].begin(), BinToHash[type].end());
-            BinToHash[type].erase(last, BinToHash[type].end());
+            std::sort(AssetsInfo[type].begin(), AssetsInfo[type].end());
+            auto last = std::unique(AssetsInfo[type].begin(), AssetsInfo[type].end());
+            AssetsInfo[type].erase(last, AssetsInfo[type].end());
         }
 
         std::sort(Hashes.begin(), Hashes.end());
@@ -208,22 +206,11 @@ class RemoteClient {
     DestroyLock UseLock;
     Net::AsyncSocket Socket;
     bool IsConnected = true, IsGoingShutdown = false;
-    
-    std::vector<Hash_t> ClientBinaryCache, // Хеши ресурсов которые есть у клиента
-        NeedToSend; // Хеши которые нужно получить и отправить
-
-    /*
-        При обнаружении нового контента составляется запрос (ResourceRequest)
-        на полное описание ресурса. Это описание отправляется клиенту и используется 
-        чтобы выстроить зависимость какие базовые ресурсы использует контент.
-        Если базовые ресурсы не известны, то они также запрашиваются.
-    */
 
     struct NetworkAndResource_t {
-        struct ResUsesObj {
+        struct ResUses_t {
             // Счётчики использования двоичных кэшируемых ресурсов + хэш привязанный к идентификатору
-            std::map<ResourceId,      std::tuple<uint32_t, Hash_t>>      AssetsUse[(int) EnumAssets::MAX_ENUM];
-
+            std::map<ResourceId,      uint32_t>      AssetsUse[(int) EnumAssets::MAX_ENUM];
 
             // Зависимость профилей контента от профилей ресурсов
             // Нужно чтобы пересчитать зависимости к профилям ресурсов
@@ -274,20 +261,32 @@ class RemoteClient {
             };
             std::map<ServerEntityId_t, RefEntity_t> RefEntity;
 
+            void incrementBinary(const RefAssets_t& bin);
+            void decrementBinary(RefAssets_t&& bin);
         } ResUses;
 
         // Смена идентификаторов сервера на клиентские
         SCSKeyRemapper<ServerEntityId_t, ClientEntityId_t> ReMapEntities;
 
+        // Запрос информации об ассетах и профилях контента
+        ResourceRequest NextRequest;
+
         Net::Packet NextPacket;
         std::vector<Net::Packet> SimplePackets;
-        ResourceRequest NextRequest;
     };
 
     struct {
-        // Ресурсы, отправленные на клиент в этой сессии
-        std::vector<Hash_t> OnClient;
-        std::vector<std::tuple<EnumAssets, ResourceId, AssetsManager::Resource>> ToSend;
+        /*
+            К концу такта собираются необходимые идентификаторы ресурсов
+            В конце такта сервер забирает запросы и возвращает информацию
+            о ресурсах. Отправляем связку Идентификатор + домен:ключ 
+            + хеш. Если у клиента не окажется этого ресурса, он может его запросить
+        */
+
+        // Ресурсы, отправленные на клиент в этой сессии и запрошенные клиентом
+        std::vector<Hash_t> OnClient, ClientRequested;
+        // Отправляемые на клиент ресурсы (в конце текущее смещение по отправке)
+        std::vector<std::tuple<EnumAssets, ResourceId, AssetsManager::Resource, size_t>> ToSend;
     } AssetsInWork;
 
     TOS::SpinlockObject<NetworkAndResource_t> NetworkAndResource;
@@ -306,9 +305,8 @@ public:
 
 public:
     RemoteClient(asio::io_context &ioc, tcp::socket socket, const std::string username, std::vector<ResourceFile::Hash_t> &&client_cache)
-        : LOG("RemoteClient " + username), Socket(ioc, std::move(socket)), Username(username), ClientBinaryCache(std::move(client_cache))
-    {
-    }
+        : LOG("RemoteClient " + username), Socket(ioc, std::move(socket)), Username(username)
+    {}
 
     ~RemoteClient();
 
@@ -330,71 +328,33 @@ public:
         Сервер собирает изменения миров, сжимает их и раздаёт на отправку игрокам
     */
 
-    // Функции подготавливают пакеты к отправке
-    // Отслеживаемое игроком использование контента
-
-    TOS::Spinlock MurkyLock;
-    Net::Packet MurkyNextPacket;
-    std::vector<Net::Packet> MurkySimplePackets;
-
-    void murkyCheckPacketBorder(uint16_t size) {
-        if(64000-MurkyNextPacket.size() < size || (MurkyNextPacket.size() != 0 && size == 0)) {
-            MurkySimplePackets.push_back(std::move(MurkyNextPacket));
-        }
-    }
-    // marky используются в BackingChunkPressure_t в GameServer во время заморозки мира от записи.
-    // В это время просматриваются изменённые объекты и рассылаются изменения клиентам
-    
-    /*
-        Все пробегаются по игрокам, и смотрят наблюдаемые миры.
-        Если идентификатор мира % количество потоков == 0, то проверяем что 
-        этот мир наблюдается игроком и готовим информацию о нём для отправки,
-        отправляем
-
-        Синхронизация этапа с группой
-
-        Потоки рассылки изменений соблюдают пакетность изменений.
-        Изменение чанков, потеря регионов, изменения чанков, потеря регионов
-
-        игрок % потоки == 0
-        Информируем о потерянных регионах
-        Информируем о потерянных мирах
-
-        Синхронизация этапа с группой
-    */
-
-    /*
-        Использует пакеты
-        Используемые ресурсы
-        Запросы на ресурсы
-
-        Объекты можно удалять когда это будет определено.
-        Потом при попытке отправить чанк будет проверка наблюдения
-        объекта клиентом
-    */
+    // Все функции prepare потокобезопасные
+    // maybe используются в BackingChunkPressure_t в GameServer в пуле потоков.
+    // если возвращает false, то блокировка сейчас находится у другого потока
+    // и запрос не был обработан.
 
     // В зоне видимости добавился чанк или изменились его воксели
-    bool murky_prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_voxels,
+    bool maybe_prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_voxels,
         const std::vector<DefVoxelId>& uniq_sorted_defines);
     // В зоне видимости добавился чанк или изменились его ноды
-    bool murky_prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_nodes,
+    bool maybe_prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_nodes,
         const std::vector<DefNodeId>& uniq_sorted_defines);
     // void prepareChunkUpdate_LightPrism(WorldId_t worldId, Pos::GlobalChunk chunkPos, const LightPrism *lights);
     
-    // Мир удалён из зоны видимости
-    void prepareWorldRemove(WorldId_t worldId);
+    // Клиент перестал наблюдать за сущностью
+    void prepareEntitiesRemove(const std::vector<ServerEntityId_t>& entityId);
     // Регион удалён из зоны видимости
     void prepareRegionRemove(WorldId_t worldId, std::vector<Pos::GlobalRegion> regionPoses);
-    // Клиент перестал наблюдать за сущностью
-    void prepareEntityRemove(ServerEntityId_t entityId);
+    // Мир удалён из зоны видимости
+    void prepareWorldRemove(WorldId_t worldId);
 
     // В зоне видимости добавилась новая сущность или она изменилась
-    void prepareEntityUpdate(ServerEntityId_t entityId, const Entity *entity);
-    void prepareEntityUpdate_Dynamic(ServerEntityId_t entityId, const Entity *entity);
-    // Мир появился в зоне видимости или изменился
-    void prepareWorldUpdate(WorldId_t worldId, World* world);
+    void prepareEntityUpdate(const std::vector<std::tuple<ServerEntityId_t, const Entity*>>& entities);
+    void prepareEntityUpdate_Dynamic(const std::vector<std::tuple<ServerEntityId_t, const Entity*>>& entities);
     // Наблюдаемая сущность пересекла границы региона, у неё изменился серверный идентификатор
     void prepareEntitySwap(ServerEntityId_t prevEntityId, ServerEntityId_t nextEntityId);
+    // Мир появился в зоне видимости или изменился
+    void prepareWorldUpdate(WorldId_t worldId, World* world);
 
     // В зоне видимости добавился порта или он изменился
     // void preparePortalUpdate(PortalId_t portalId, void* portal);
@@ -411,20 +371,16 @@ public:
     // Сюда приходят все обновления ресурсов движка
     // Глобально их можно запросить в выдаче pushPreparedPackets()
 
-    // Оповещение о ресурсе для отправки клиентам
-    void informateBinary(const std::vector<std::shared_ptr<ResourceFile>>& resources);
-
-    // Привязывает локальный идентификатор с хешем. Если его нет у клиента, 
-    // то делается запрос на получение ресурсы для последующей отправки клиенту
-    void informateIdToHash(const std::unordered_map<ResourceId, ResourceFile::Hash_t>* resourcesLink);
+    // Оповещение о запрошенных (и не только) ассетах
+    void informateAssets(const std::vector<std::tuple<EnumAssets, ResourceId, const std::string, const std::string, AssetsManager::Resource>>& resources);
 
     // Игровые определения
-    void informateDefVoxel(const std::unordered_map<DefVoxelId, DefVoxel_t*> &voxels);
-    void informateDefNode(const std::unordered_map<DefNodeId, DefNode_t*> &nodes);
-    void informateDefWorld(const std::unordered_map<DefWorldId_t, DefWorld_t*> &worlds);
-    void informateDefPortal(const std::unordered_map<DefPortalId_t, DefPortal_t*> &portals);
-    void informateDefEntity(const std::unordered_map<DefEntityId_t, DefEntity_t*> &entityes);
-    void informateDefItem(const std::unordered_map<DefItemId_t, DefItem_t*> &items);
+    void informateDefVoxel(const std::unordered_map<DefVoxelId, DefVoxel*> &voxels);
+    void informateDefNode(const std::unordered_map<DefNodeId, DefNode*> &nodes);
+    void informateDefWorld(const std::unordered_map<DefWorldId, DefWorld*> &worlds);
+    void informateDefPortal(const std::unordered_map<DefPortalId, DefPortal*> &portals);
+    void informateDefEntity(const std::unordered_map<DefEntityId, DefEntity*> &entityes);
+    void informateDefItem(const std::unordered_map<DefItemId, DefItem_t*> &items);
 
 private:
     void checkPacketBorder(uint16_t size);
@@ -432,17 +388,12 @@ private:
     coro<> readPacket(Net::AsyncSocket &sock);
     coro<> rP_System(Net::AsyncSocket &sock);
 
-    void incrementBinary(const ResUsesObj::RefDefBin_t& bin);
-    void decrementBinary(ResUsesObj::RefDefBin_t&& bin);
-
     // void incrementProfile(const std::vector<TextureId_t> &textures, const std::vector<ModelId_t> &model,
     //     const std::vector<SoundId_t> &sounds, const std::vector<FontId_t> &font
     // );
     // void decrementProfile(std::vector<TextureId_t> &&textures, std::vector<ModelId_t> &&model,
     //     std::vector<SoundId_t> &&sounds, std::vector<FontId_t> &&font
     // );
-
-    
 };
 
 

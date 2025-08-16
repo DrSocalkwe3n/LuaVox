@@ -1205,19 +1205,23 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
         Pos::GlobalChunk x64offset = X64Offset >> Pos::Object_t::BS_Bit >> 4;
         Pos::GlobalRegion x64offset_region = x64offset >> 2;
 
-        auto [voxelVertexs, nodeVertexs] = VKCTX->ThreadVertexObj.getChunksForRender(WorldId, Pos, 1, PCO.ProjView, x64offset_region);
+        auto [voxelVertexs, nodeVertexs] = VKCTX->ThreadVertexObj.getChunksForRender(WorldId, Pos, 2, PCO.ProjView, x64offset_region);
 
         glm::mat4 orig = PCO.Model;
         for(auto& [chunkPos, vertexs, vertexCount] : nodeVertexs) {
             glm::vec3 cpos(chunkPos-x64offset);
             PCO.Model = glm::translate(orig, cpos*16.f);
-            auto [vkBuffer, offset] = vertexs;
+            auto [vkBufferN, offset] = vertexs;
 
             vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, offsetof(WorldPCO, Model), sizeof(WorldPCO::Model), &PCO.Model);
-            vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
-            vkCmdDraw(drawCmd, vertexCount, 1, offset, 0);
             
+            if(vkBufferN != vkBuffer) {
+                vkBuffer = vkBufferN;
+                vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
+            }
+
+            vkCmdDraw(drawCmd, vertexCount, 1, offset, 0);
         }
 
         PCO.Model = orig;

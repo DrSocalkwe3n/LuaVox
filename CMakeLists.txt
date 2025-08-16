@@ -67,7 +67,7 @@ set(Boost_USE_STATIC_LIBS ON)
 set(BOOST_INCLUDE_LIBRARIES asio thread json)
 set(BOOST_ENABLE_CMAKE ON)
 set(BOOST_IOSTREAMS_ENABLE_ZLIB ON)
-set(BOOST_INCLUDE_LIBRARIES asio thread json iostreams interprocess)
+set(BOOST_INCLUDE_LIBRARIES asio thread json iostreams interprocess timer circular_buffer lockfree stacktrace uuid serialization nowide)
 FetchContent_Declare(
   Boost
   GIT_REPOSITORY https://github.com/boostorg/boost.git
@@ -76,7 +76,7 @@ FetchContent_Declare(
   USES_TERMINAL_DOWNLOAD true
 )
 FetchContent_MakeAvailable(Boost)
-target_link_libraries(luavox_common INTERFACE Boost::asio Boost::thread Boost::json Boost::iostreams Boost::interprocess)
+target_link_libraries(luavox_common INTERFACE Boost::asio Boost::thread Boost::json Boost::iostreams Boost::interprocess Boost::timer Boost::circular_buffer Boost::lockfree Boost::stacktrace Boost::uuid Boost::serialization Boost::nowide)
 
 # glm
 # find_package(glm REQUIRED)

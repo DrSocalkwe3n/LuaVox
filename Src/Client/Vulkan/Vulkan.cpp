@@ -251,7 +251,7 @@ void Vulkan::run()
 				{
 					.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 					.pNext = nullptr,
-					.flags = 0,
+					.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
 					.pInheritanceInfo = nullptr
 				};
 
@@ -1643,8 +1643,8 @@ void Vulkan::initNextSettings()
 
 		features.features.geometryShader = true;
 
-		feat11.uniformAndStorageBuffer16BitAccess = true;
-		feat11.storageBuffer16BitAccess = true;
+		feat11.uniformAndStorageBuffer16BitAccess = false;
+		feat11.storageBuffer16BitAccess = false;
 
 		VkDeviceCreateInfo infoDevice =
 		{
@@ -1712,7 +1712,7 @@ void Vulkan::initNextSettings()
 		{
 			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
 			.pNext = nullptr,
-			.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+			.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT | VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
 			.queueFamilyIndex = SettingsNext.QueueGraphics
 		};
 
@@ -2225,6 +2225,15 @@ void Vulkan::gui_MainMenu() {
 
 void Vulkan::gui_ConnectedToServer() {
 	if(Game.Session) {
+
+		if(!ImGui::Begin("MainMenu", nullptr, ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove))
+			return;
+	
+		std::string text = std::to_string(ImGui::GetIO().Framerate);
+		ImGui::Text(text.c_str());
+
+		ImGui::End();
+
 		if(Game.Session->isConnected())
 			return;
 

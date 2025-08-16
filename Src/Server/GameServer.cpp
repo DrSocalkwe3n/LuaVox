@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <functional>
 #include <glm/geometric.hpp>
+#include <iostream>
 #include <iterator>
 #include <memory>
 #include <mutex>

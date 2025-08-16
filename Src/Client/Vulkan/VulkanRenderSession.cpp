@@ -1253,6 +1253,9 @@ void VulkanRenderSession::pushStage(EnumRenderStage stage) {
         return;
 
     VKCTX->ThreadVertexObj.pushStage(stage);
+
+    if(stage == EnumRenderStage::Shutdown)
+        VKCTX->ThreadVertexObj.join();
 }
 
 std::vector<VoxelVertexPoint> VulkanRenderSession::generateMeshForVoxelChunks(const std::vector<VoxelCube> cubes) {

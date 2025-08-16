@@ -234,6 +234,10 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
             return std::pair{vertexVoxels, vertexNodes};
         }
 
+        void join() {
+            Thread.join();
+        }
+
     private:
         // Буферы для хранения вершин
         VertexPool<VoxelVertexPoint> VertexPool_Voxels;

@@ -2355,31 +2355,31 @@ void GameServer::stepSyncContent() {
         remoteClient->onUpdate();
 
         // Это для пробы строительства и ломания нод
-        // while(!cec->Build.empty()) {
-        //     Pos::GlobalNode node = cec->Build.front();
-        //     cec->Build.pop();
+        while(!remoteClient->Build.empty()) {
+            Pos::GlobalNode node = remoteClient->Build.front();
+            remoteClient->Build.pop();
 
-        //     Pos::GlobalRegion rPos = node >> 6;
-        //     Pos::bvec4u cPos = (node >> 4) & 0x3;
-        //     Pos::bvec16u nPos = node & 0xf;
+            Pos::GlobalRegion rPos = node >> 6;
+            Pos::bvec4u cPos = (node >> 4) & 0x3;
+            Pos::bvec16u nPos = node & 0xf;
 
-        //     auto &region = Expanse.Worlds[0]->Regions[rPos];
-        //     region->Nodes[cPos.pack()][nPos.pack()].NodeId = 4;
-        //     region->IsChunkChanged_Nodes |= 1ull << cPos.pack();
-        // }
+            auto &region = Expanse.Worlds[0]->Regions[rPos];
+            region->Nodes[cPos.pack()][nPos.pack()].NodeId = 4;
+            region->IsChunkChanged_Nodes |= 1ull << cPos.pack();
+        }
 
-        // while(!cec->Break.empty()) {
-        //     Pos::GlobalNode node = cec->Break.front();
-        //     cec->Break.pop();
+        while(!remoteClient->Break.empty()) {
+            Pos::GlobalNode node = remoteClient->Break.front();
+            remoteClient->Break.pop();
 
-        //     Pos::GlobalRegion rPos = node >> 6;
-        //     Pos::bvec4u cPos = (node >> 4) & 0x3;
-        //     Pos::bvec16u nPos = node & 0xf;
+            Pos::GlobalRegion rPos = node >> 6;
+            Pos::bvec4u cPos = (node >> 4) & 0x3;
+            Pos::bvec16u nPos = node & 0xf;
 
-        //     auto &region = Expanse.Worlds[0]->Regions[rPos];
-        //     region->Nodes[cPos.pack()][nPos.pack()].NodeId = 0;
-        //     region->IsChunkChanged_Nodes |= 1ull << cPos.pack();
-        // }
+            auto &region = Expanse.Worlds[0]->Regions[rPos];
+            region->Nodes[cPos.pack()][nPos.pack()].NodeId = 0;
+            region->IsChunkChanged_Nodes |= 1ull << cPos.pack();
+        }
     }
 
 

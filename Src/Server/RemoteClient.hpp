@@ -320,6 +320,7 @@ class RemoteClient {
 public:
     const std::string Username;
     Pos::Object CameraPos = {0, 0, 0};
+    Pos::Object LastPos = CameraPos;
     ToServer::PacketQuat CameraQuat = {0};
     TOS::SpinlockObject<std::queue<uint8_t>> Actions;
     ResourceId RecievedAssets[(int) EnumAssets::MAX_ENUM] = {0};
@@ -328,6 +329,7 @@ public:
     ContentViewInfo ContentViewState;
     // Если игрок пересекал границы региона (для перерасчёта ContentViewState)
     bool CrossedRegion = true;
+    std::queue<Pos::GlobalNode> Build, Break;
 
 public:
     RemoteClient(asio::io_context &ioc, tcp::socket socket, const std::string username, std::vector<ResourceFile::Hash_t> &&client_cache)

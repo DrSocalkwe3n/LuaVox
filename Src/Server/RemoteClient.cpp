@@ -764,7 +764,37 @@ void RemoteClient::NetworkAndResource_t::decrementAssets(ResUses_t::RefAssets_t&
 }
 
 void RemoteClient::onUpdate() {
+    Pos::Object pos = CameraPos;
 
+    Pos::GlobalRegion r1 = LastPos >> 12 >> 4 >> 2;
+    Pos::GlobalRegion r2 = pos >> 12 >> 4 >> 2;
+    if(r1 != r2) {
+        CrossedRegion = true;
+    }
+
+    if(!Actions.get_read().empty()) {
+        auto lock = Actions.lock();
+        while(!lock->empty()) {
+            uint8_t action = lock->front();
+            lock->pop();
+
+            glm::quat q = CameraQuat.toQuat();
+            glm::vec4 v = glm::mat4(q)*glm::vec4(0, 0, -6, 1);
+            Pos::GlobalNode pos = (Pos::GlobalNode) (glm::vec3) v;
+            pos += pos >> Pos::Object_t::BS_Bit;
+
+            if(action == 0) {
+                // Break
+                Break.push(pos);
+
+            } else if(action == 1) {
+                // Build
+                Build.push(pos);
+            }
+        }
+    }
+
+    LastPos = pos;
 }
 
 std::vector<std::tuple<WorldId_t, Pos::Object, uint8_t>> RemoteClient::getViewPoints() {

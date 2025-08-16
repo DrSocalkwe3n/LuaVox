@@ -1205,7 +1205,7 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
         Pos::GlobalChunk x64offset = X64Offset >> Pos::Object_t::BS_Bit >> 4;
         Pos::GlobalRegion x64offset_region = x64offset >> 2;
 
-        auto [voxelVertexs, nodeVertexs] = VKCTX->ThreadVertexObj.getChunksForRender(WorldId, Pos, 2, PCO.ProjView, x64offset_region);
+        auto [voxelVertexs, nodeVertexs] = VKCTX->ThreadVertexObj.getChunksForRender(WorldId, Pos, 1, PCO.ProjView, x64offset_region);
 
         glm::mat4 orig = PCO.Model;
         for(auto& [chunkPos, vertexs, vertexCount] : nodeVertexs) {

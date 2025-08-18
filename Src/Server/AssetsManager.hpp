@@ -91,8 +91,24 @@ private:
         Загрузка ресурса с файла. При необходимости приводится
         к внутреннему формату и сохраняется в кеше
     */
-    Resource loadResourceFromFile(EnumAssets type, fs::path path) const;
-    Resource loadResourceFromLua(EnumAssets type, void*) const;
+    Resource loadResourceFromFile   (EnumAssets type, fs::path path) const;
+    Resource loadResourceFromLua    (EnumAssets type, const sol::table& profile) const;
+
+    Resource loadResourceFromFile_Nodestate (fs::path path) const;
+    Resource loadResourceFromFile_Particle  (fs::path path) const;
+    Resource loadResourceFromFile_Animation (fs::path path) const;
+    Resource loadResourceFromFile_Model     (fs::path path) const;
+    Resource loadResourceFromFile_Texture   (fs::path path) const;
+    Resource loadResourceFromFile_Sound     (fs::path path) const;
+    Resource loadResourceFromFile_Font      (fs::path path) const;
+
+    Resource loadResourceFromLua_Nodestate  (const sol::table& profile) const;
+    Resource loadResourceFromLua_Particle   (const sol::table& profile) const;
+    Resource loadResourceFromLua_Animation  (const sol::table& profile) const;
+    Resource loadResourceFromLua_Model      (const sol::table& profile) const;
+    Resource loadResourceFromLua_Texture    (const sol::table& profile) const;
+    Resource loadResourceFromLua_Sound      (const sol::table& profile) const;
+    Resource loadResourceFromLua_Font       (const sol::table& profile) const;
 
 public:
     AssetsManager(asio::io_context& ioc);

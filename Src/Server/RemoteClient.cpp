@@ -497,7 +497,7 @@ ResourceRequest RemoteClient::pushPreparedPackets() {
 
 void RemoteClient::informateAssets(const std::vector<std::tuple<EnumAssets, ResourceId, const std::string, const std::string, AssetsManager::Resource>>& resources)
 {
-    std::vector<std::tuple<EnumAssets, ResourceId, const std::string, const std::string, Hash_t>> newForClient;
+    std::vector<std::tuple<EnumAssets, ResourceId, const std::string, const std::string, Hash_t, size_t>> newForClient;
 
     for(auto& [type, resId, domain, key, resource] : resources) {
         auto hash = resource.hash();
@@ -525,7 +525,7 @@ void RemoteClient::informateAssets(const std::vector<std::tuple<EnumAssets, Reso
                 && std::get<Hash_t>(iter->second) != hash
             ) {
                 // Требуется перепривязать идентификатор к новому хешу
-                newForClient.push_back({(EnumAssets) type, resId, domain, key, hash});
+                newForClient.push_back({(EnumAssets) type, resId, domain, key, hash, resource.size()});
                 std::get<Hash_t>(iter->second) = hash;
             }
         }
@@ -540,9 +540,9 @@ void RemoteClient::informateAssets(const std::vector<std::tuple<EnumAssets, Reso
         lock->NextPacket << (uint8_t) ToClient::L1::Resource    // Оповещение
             << ((uint8_t) ToClient::L2Resource::Bind) << uint32_t(newForClient.size());
 
-        for(auto& [type, resId, domain, key, hash] : newForClient) {
+        for(auto& [type, resId, domain, key, hash, size] : newForClient) {
             // TODO: может внести ограничение на длину домена и ключа?
-            lock->NextPacket << uint8_t(type) << uint32_t(resId) << domain << key;
+            lock->NextPacket << uint8_t(type) << uint32_t(resId) << domain << key << size;
             lock->NextPacket.write((const std::byte*) hash.data(), hash.size());
         }
     }

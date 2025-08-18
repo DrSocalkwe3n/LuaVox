@@ -120,7 +120,7 @@ class ContentManager {
                 Profiles_Item.push_back(std::make_unique<TableEntry<DefItem>>()); 
             break;
         default:
-            assert(false);
+            std::unreachable();
         }
 
         return resId;

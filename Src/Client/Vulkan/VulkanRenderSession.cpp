@@ -1205,10 +1205,15 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
         Pos::GlobalChunk x64offset = X64Offset >> Pos::Object_t::BS_Bit >> 4;
         Pos::GlobalRegion x64offset_region = x64offset >> 2;
 
-        auto [voxelVertexs, nodeVertexs] = VKCTX->ThreadVertexObj.getChunksForRender(WorldId, Pos, 2, PCO.ProjView, x64offset_region);
+        auto [voxelVertexs, nodeVertexs] = VKCTX->ThreadVertexObj.getChunksForRender(WorldId, Pos, 1, PCO.ProjView, x64offset_region);
+
+        size_t count = 0;
+
 
         glm::mat4 orig = PCO.Model;
         for(auto& [chunkPos, vertexs, vertexCount] : nodeVertexs) {
+            count += vertexCount;
+            
             glm::vec3 cpos(chunkPos-x64offset);
             PCO.Model = glm::translate(orig, cpos*16.f);
             auto [vkBufferN, offset] = vertexs;
@@ -1223,6 +1228,9 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
 
             vkCmdDraw(drawCmd, vertexCount, 1, offset, 0);
         }
+
+        TOS::Logger LOG = "VRS";
+        LOG.debug() << "Node: drawCals: " << nodeVertexs.size() << " vertexs: " << count;
 
         PCO.Model = orig;
 

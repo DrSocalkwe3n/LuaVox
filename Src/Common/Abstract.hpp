@@ -396,7 +396,7 @@ using ResourceId = uint32_t;
     Если объекты удаляются, то сторона клиента об этом не уведомляется
 */
 enum class EnumAssets {
-   Nodestate, Patricle, Animation, Model, Texture, Sound, Font, MAX_ENUM
+   Nodestate, Particle, Animation, Model, Texture, Sound, Font, MAX_ENUM
 };
 
 using AssetsNodestate   = ResourceId;

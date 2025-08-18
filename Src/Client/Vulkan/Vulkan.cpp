@@ -584,6 +584,7 @@ void Vulkan::run()
 		// vkAssert(!vkQueueWaitIdle(Graphics.DeviceQueueGraphic));
 
 		{
+			// Эту хрень надо убрать
 			auto lockQueue = Graphics.DeviceQueueGraphic.lock();
 			vkDeviceWaitIdle(Graphics.Device);
 			lockQueue.unlock();

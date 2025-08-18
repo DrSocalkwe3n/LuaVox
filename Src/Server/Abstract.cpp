@@ -1,4 +1,5 @@
 #include "Abstract.hpp"
+#include <csignal>
 
 
 namespace LV::Server {
@@ -249,7 +250,7 @@ NodeStateCondition nodestateExpression(const std::vector<NodestateEntry>& entrie
                     case EnumTokenKind::EQ:         value = std::get<int>(leftToken) == std::get<int>(rightToken); break;
                     case EnumTokenKind::NE:         value = std::get<int>(leftToken) != std::get<int>(rightToken); break;
 
-                    default: assert(false);
+                    default: std::unreachable();
                     }
 
 
@@ -273,7 +274,7 @@ NodeStateCondition nodestateExpression(const std::vector<NodestateEntry>& entrie
                     case EnumTokenKind::EQ:         bin.op = Op::EQ;  break;
                     case EnumTokenKind::NE:         bin.op = Op::NE;  break;
 
-                    default: assert(false);
+                    default: std::unreachable();
                     }
 
                     if(int* value = std::get_if<int>(&leftToken)) {
@@ -344,7 +345,7 @@ NodeStateCondition nodestateExpression(const std::vector<NodestateEntry>& entrie
             case Op::Pos: return +rNodeValue;
             case Op::Neg: return -rNodeValue;
             default:
-                assert(false);
+                std::unreachable();
             }
         } else if(const Node::Binary* value = std::get_if<Node::Binary>(&node.v)) {
             int lNodeValue = lambdaCalcNode(value->lhs);
@@ -365,10 +366,10 @@ NodeStateCondition nodestateExpression(const std::vector<NodestateEntry>& entrie
             case Op::And: return lNodeValue&&rNodeValue;
             case Op::Or:  return lNodeValue||rNodeValue;
             default:
-                assert(false);
+                std::unreachable();
             }
         } else {
-            assert(false);
+            std::unreachable();
         }
     };
 

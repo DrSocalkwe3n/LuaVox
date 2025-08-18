@@ -1,18 +1,144 @@
 #include "AssetsManager.hpp"
 #include "Common/Abstract.hpp"
+#include "png++/rgb_pixel.hpp"
 #include <filesystem>
+#include <png.h>
+#include <pngconf.h>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 
 namespace LV::Server {
 
 AssetsManager::Resource AssetsManager::loadResourceFromFile(EnumAssets type, fs::path path) const {
-    return AssetsManager::Resource(path);
+    switch(type) {
+    case EnumAssets::Nodestate: return loadResourceFromFile_Nodestate(path);
+    case EnumAssets::Particle: return loadResourceFromFile_Particle(path);
+    case EnumAssets::Animation: return loadResourceFromFile_Animation(path);
+    case EnumAssets::Model: return loadResourceFromFile_Model(path);
+    case EnumAssets::Texture: return loadResourceFromFile_Texture(path);
+    case EnumAssets::Sound: return loadResourceFromFile_Sound(path);
+    case EnumAssets::Font: return loadResourceFromFile_Font(path);
+    default:
+        std::unreachable();
+    }
 }
 
-AssetsManager::Resource AssetsManager::loadResourceFromLua(EnumAssets type, void*) const {
-    return AssetsManager::Resource("assets/null");
+AssetsManager::Resource AssetsManager::loadResourceFromLua(EnumAssets type, const sol::table& profile) const {
+    switch(type) {
+    case EnumAssets::Nodestate: return loadResourceFromLua_Nodestate(profile);
+    case EnumAssets::Particle: return loadResourceFromLua_Particle(profile);
+    case EnumAssets::Animation: return loadResourceFromLua_Animation(profile);
+    case EnumAssets::Model: return loadResourceFromLua_Model(profile);
+    case EnumAssets::Texture: return loadResourceFromLua_Texture(profile);
+    case EnumAssets::Sound: return loadResourceFromLua_Sound(profile);
+    case EnumAssets::Font: return loadResourceFromLua_Font(profile);
+    default:
+        std::unreachable();
+    }
+}
+
+AssetsManager::Resource AssetsManager::loadResourceFromFile_Nodestate(fs::path path) const {
+    std::unreachable();
+}
+
+AssetsManager::Resource AssetsManager::loadResourceFromFile_Particle(fs::path path) const {
+    std::unreachable();
+}
+
+AssetsManager::Resource AssetsManager::loadResourceFromFile_Animation(fs::path path) const {
+    std::unreachable();
+}
+
+AssetsManager::Resource AssetsManager::loadResourceFromFile_Model(fs::path path) const {
+    /*
+        json, obj, glTF
+    */
+    std::unreachable();
+}
+
+AssetsManager::Resource AssetsManager::loadResourceFromFile_Texture(fs::path path) const {
+    Resource res(path);
+
+    if(res.size() < 8)
+        MAKE_ERROR("Файл не является текстурой png или jpeg (недостаточный размер файла)");
+
+    if(png_check_sig(reinterpret_cast<png_bytep>((unsigned char*) res.data()), 8)) {
+        // Это png
+        return res;
+    } else if((int) res.data()[0] == 0xFF && (int) res.data()[1] == 0xD8) {
+        // Это jpeg
+        return res;
+    } else {
+        MAKE_ERROR("Файл не является текстурой png или jpeg");
+    }
+
+    std::unreachable();
+}
+
+AssetsManager::Resource AssetsManager::loadResourceFromFile_Sound(fs::path path) const {
+    std::unreachable();
+}
+
+AssetsManager::Resource AssetsManager::loadResourceFromFile_Font(fs::path path) const {
+    std::unreachable();
+}
+
+AssetsManager::Resource AssetsManager::loadResourceFromLua_Nodestate(const sol::table& profile) const {
+    if(std::optional<std::string> path = profile.get<std::optional<std::string>>("path")) {
+        return AssetsManager::Resource(*path);
+    }
+
+    std::unreachable();
+}
+
+AssetsManager::Resource AssetsManager::loadResourceFromLua_Particle(const sol::table& profile) const {
+    if(std::optional<std::string> path = profile.get<std::optional<std::string>>("path")) {
+        return AssetsManager::Resource(*path);
+    }
+    
+    std::unreachable();
+}
+
+AssetsManager::Resource AssetsManager::loadResourceFromLua_Animation(const sol::table& profile) const {
+    if(std::optional<std::string> path = profile.get<std::optional<std::string>>("path")) {
+        return AssetsManager::Resource(*path);
+    }
+    
+    std::unreachable();
+}
+
+AssetsManager::Resource AssetsManager::loadResourceFromLua_Model(const sol::table& profile) const {
+    if(std::optional<std::string> path = profile.get<std::optional<std::string>>("path")) {
+        return AssetsManager::Resource(*path);
+    }
+    
+    std::unreachable();
+}
+
+AssetsManager::Resource AssetsManager::loadResourceFromLua_Texture(const sol::table& profile) const {
+    if(std::optional<std::string> path = profile.get<std::optional<std::string>>("path")) {
+        return AssetsManager::Resource(*path);
+    }
+    
+    std::unreachable();
+}
+
+AssetsManager::Resource AssetsManager::loadResourceFromLua_Sound(const sol::table& profile) const {
+    if(std::optional<std::string> path = profile.get<std::optional<std::string>>("path")) {
+        return AssetsManager::Resource(*path);
+    }
+    
+    std::unreachable();
+}
+
+AssetsManager::Resource AssetsManager::loadResourceFromLua_Font(const sol::table& profile) const {
+    if(std::optional<std::string> path = profile.get<std::optional<std::string>>("path")) {
+        return AssetsManager::Resource(*path);
+    }
+    
+    std::unreachable();
 }
 
 AssetsManager::AssetsManager(asio::io_context& ioc)
@@ -70,14 +196,14 @@ AssetsManager::Out_recheckResources AssetsManager::recheckResources(const Assets
 
                     switch ((EnumAssets) type) {
                     case EnumAssets::Nodestate: file /= "nodestate";   break;
-                    case EnumAssets::Patricle:  file /= "particle";    break;
+                    case EnumAssets::Particle:  file /= "particle";    break;
                     case EnumAssets::Animation: file /= "animation";   break;
                     case EnumAssets::Model:     file /= "model";       break;
                     case EnumAssets::Texture:   file /= "texture";     break;
                     case EnumAssets::Sound:     file /= "sound";       break;
                     case EnumAssets::Font:      file /= "font";        break;
                     default:
-                        assert(false);
+                        std::unreachable();
                     }
 
                     file /= key;
@@ -159,14 +285,14 @@ AssetsManager::Out_recheckResources AssetsManager::recheckResources(const Assets
 
                 switch ((EnumAssets) type) {
                 case EnumAssets::Nodestate: resourcesPath /= "nodestate";   break;
-                case EnumAssets::Patricle:  resourcesPath /= "particle";    break;
+                case EnumAssets::Particle:  resourcesPath /= "particle";    break;
                 case EnumAssets::Animation: resourcesPath /= "animation";   break;
                 case EnumAssets::Model:     resourcesPath /= "model";       break;
                 case EnumAssets::Texture:   resourcesPath /= "texture";     break;
                 case EnumAssets::Sound:     resourcesPath /= "sound";       break;
                 case EnumAssets::Font:      resourcesPath /= "font";        break;
                 default:
-                    assert(false);
+                    std::unreachable();
                 }
 
                 auto& findList = findedResources[type][domain];

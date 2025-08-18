@@ -1615,7 +1615,7 @@ void GameServer::initLuaAssets() {
     };
 
     core->set_function("register_nodestate",    [&](const std::string& key, const sol::table& profile) { reg(EnumAssets::Nodestate, key, profile); });
-    core->set_function("register_particle",     [&](const std::string& key, const sol::table& profile) { reg(EnumAssets::Patricle, key, profile); });
+    core->set_function("register_particle",     [&](const std::string& key, const sol::table& profile) { reg(EnumAssets::Particle, key, profile); });
     core->set_function("register_animation",    [&](const std::string& key, const sol::table& profile) { reg(EnumAssets::Animation, key, profile); });
     core->set_function("register_model",        [&](const std::string& key, const sol::table& profile) { reg(EnumAssets::Model, key, profile); });
     core->set_function("register_texture",      [&](const std::string& key, const sol::table& profile) { reg(EnumAssets::Texture, key, profile); });

@@ -31,6 +31,12 @@ project(LuaVox VERSION 0.0 DESCRIPTION "LuaVox Description")
 add_library(luavox_common INTERFACE)
 target_compile_features(luavox_common INTERFACE cxx_std_23)
 
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+  target_compile_options(luavox_common INTERFACE -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all)
+  target_link_options(luavox_common INTERFACE -fsanitize=address,undefined)
+  set(ENV{ASAN_OPTIONS} detect_leaks=0)
+endif()
+
 if ("${CMAKE_CXX_COMPILER_ID}" MATCHES "GNU")
   target_compile_options(luavox_common INTERFACE -fcoroutines)
 elseif ("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang")
@@ -151,15 +157,38 @@ FetchContent_MakeAvailable(sqlite3)
 target_link_libraries(luavox_common INTERFACE SQLite::SQLite3)
 
 # Static Assets
-file(GLOB_RECURSE ASSETS RELATIVE "${PROJECT_SOURCE_DIR}/assets" "assets/*.*")
-file(GLOB_RECURSE ASSETS_A "${PROJECT_SOURCE_DIR}/assets" "assets/*.*")
-add_custom_command(OUTPUT assets.o resources.cpp INPUT ${ASSETS_A}
-    COMMAND cd ${CMAKE_CURRENT_BINARY_DIR} && ${CMAKE_CURRENT_SOURCE_DIR}/Src/assets.py ${ASSETS}
-    COMMAND cd "${CMAKE_CURRENT_SOURCE_DIR}/assets" && ld -r -b binary -o '${CMAKE_CURRENT_BINARY_DIR}/assets.o' ${ASSETS}
-    COMMAND objcopy --rename-section .data=.rodata,alloc,load,readonly,data,contents ${CMAKE_CURRENT_BINARY_DIR}/assets.o ${CMAKE_CURRENT_BINARY_DIR}/assets.o)
+find_package(Python3 REQUIRED)
+set(ASSETS_DIR "${PROJECT_SOURCE_DIR}/assets")
+file(GLOB_RECURSE ASSETS_LIST RELATIVE "${ASSETS_DIR}" "${ASSETS_DIR}/*.*")
 
-set_source_files_properties(assets.o PROPERTIES EXTERNAL_OBJECT true GENERATED true)
-add_library(assets STATIC resources.cpp assets.o)
+set(ASSETS_O "${CMAKE_CURRENT_BINARY_DIR}/assets.o")
+set(ASSETS_LD_O "${CMAKE_CURRENT_BINARY_DIR}/assets_ld.o")
+set(RESOURCES_CPP "${CMAKE_CURRENT_BINARY_DIR}/resources.cpp")
+
+set(ASSETS_ABS)
+foreach(asset IN LISTS ASSETS_LIST)
+    list(APPEND ASSETS_ABS "${ASSETS_DIR}/${asset}")
+endforeach()
+
+add_custom_command(
+    OUTPUT ${ASSETS_O} ${RESOURCES_CPP}
+    DEPENDS ${ASSETS_ABS}
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/Src/assets.py
+        "${RESOURCES_CPP}"
+        ${ASSETS_LIST}
+    COMMAND ${CMAKE_COMMAND} -E chdir "${CMAKE_CURRENT_SOURCE_DIR}/assets" ld -r -b binary -o "${ASSETS_LD_O}" ${ASSETS_LIST}
+    COMMAND ${CMAKE_OBJCOPY}
+        -O elf64-x86-64
+        --rename-section .data=.rodata,alloc,load,readonly,data,contents
+        ${ASSETS_LD_O}
+        ${ASSETS_O}
+    COMMENT "Embedding assets: generating resources.cpp and assets.o"
+    VERBATIM
+)
+
+set_source_files_properties(${RESOURCES_CPP} PROPERTIES GENERATED true)
+set_source_files_properties(${ASSETS_O} PROPERTIES EXTERNAL_OBJECT true GENERATED true)
+add_library(assets STATIC ${RESOURCES_CPP} ${ASSETS_O})
 set_target_properties(assets PROPERTIES LINKER_LANGUAGE C)
 target_link_libraries(luavox_common INTERFACE assets)
 

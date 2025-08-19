@@ -823,4 +823,18 @@ std::u8string unCompressLinear(const std::u8string& data) {
     return *(std::u8string*) &outString;
 }
 
+PreparedNodeState::PreparedNodeState(const js::object& profile) {
+    for(auto& [key, value] : profile) {
+        
+    }
+}
+
+PreparedNodeState::PreparedNodeState(const sol::table& profile) {
+
+}
+
+PreparedNodeState::PreparedNodeState(const std::u8string& data) {
+
+}
+
 }

@@ -798,7 +798,7 @@ void RemoteClient::onUpdate() {
 }
 
 std::vector<std::tuple<WorldId_t, Pos::Object, uint8_t>> RemoteClient::getViewPoints() {
-    return {{0, CameraPos, 2}};
+    return {{0, CameraPos, 1}};
 }
 
 }

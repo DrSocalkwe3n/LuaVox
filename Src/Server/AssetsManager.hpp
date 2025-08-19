@@ -16,6 +16,10 @@ namespace LV::Server {
 
 namespace fs = std::filesystem;
 
+struct DefModel {
+
+};
+
 /*
     Работает с ресурсами из папок assets.
     Использует папку server_cache/assets для хранения
@@ -56,6 +60,13 @@ public:
         Hash_t hash() const { return In->Hash; }
     };
 
+    struct ResourceChangeObj {
+        // Потерянные ресурсы
+        std::unordered_map<std::string, std::vector<std::string>> Lost[(int) EnumAssets::MAX_ENUM];
+        // Домен и ключ ресурса
+        std::unordered_map<std::string, std::vector<std::tuple<std::string, Resource, fs::file_time_type>>> NewOrChange[(int) EnumAssets::MAX_ENUM];
+    };
+
 private:
     // Данные об отслеживаемых файлах
     struct DataEntry {
@@ -65,6 +76,7 @@ private:
         std::string Domain, Key;
     };
 
+    template<typename T>
     struct TableEntry {
         static constexpr size_t ChunkSize = 4096;
         bool IsFull = false;
@@ -78,7 +90,12 @@ private:
 
     struct Local {
         // Связь ресурсов по идентификаторам
-        std::vector<std::unique_ptr<TableEntry>> Table[(int) EnumAssets::MAX_ENUM];
+        std::vector<std::unique_ptr<TableEntry<DataEntry>>> Table[(int) EnumAssets::MAX_ENUM];
+
+        // Распаршенные ресурсы, для использования сервером
+        std::vector<std::unique_ptr<TableEntry<DefNodeState>>> Table_NodeState;
+        std::vector<std::unique_ptr<TableEntry<DefModel>>> Table_Model;
+
         // Связь домены -> {ключ -> идентификатор}
         std::unordered_map<std::string, std::unordered_map<std::string, ResourceId>> KeyToId[(int) EnumAssets::MAX_ENUM];
         
@@ -91,24 +108,24 @@ private:
         Загрузка ресурса с файла. При необходимости приводится
         к внутреннему формату и сохраняется в кеше
     */
-    Resource loadResourceFromFile   (EnumAssets type, fs::path path) const;
-    Resource loadResourceFromLua    (EnumAssets type, const sol::table& profile) const;
+    void loadResourceFromFile   (EnumAssets type, ResourceChangeObj& out, const std::string& domain, const std::string& key, fs::path path) const;
+    void loadResourceFromLua    (EnumAssets type, ResourceChangeObj& out, const std::string& domain, const std::string& key, const sol::table& profile) const;
 
-    Resource loadResourceFromFile_Nodestate (fs::path path) const;
-    Resource loadResourceFromFile_Particle  (fs::path path) const;
-    Resource loadResourceFromFile_Animation (fs::path path) const;
-    Resource loadResourceFromFile_Model     (fs::path path) const;
-    Resource loadResourceFromFile_Texture   (fs::path path) const;
-    Resource loadResourceFromFile_Sound     (fs::path path) const;
-    Resource loadResourceFromFile_Font      (fs::path path) const;
+    void loadResourceFromFile_Nodestate (ResourceChangeObj& out, const std::string& domain, const std::string& key, fs::path path) const;
+    void loadResourceFromFile_Particle  (ResourceChangeObj& out, const std::string& domain, const std::string& key, fs::path path) const;
+    void loadResourceFromFile_Animation (ResourceChangeObj& out, const std::string& domain, const std::string& key, fs::path path) const;
+    void loadResourceFromFile_Model     (ResourceChangeObj& out, const std::string& domain, const std::string& key, fs::path path) const;
+    void loadResourceFromFile_Texture   (ResourceChangeObj& out, const std::string& domain, const std::string& key, fs::path path) const;
+    void loadResourceFromFile_Sound     (ResourceChangeObj& out, const std::string& domain, const std::string& key, fs::path path) const;
+    void loadResourceFromFile_Font      (ResourceChangeObj& out, const std::string& domain, const std::string& key, fs::path path) const;
 
-    Resource loadResourceFromLua_Nodestate  (const sol::table& profile) const;
-    Resource loadResourceFromLua_Particle   (const sol::table& profile) const;
-    Resource loadResourceFromLua_Animation  (const sol::table& profile) const;
-    Resource loadResourceFromLua_Model      (const sol::table& profile) const;
-    Resource loadResourceFromLua_Texture    (const sol::table& profile) const;
-    Resource loadResourceFromLua_Sound      (const sol::table& profile) const;
-    Resource loadResourceFromLua_Font       (const sol::table& profile) const;
+    void loadResourceFromLua_Nodestate  (ResourceChangeObj& out, const std::string& domain, const std::string& key, const sol::table& profile) const;
+    void loadResourceFromLua_Particle   (ResourceChangeObj& out, const std::string& domain, const std::string& key, const sol::table& profile) const;
+    void loadResourceFromLua_Animation  (ResourceChangeObj& out, const std::string& domain, const std::string& key, const sol::table& profile) const;
+    void loadResourceFromLua_Model      (ResourceChangeObj& out, const std::string& domain, const std::string& key, const sol::table& profile) const;
+    void loadResourceFromLua_Texture    (ResourceChangeObj& out, const std::string& domain, const std::string& key, const sol::table& profile) const;
+    void loadResourceFromLua_Sound      (ResourceChangeObj& out, const std::string& domain, const std::string& key, const sol::table& profile) const;
+    void loadResourceFromLua_Font       (ResourceChangeObj& out, const std::string& domain, const std::string& key, const sol::table& profile) const;
 
 public:
     AssetsManager(asio::io_context& ioc);
@@ -137,14 +154,7 @@ public:
         std::unordered_map<std::string, std::unordered_map<std::string, void*>> Custom[(int) EnumAssets::MAX_ENUM];
     };
 
-    struct Out_recheckResources {
-        // Потерянные ресурсы
-        std::unordered_map<std::string, std::vector<std::string>> Lost[(int) EnumAssets::MAX_ENUM];
-        // Домен и ключ ресурса
-        std::unordered_map<std::string, std::vector<std::tuple<std::string, Resource, fs::file_time_type>>> NewOrChange[(int) EnumAssets::MAX_ENUM];
-    };
-
-    Out_recheckResources recheckResources(const AssetsRegister&);
+    ResourceChangeObj recheckResources(const AssetsRegister&);
 
     /*
         Применяет расчитанные изменения.
@@ -155,7 +165,7 @@ public:
         std::vector<std::pair<ResourceId, Resource>> NewOrChange[(int) EnumAssets::MAX_ENUM];
     };
 
-    Out_applyResourceChange applyResourceChange(const Out_recheckResources& orr);
+    Out_applyResourceChange applyResourceChange(const ResourceChangeObj& orr);
 
     /*
         Выдаёт идентификатор ресурса, даже если он не существует или был удалён.
@@ -177,8 +187,8 @@ public:
 
     std::optional<std::tuple<Resource, const std::string&, const std::string&>> getResource(EnumAssets type, ResourceId id) {
         auto lock = LocalObj.lock();
-        assert(id < lock->Table[(int) type].size()*TableEntry::ChunkSize);
-        auto& value = lock->Table[(int) type][id / TableEntry::ChunkSize]->Entries[id % TableEntry::ChunkSize];
+        assert(id < lock->Table[(int) type].size()*TableEntry<DataEntry>::ChunkSize);
+        auto& value = lock->Table[(int) type][id / TableEntry<DataEntry>::ChunkSize]->Entries[id % TableEntry<DataEntry>::ChunkSize];
         if(value)
             return {{value->Res, value->Domain, value->Key}};
         else

@@ -2226,18 +2226,23 @@ void Vulkan::gui_MainMenu() {
 
 void Vulkan::gui_ConnectedToServer() {
 	if(Game.Session) {
-
-		if(!ImGui::Begin("MainMenu", nullptr, ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove))
-			return;
-	
-		std::string text = std::to_string(ImGui::GetIO().Framerate);
-		ImGui::Text(text.c_str());
-
-		ImGui::End();
+		if(ImGui::Begin("MainMenu", nullptr, ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove))
+		{
+			std::string text = std::to_string(ImGui::GetIO().Framerate);
+			ImGui::Text(text.c_str());
+			if(ImGui::Button("Выйти")) {
+        		Game.RSession->pushStage(EnumRenderStage::Shutdown);
+				Game.Session->shutdown(EnumDisconnect::ByInterface);
+				Game.RSession = nullptr;
+				Game.Session = nullptr;
+			}
+			ImGui::End();
+		}
 
 		if(Game.Session->isConnected())
 			return;
 
+		Game.RSession->pushStage(EnumRenderStage::Shutdown);
 		Game.RSession = nullptr;
 		Game.Session = nullptr;
 		Game.ImGuiInterfaces.pop_back();

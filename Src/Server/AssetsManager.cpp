@@ -11,54 +11,54 @@
 
 namespace LV::Server {
 
-AssetsManager::Resource AssetsManager::loadResourceFromFile(EnumAssets type, fs::path path) const {
+void AssetsManager::loadResourceFromFile(EnumAssets type, ResourceChangeObj& out, const std::string& domain, const std::string& key, fs::path path) const {
     switch(type) {
-    case EnumAssets::Nodestate: return loadResourceFromFile_Nodestate(path);
-    case EnumAssets::Particle: return loadResourceFromFile_Particle(path);
-    case EnumAssets::Animation: return loadResourceFromFile_Animation(path);
-    case EnumAssets::Model: return loadResourceFromFile_Model(path);
-    case EnumAssets::Texture: return loadResourceFromFile_Texture(path);
-    case EnumAssets::Sound: return loadResourceFromFile_Sound(path);
-    case EnumAssets::Font: return loadResourceFromFile_Font(path);
+    case EnumAssets::Nodestate:     loadResourceFromFile_Nodestate  (out, domain, key, path); return;
+    case EnumAssets::Particle:      loadResourceFromFile_Particle   (out, domain, key, path); return;
+    case EnumAssets::Animation:     loadResourceFromFile_Animation  (out, domain, key, path); return;
+    case EnumAssets::Model:         loadResourceFromFile_Model      (out, domain, key, path); return;
+    case EnumAssets::Texture:       loadResourceFromFile_Texture    (out, domain, key, path); return;
+    case EnumAssets::Sound:         loadResourceFromFile_Sound      (out, domain, key, path); return;
+    case EnumAssets::Font:          loadResourceFromFile_Font       (out, domain, key, path); return;
     default:
         std::unreachable();
     }
 }
 
-AssetsManager::Resource AssetsManager::loadResourceFromLua(EnumAssets type, const sol::table& profile) const {
+void AssetsManager::loadResourceFromLua(EnumAssets type, ResourceChangeObj& out, const std::string& domain, const std::string& key, const sol::table& profile) const {
     switch(type) {
-    case EnumAssets::Nodestate: return loadResourceFromLua_Nodestate(profile);
-    case EnumAssets::Particle: return loadResourceFromLua_Particle(profile);
-    case EnumAssets::Animation: return loadResourceFromLua_Animation(profile);
-    case EnumAssets::Model: return loadResourceFromLua_Model(profile);
-    case EnumAssets::Texture: return loadResourceFromLua_Texture(profile);
-    case EnumAssets::Sound: return loadResourceFromLua_Sound(profile);
-    case EnumAssets::Font: return loadResourceFromLua_Font(profile);
+    case EnumAssets::Nodestate:     loadResourceFromLua_Nodestate(out, domain, key, profile); return;
+    case EnumAssets::Particle:      loadResourceFromLua_Particle(out, domain, key, profile);  return;
+    case EnumAssets::Animation:     loadResourceFromLua_Animation(out, domain, key, profile); return;
+    case EnumAssets::Model:         loadResourceFromLua_Model(out, domain, key, profile);     return;
+    case EnumAssets::Texture:       loadResourceFromLua_Texture(out, domain, key, profile);   return;
+    case EnumAssets::Sound:         loadResourceFromLua_Sound(out, domain, key, profile);     return;
+    case EnumAssets::Font:          loadResourceFromLua_Font(out, domain, key, profile);      return;
     default:
         std::unreachable();
     }
 }
 
-AssetsManager::Resource AssetsManager::loadResourceFromFile_Nodestate(fs::path path) const {
+void AssetsManager::loadResourceFromFile_Nodestate(ResourceChangeObj& out, const std::string& domain, const std::string& key, fs::path path) const {
     std::unreachable();
 }
 
-AssetsManager::Resource AssetsManager::loadResourceFromFile_Particle(fs::path path) const {
+void AssetsManager::loadResourceFromFile_Particle(ResourceChangeObj& out, const std::string& domain, const std::string& key, fs::path path) const {
     std::unreachable();
 }
 
-AssetsManager::Resource AssetsManager::loadResourceFromFile_Animation(fs::path path) const {
+void AssetsManager::loadResourceFromFile_Animation(ResourceChangeObj& out, const std::string& domain, const std::string& key, fs::path path) const {
     std::unreachable();
 }
 
-AssetsManager::Resource AssetsManager::loadResourceFromFile_Model(fs::path path) const {
+void AssetsManager::loadResourceFromFile_Model(ResourceChangeObj& out, const std::string& domain, const std::string& key, fs::path path) const {
     /*
         json, obj, glTF
     */
     std::unreachable();
 }
 
-AssetsManager::Resource AssetsManager::loadResourceFromFile_Texture(fs::path path) const {
+void AssetsManager::loadResourceFromFile_Texture(ResourceChangeObj& out, const std::string& domain, const std::string& key, fs::path path) const {
     Resource res(path);
 
     if(res.size() < 8)
@@ -66,10 +66,14 @@ AssetsManager::Resource AssetsManager::loadResourceFromFile_Texture(fs::path pat
 
     if(png_check_sig(reinterpret_cast<png_bytep>((unsigned char*) res.data()), 8)) {
         // Это png
-        return res;
+        fs::file_time_type lwt = fs::last_write_time(path);
+        out.NewOrChange[(int) EnumAssets::Texture][domain].emplace_back(key, res, lwt);
+        return;
     } else if((int) res.data()[0] == 0xFF && (int) res.data()[1] == 0xD8) {
         // Это jpeg
-        return res;
+        fs::file_time_type lwt = fs::last_write_time(path);
+        out.NewOrChange[(int) EnumAssets::Texture][domain].emplace_back(key, res, lwt);
+        return;
     } else {
         MAKE_ERROR("Файл не является текстурой png или jpeg");
     }
@@ -77,65 +81,72 @@ AssetsManager::Resource AssetsManager::loadResourceFromFile_Texture(fs::path pat
     std::unreachable();
 }
 
-AssetsManager::Resource AssetsManager::loadResourceFromFile_Sound(fs::path path) const {
+void AssetsManager::loadResourceFromFile_Sound(ResourceChangeObj& out, const std::string& domain, const std::string& key, fs::path path) const {
     std::unreachable();
 }
 
-AssetsManager::Resource AssetsManager::loadResourceFromFile_Font(fs::path path) const {
+void AssetsManager::loadResourceFromFile_Font(ResourceChangeObj& out, const std::string& domain, const std::string& key, fs::path path) const {
     std::unreachable();
 }
 
-AssetsManager::Resource AssetsManager::loadResourceFromLua_Nodestate(const sol::table& profile) const {
+void AssetsManager::loadResourceFromLua_Nodestate(ResourceChangeObj& out, const std::string& domain, const std::string& key, const sol::table& profile) const {
     if(std::optional<std::string> path = profile.get<std::optional<std::string>>("path")) {
-        return AssetsManager::Resource(*path);
+        out.NewOrChange[(int) EnumAssets::Nodestate][domain].emplace_back(key, AssetsManager::Resource(*path), fs::file_time_type::min());
+        return;
     }
 
     std::unreachable();
 }
 
-AssetsManager::Resource AssetsManager::loadResourceFromLua_Particle(const sol::table& profile) const {
+void AssetsManager::loadResourceFromLua_Particle(ResourceChangeObj& out, const std::string& domain, const std::string& key, const sol::table& profile) const {
     if(std::optional<std::string> path = profile.get<std::optional<std::string>>("path")) {
-        return AssetsManager::Resource(*path);
-    }
-    
-    std::unreachable();
-}
-
-AssetsManager::Resource AssetsManager::loadResourceFromLua_Animation(const sol::table& profile) const {
-    if(std::optional<std::string> path = profile.get<std::optional<std::string>>("path")) {
-        return AssetsManager::Resource(*path);
+        out.NewOrChange[(int) EnumAssets::Particle][domain].emplace_back(key, AssetsManager::Resource(*path), fs::file_time_type::min());
+        return;
     }
     
     std::unreachable();
 }
 
-AssetsManager::Resource AssetsManager::loadResourceFromLua_Model(const sol::table& profile) const {
+void AssetsManager::loadResourceFromLua_Animation(ResourceChangeObj& out, const std::string& domain, const std::string& key, const sol::table& profile) const {
     if(std::optional<std::string> path = profile.get<std::optional<std::string>>("path")) {
-        return AssetsManager::Resource(*path);
+        out.NewOrChange[(int) EnumAssets::Animation][domain].emplace_back(key, AssetsManager::Resource(*path), fs::file_time_type::min());
+        return;
     }
     
     std::unreachable();
 }
 
-AssetsManager::Resource AssetsManager::loadResourceFromLua_Texture(const sol::table& profile) const {
+void AssetsManager::loadResourceFromLua_Model(ResourceChangeObj& out, const std::string& domain, const std::string& key, const sol::table& profile) const {
     if(std::optional<std::string> path = profile.get<std::optional<std::string>>("path")) {
-        return AssetsManager::Resource(*path);
+        out.NewOrChange[(int) EnumAssets::Model][domain].emplace_back(key, AssetsManager::Resource(*path), fs::file_time_type::min());
+        return;
     }
     
     std::unreachable();
 }
 
-AssetsManager::Resource AssetsManager::loadResourceFromLua_Sound(const sol::table& profile) const {
+void AssetsManager::loadResourceFromLua_Texture(ResourceChangeObj& out, const std::string& domain, const std::string& key, const sol::table& profile) const {
     if(std::optional<std::string> path = profile.get<std::optional<std::string>>("path")) {
-        return AssetsManager::Resource(*path);
+        out.NewOrChange[(int) EnumAssets::Texture][domain].emplace_back(key, AssetsManager::Resource(*path), fs::file_time_type::min());
+        return;
     }
     
     std::unreachable();
 }
 
-AssetsManager::Resource AssetsManager::loadResourceFromLua_Font(const sol::table& profile) const {
+void AssetsManager::loadResourceFromLua_Sound(ResourceChangeObj& out, const std::string& domain, const std::string& key, const sol::table& profile) const {
     if(std::optional<std::string> path = profile.get<std::optional<std::string>>("path")) {
-        return AssetsManager::Resource(*path);
+        out.NewOrChange[(int) EnumAssets::Sound][domain].emplace_back(key, AssetsManager::Resource(*path), fs::file_time_type::min());
+        return;
+    }
+    
+    std::unreachable();
+}
+
+void AssetsManager::loadResourceFromLua_Font(ResourceChangeObj& out, const std::string& domain, const std::string& key, const sol::table& profile) const {
+    if(std::optional<std::string> path = profile.get<std::optional<std::string>>("path")) {
+        out.NewOrChange[(int) EnumAssets::Font][domain].emplace_back(key, AssetsManager::Resource(*path), fs::file_time_type::min());
+        return;
     }
     
     std::unreachable();
@@ -165,28 +176,28 @@ std::tuple<ResourceId, std::optional<AssetsManager::DataEntry>&> AssetsManager::
         if(entry.Empty._Find_first() == entry.Empty.size())
             entry.IsFull = true;
 
-        id = index*TableEntry::ChunkSize + pos;
+        id = index*TableEntry<DataEntry>::ChunkSize + pos;
         data = &entry.Entries[pos];
     }
 
     if(!data) {
-        table.emplace_back(std::make_unique<TableEntry>());
-        id = (table.size()-1)*TableEntry::ChunkSize;
+        table.emplace_back(std::make_unique<TableEntry<DataEntry>>());
+        id = (table.size()-1)*TableEntry<DataEntry>::ChunkSize;
         data = &table.back()->Entries[0];
     }
 
     return {id, *data};
 }
 
-AssetsManager::Out_recheckResources AssetsManager::recheckResources(const AssetsRegister& info) {
-    Out_recheckResources result;
+AssetsManager::ResourceChangeObj AssetsManager::recheckResources(const AssetsRegister& info) {
+    ResourceChangeObj result;
 
     // Найти пропавшие ресурсы
     for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++) {
         auto lock = LocalObj.lock();
         for(auto& [domain, resources] : lock->KeyToId[type]) {
             for(auto& [key, id] : resources) {
-                if(!lock->Table[type][id / TableEntry::ChunkSize]->Entries[id % TableEntry::ChunkSize])
+                if(!lock->Table[type][id / TableEntry<DataEntry>::ChunkSize]->Entries[id % TableEntry<DataEntry>::ChunkSize])
                     continue;
 
                 bool exists = false;
@@ -234,7 +245,6 @@ AssetsManager::Out_recheckResources AssetsManager::recheckResources(const Assets
 
     // Найти новые или изменённые ресурсы
     for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++) {
-
         for(auto& [domain, resources] : info.Custom[type]) {
             auto lock = LocalObj.lock();
             const auto& keyToId = lock->KeyToId[type];
@@ -257,10 +267,10 @@ AssetsManager::Out_recheckResources AssetsManager::recheckResources(const Assets
                         continue;
                     else if(iterDomain->second.contains(key)) {
                         // Ресурс уже есть, TODO: нужно проверить его изменение
-                        result.NewOrChange[type][domain].emplace_back(key, loadResourceFromFile((EnumAssets) type, "assets/null"), fs::file_time_type::min());
+                        loadResourceFromFile((EnumAssets) type, result, domain, key, "assets/null");
                     } else {
                         // Ресурс не был известен
-                        result.NewOrChange[type][domain].emplace_back(key, loadResourceFromFile((EnumAssets) type, "assets/null"), fs::file_time_type::min());
+                        loadResourceFromFile((EnumAssets) type, result, domain, key, "assets/null");
                     }
 
                     findList.insert(key);
@@ -315,16 +325,15 @@ AssetsManager::Out_recheckResources AssetsManager::recheckResources(const Assets
                     else if(iterDomain != lock->KeyToId[type].end() && iterDomain->second.contains(key)) {
                         // Ресурс уже есть, TODO: нужно проверить его изменение
                         ResourceId id = iterDomain->second.at(key);
-                        DataEntry& entry = *lock->Table[type][id / TableEntry::ChunkSize]->Entries[id % TableEntry::ChunkSize];
+                        DataEntry& entry = *lock->Table[type][id / TableEntry<DataEntry>::ChunkSize]->Entries[id % TableEntry<DataEntry>::ChunkSize];
                         
                         fs::file_time_type lwt = fs::last_write_time(file);
                         if(lwt != entry.FileChangeTime)
                             // Будем считать что ресурс изменился
-                            result.NewOrChange[type][domain].emplace_back(key, loadResourceFromFile((EnumAssets) type, file), lwt);
+                            loadResourceFromFile((EnumAssets) type, result, domain, key, file);
                     } else {
                         // Ресурс не был известен
-                        fs::file_time_type lwt = fs::last_write_time(file);
-                        result.NewOrChange[type][domain].emplace_back(key, loadResourceFromFile((EnumAssets) type, file), lwt);
+                        loadResourceFromFile((EnumAssets) type, result, domain, key, file);
                     }
 
                     findList.insert(key);
@@ -337,7 +346,7 @@ AssetsManager::Out_recheckResources AssetsManager::recheckResources(const Assets
     return result;
 }
 
-AssetsManager::Out_applyResourceChange AssetsManager::applyResourceChange(const Out_recheckResources& orr) {
+AssetsManager::Out_applyResourceChange AssetsManager::applyResourceChange(const ResourceChangeObj& orr) {
     // Потерянные и обновлённые идентификаторы
     Out_applyResourceChange result;
 
@@ -362,8 +371,8 @@ AssetsManager::Out_applyResourceChange AssetsManager::applyResourceChange(const 
                 // keyToIdDomain.erase(iter);
                 // lost[type].push_back(resId);
 
-                uint32_t localId = resId % TableEntry::ChunkSize;
-                auto& chunk = lock->Table[type][resId / TableEntry::ChunkSize];
+                uint32_t localId = resId % TableEntry<DataEntry>::ChunkSize;
+                auto& chunk = lock->Table[type][resId / TableEntry<DataEntry>::ChunkSize];
                 // chunk->IsFull = false;
                 // chunk->Empty.set(localId);
                 chunk->Entries[localId].reset();
@@ -383,7 +392,7 @@ AssetsManager::Out_applyResourceChange AssetsManager::applyResourceChange(const 
 
                 if(auto iterId = keyToIdDomain.find(key); iterId != keyToIdDomain.end()) {
                     id = iterId->second;
-                    data = &lock->Table[(int) type][id / TableEntry::ChunkSize]->Entries[id % TableEntry::ChunkSize];
+                    data = &lock->Table[(int) type][id / TableEntry<DataEntry>::ChunkSize]->Entries[id % TableEntry<DataEntry>::ChunkSize];
                 } else {
                     auto [_id, _data] = lock->nextId((EnumAssets) type);
                     id = _id;

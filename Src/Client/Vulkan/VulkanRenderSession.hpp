@@ -120,8 +120,7 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
         }
 
         ~ThreadVertexObj_t() {
-            State.lock()->Stage = EnumRenderStage::Shutdown;
-            Thread.join();
+            assert(!Thread.joinable());
 
             if(CMDPool)
                 vkDestroyCommandPool(VkInst->Graphics.Device, CMDPool, nullptr);
@@ -355,7 +354,7 @@ public:
     void drawWorld(GlobalTime gTime, float dTime, VkCommandBuffer drawCmd);
     void pushStage(EnumRenderStage stage);
 
-    static std::vector<VoxelVertexPoint> generateMeshForVoxelChunks(const std::vector<VoxelCube> cubes); 
+    static std::vector<VoxelVertexPoint> generateMeshForVoxelChunks(const std::vector<VoxelCube>& cubes); 
     static std::vector<NodeVertexStatic> generateMeshForNodeChunks(const Node* nodes); 
 
 private:

@@ -9,10 +9,15 @@
 #include <memory>
 #include <sol/forward.hpp>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
+#include <boost/json.hpp>
 
 
 namespace LV {
+
+namespace js = boost::json;
+
 namespace Pos {
 
 template<typename T, size_t BitsPerComponent>
@@ -498,38 +503,75 @@ enum struct TexturePipelineCMD : uint8_t {
 
 };
 
+/*
+    Хранит распаршенное определение состояний нод.
+    Не привязано ни к какому окружению.
+*/
+struct PreparedNodeState {
+    enum class Op {
+        Add, Sub, Mul, Div, Mod,
+        LT, LE, GT, GE, EQ, NE,
+        And, Or,
+        Pos, Neg, Not
+    };
+
+    struct Node {
+        struct Num { int v; };
+        struct Var { std::string name; };
+        struct Unary { Op op; uint16_t rhs; };
+        struct Binary { Op op; uint16_t lhs, rhs; };
+        std::variant<Num, Var, Unary, Binary> v;
+    };
+
+    struct Transformation {
+        int a; float b;
+    };
+
+    struct Model {
+        uint16_t Id;
+        bool UVLock = false;
+        std::vector<Transformation> Transforms;
+    };
+
+    struct VectorModel {
+        std::vector<Model> Models;
+        bool UVLock = false;
+        // Может добавить возможность использовать переменную рандома в трансформациях?
+        std::vector<Transformation> Transforms;
+    };
+
+    // Локальный идентификатор в именной ресурс
+    std::vector<std::pair<std::string, std::string>> ResourceToLocalId;
+    // Ноды выражений
+    std::vector<Node> Nodes;
+    // Условия -> вариации модели + веса
+    std::vector<
+        std::pair<uint16_t,
+            boost::container::small_vector<
+                std::pair<std::variant<Model, VectorModel>, uint16_t>,
+                1
+            >
+        >
+    > Routes;
+
+    PreparedNodeState(const js::object& profile);
+    PreparedNodeState(const sol::table& profile);
+    PreparedNodeState(const std::u8string& data);
+
+    PreparedNodeState() = default;
+    PreparedNodeState(const PreparedNodeState&) = default;
+    PreparedNodeState(PreparedNodeState&&) = default;
+
+    PreparedNodeState& operator=(const PreparedNodeState&) = default;
+    PreparedNodeState& operator=(PreparedNodeState&&) = default;
+
+    // Пишет в сжатый двоичный формат
+    std::u8string dump() const;
+};
+
 struct TexturePipeline {
     std::vector<AssetsTexture> BinTextures;
     std::u8string Pipeline;
-};
-
-struct DefVoxel_t {
-
-};
-
-struct DefNode_t {
-    enum struct EnumDrawType : uint8_t {
-        NoDraw, // Не рисуется
-        Simple, // Простая нода с текстурами на каждой стороне
-    } DrawType = EnumDrawType::Simple;
-
-    TexturePipeline Texs[6];
-};
-
-struct DefWorld_t {
-
-};
-
-struct DefPortal_t {
-
-};
-
-struct DefEntity_t {
-
-};
-
-struct DefItem_t {
-
 };
 
 using Hash_t = std::array<uint8_t, 32>;

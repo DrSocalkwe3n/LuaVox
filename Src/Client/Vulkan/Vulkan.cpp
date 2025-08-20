@@ -2229,7 +2229,7 @@ void Vulkan::gui_ConnectedToServer() {
 		if(ImGui::Begin("MainMenu", nullptr, ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove))
 		{
 			std::string text = std::to_string(ImGui::GetIO().Framerate);
-			ImGui::Text(text.c_str());
+			ImGui::Text("%s", text.c_str());
 			if(ImGui::Button("Выйти")) {
 				try {
 					if(Game.Session)
@@ -2238,7 +2238,9 @@ void Vulkan::gui_ConnectedToServer() {
 					LOG.error() << "Game.Session->shutdown: " << exc.what();
 				}
 
+				Game.RSession->pushStage(EnumRenderStage::Shutdown);
 				Game.RSession = nullptr;
+				Game.Session = nullptr;
 				Game.ImGuiInterfaces.pop_back();
 				int mode = glfwGetInputMode(Graphics.Window, GLFW_CURSOR);
 				if(mode != GLFW_CURSOR_NORMAL)

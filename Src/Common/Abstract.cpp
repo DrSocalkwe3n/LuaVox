@@ -1,10 +1,15 @@
 #include "Abstract.hpp"
+#include "boost/json.hpp"
+#include "boost/json/string_view.hpp"
 #include <algorithm>
 #include <boost/iostreams/filtering_streambuf.hpp>
 #include <boost/iostreams/copy.hpp>
 #include <boost/iostreams/filter/zlib.hpp>
 #include <cstddef>
 #include <sstream>
+#include <string>
+#include <string_view>
+#include <utility>
 
 
 namespace LV {
@@ -823,18 +828,848 @@ std::u8string unCompressLinear(const std::u8string& data) {
     return *(std::u8string*) &outString;
 }
 
-PreparedNodeState::PreparedNodeState(const js::object& profile) {
-    for(auto& [key, value] : profile) {
-        
+PreparedNodeState::PreparedNodeState(const std::string_view modid, const js::object& profile) {
+    for(auto& [condition, variability] : profile) {
+        // Распарсить условие
+        uint16_t node = parseCondition(condition);
+
+        boost::container::small_vector<
+            std::pair<float, std::variant<Model, VectorModel>>,
+            1
+        > models;
+
+        if(variability.is_array()) {
+            // Варианты условия
+            for(const js::value& model : variability.as_array()) {
+                models.push_back(parseModel(modid, model.as_object()));
+            }
+
+            HasVariability = true;
+        } else if (variability.is_object()) {
+            // Один список моделей на условие
+            models.push_back(parseModel(modid, variability.as_object()));
+        } else {
+            MAKE_ERROR("Условию должен соответствовать список или объект");
+        }
+
+        Routes.emplace_back(node, std::move(models));
     }
 }
 
-PreparedNodeState::PreparedNodeState(const sol::table& profile) {
+PreparedNodeState::PreparedNodeState(const std::string_view modid, const sol::table& profile) {
 
 }
 
-PreparedNodeState::PreparedNodeState(const std::u8string& data) {
+PreparedNodeState::PreparedNodeState(const std::string_view modid, const std::u8string& data) {
 
+}
+
+std::u8string PreparedNodeState::dump() const {
+    std::basic_stringstream<char8_t> result;
+    uint16_t v16;
+
+    // ResourceToLocalId
+    assert(ResourceToLocalId.size() < (1 << 16));
+    v16 = ResourceToLocalId.size();
+    result.put(uint8_t(v16 & 0xff));
+    result.put(uint8_t((v16 >> 8) & 0xff));
+
+    for(const auto& [domain, key] : ResourceToLocalId) {
+        assert(domain.size() < 32);
+        result.put(uint8_t(domain.size() & 0xff));
+        result << (const std::u8string&) domain;
+        assert(key.size() < 32);
+        result.put(uint8_t(key.size() & 0xff));
+        result << (const std::u8string&) key;
+    }
+
+    // Nodes
+    assert(Nodes.size() < (1 << 16));
+    v16 = Nodes.size();
+    result.put(uint8_t(v16 & 0xff));
+    result.put(uint8_t((v16 >> 8) & 0xff));
+
+    for(const Node& node : Nodes) {
+        result.put(uint8_t(node.v.index()));
+        
+        if(const Node::Num* val = std::get_if<Node::Num>(&node.v)) {
+            for(int iter = 0; iter < 4; iter++) {
+                result.put((val->v >> 8*iter) & 0xff);
+            }
+        } else if(const Node::Var* val = std::get_if<Node::Var>(&node.v)) {
+            assert(val->name.size() < 32);
+            result << (const std::u8string&) val->name;
+        } else if(const Node::Unary* val = std::get_if<Node::Unary>(&node.v)) {
+            result.put(uint8_t(val->op));
+            result.put(uint8_t(val->rhs & 0xff));
+            result.put(uint8_t((val->rhs >> 8) & 0xff));
+        } else if(const Node::Binary* val = std::get_if<Node::Binary>(&node.v)) {
+            result.put(uint8_t(val->op));
+            result.put(uint8_t(val->lhs & 0xff));
+            result.put(uint8_t((val->lhs >> 8) & 0xff));
+            result.put(uint8_t(val->rhs & 0xff));
+            result.put(uint8_t((val->rhs >> 8) & 0xff));
+        } else {
+            std::unreachable();
+        }
+    }
+
+    // Routes
+    assert(Routes.size() < (1 << 16));
+    v16 = Routes.size();
+    result.put(uint8_t(v16 & 0xff));
+    result.put(uint8_t((v16 >> 8) & 0xff));
+
+    for(const auto& [nodeId, variants] : Routes) {
+        result.put(uint8_t(nodeId & 0xff));
+        result.put(uint8_t((nodeId >> 8) & 0xff));
+
+        assert(variants.size() < (1 << 16));
+        v16 = variants.size();
+        result.put(uint8_t(v16 & 0xff));
+        result.put(uint8_t((v16 >> 8) & 0xff));
+
+        for(const auto& [weight, model] : variants) {
+            union {
+                float f_val;
+                uint32_t i_val;
+            };
+
+            f_val = weight;
+
+            for(int iter = 0; iter < 4; iter++) {
+                result.put((i_val >> 8*iter) & 0xff);
+            }
+
+            result.put(uint8_t(model.index()));
+            if(const Model* val = std::get_if<Model>(&model)) {
+                result.put(uint8_t(val->Id & 0xff));
+                result.put(uint8_t((val->Id >> 8) & 0xff));
+
+                result.put(uint8_t(val->UVLock));
+
+                assert(val->Transforms.size() < (1 << 16));
+                v16 = val->Transforms.size();
+                result.put(uint8_t(v16 & 0xff));
+                result.put(uint8_t((v16 >> 8) & 0xff));
+
+                for(const Transformation& val : val->Transforms) {
+                    result.put(uint8_t(val.Op));
+                    f_val = val.Value;
+                    for(int iter = 0; iter < 4; iter++)
+                        result.put((i_val >> 8*iter) & 0xff);
+                }
+            } else if(const VectorModel* val = std::get_if<VectorModel>(&model)) {
+                assert(val->Models.size() < (1 << 16));
+                v16 = val->Models.size();
+                for(const Model& subModel : val->Models) {
+                    result.put(uint8_t(subModel.Id & 0xff));
+                    result.put(uint8_t((subModel.Id >> 8) & 0xff));
+
+                    result.put(uint8_t(subModel.UVLock));
+
+                    assert(subModel.Transforms.size() < (1 << 16));
+                    v16 = subModel.Transforms.size();
+                    result.put(uint8_t(v16 & 0xff));
+                    result.put(uint8_t((v16 >> 8) & 0xff));
+
+                    for(const Transformation& val : subModel.Transforms) {
+                        result.put(uint8_t(val.Op));
+                        f_val = val.Value;
+                        for(int iter = 0; iter < 4; iter++)
+                            result.put((i_val >> 8*iter) & 0xff);
+                    }
+                }
+
+                result.put(uint8_t(val->UVLock));
+
+                assert(val->Transforms.size() < (1 << 16));
+                v16 = val->Transforms.size();
+                result.put(uint8_t(v16 & 0xff));
+                result.put(uint8_t((v16 >> 8) & 0xff));
+
+                for(const Transformation& val : val->Transforms) {
+                    result.put(uint8_t(val.Op));
+                    f_val = val.Value;
+                    for(int iter = 0; iter < 4; iter++)
+                        result.put((i_val >> 8*iter) & 0xff);
+                }
+            }
+        }
+    }
+
+    return result.str();
+}
+
+bool PreparedNodeState::read_uint16(std::basic_istream<char8_t>& stream, uint16_t& value) noexcept {
+    char8_t lo, hi;
+    if (!(stream >> lo)) return false;
+    if (!(stream >> hi)) return false;
+    value = (static_cast<uint16_t>(hi) << 8) | lo;
+    return true;
+}
+
+bool PreparedNodeState::load(const std::u8string& data) noexcept {
+std::basic_istringstream<char8_t> stream(data);
+    char8_t byte;
+    uint16_t size, v16;
+    char8_t buffer[32];
+
+    // Читаем ResourceToLocalId
+    if (!read_uint16(stream, size)) return false;
+    ResourceToLocalId.clear();
+    for (uint16_t i = 0; i < size; ++i) {
+        if (!(stream >> byte)) return false;
+        size_t domain_len = byte & 0xff;
+        if (domain_len >= 32) return false;
+        if (!stream.read(buffer, domain_len)) return false;
+        std::string domain((const char*) buffer, domain_len);
+
+        if (!(stream >> byte)) return false;
+        size_t key_len = byte & 0xff;
+        if (key_len >= 32) return false;
+        if (!stream.read(buffer, key_len)) return false;
+        std::string key((const char*) buffer, key_len);
+
+        ResourceToLocalId.emplace_back(std::move(domain), std::move(key));
+    }
+
+    // Читаем Nodes
+    if (!read_uint16(stream, size)) return false;
+    Nodes.clear();
+    Nodes.reserve(size);
+    for (uint16_t i = 0; i < size; ++i) {
+        if (!(stream >> byte)) return false;
+        uint8_t tag = byte;
+
+        Node node;
+        switch (tag) {
+            case 0: { // Node::Num
+                uint32_t val = 0;
+                for (int iter = 0; iter < 4; ++iter) {
+                    if (!(stream >> byte)) return false;
+                    val |= (static_cast<uint32_t>(byte) << (8 * iter));
+                }
+                node.v = Node::Num{ int32_t(val) };
+                break;
+            }
+            case 1: { // Node::Var
+                if (!(stream >> byte)) return false;
+                size_t len = byte & 0xff;
+                if (len >= 32) return false;
+                if (!stream.read(buffer, len)) return false;
+                node.v = Node::Var{ std::string((const char*) buffer, len) };
+                break;
+            }
+            case 2: { // Node::Unary
+                if (!(stream >> byte)) return false;
+                uint8_t op = byte;
+                if (!read_uint16(stream, v16)) return false;
+                node.v = Node::Unary{ op, v16 };
+                break;
+            }
+            case 3: { // Node::Binary
+                if (!(stream >> byte)) return false;
+                uint8_t op = byte;
+                if (!read_uint16(stream, v16)) return false;
+                uint16_t lhs = v16;
+                if (!read_uint16(stream, v16)) return false;
+                uint16_t rhs = v16;
+                node.v = Node::Binary{ op, lhs, rhs };
+                break;
+            }
+            default:
+                return false; // неизвестный тип
+        }
+        Nodes.push_back(std::move(node));
+    }
+
+    // Читаем Routes
+    if (!read_uint16(stream, size)) return false;
+    Routes.clear();
+    for (uint16_t i = 0; i < size; ++i) {
+        if (!read_uint16(stream, v16)) return false;
+        uint16_t nodeId = v16;
+
+        if (!read_uint16(stream, size)) return false;
+        std::vector<std::pair<float, std::variant<Model, VectorModel>>> variants;
+        variants.reserve(size);
+
+        for (uint16_t j = 0; j < size; ++j) {
+            // Читаем вес (float)
+            uint32_t f_bits = 0;
+            for (int iter = 0; iter < 4; ++iter) {
+                if (!(stream >> byte)) return false;
+                f_bits |= (static_cast<uint32_t>(byte) << (8 * iter));
+            }
+            float weight;
+            std::memcpy(&weight, &f_bits, 4);
+
+            if (!(stream >> byte)) return false;
+            uint8_t model_tag = byte;
+
+            if (model_tag == 0) { // Model
+                Model model;
+                if (!read_uint16(stream, v16)) return false;
+                model.Id = v16;
+
+                if (!(stream >> byte)) return false;
+                model.UVLock = static_cast<bool>(byte & 1);
+
+                if (!read_uint16(stream, v16)) return false;
+                model.Transforms.clear();
+                for (uint16_t k = 0; k < v16; ++k) {
+                    if (!(stream >> byte)) return false;
+                    uint8_t op = byte;
+
+                    uint32_t val_bits = 0;
+                    for (int iter = 0; iter < 4; ++iter) {
+                        if (!(stream >> byte)) return false;
+                        val_bits |= (static_cast<uint32_t>(byte) << (8 * iter));
+                    }
+                    float f_val;
+                    std::memcpy(&f_val, &val_bits, 4);
+
+                    model.Transforms.push_back({ op, f_val });
+                }
+                variants.emplace_back(weight, std::move(model));
+            } else if (model_tag == 1) { // VectorModel
+                VectorModel vecModel;
+                if (!read_uint16(stream, v16)) return false;
+                size_t num_models = v16;
+                vecModel.Models.clear();
+                vecModel.Models.reserve(num_models);
+
+                for (size_t m = 0; m < num_models; ++m) {
+                    Model subModel;
+                    if (!read_uint16(stream, v16)) return false;
+                    subModel.Id = v16;
+
+                    if (!(stream >> byte)) return false;
+                    subModel.UVLock = static_cast<bool>(byte & 1);
+
+                    if (!read_uint16(stream, v16)) return false;
+                    subModel.Transforms.clear();
+                    for (uint16_t k = 0; k < v16; ++k) {
+                        if (!(stream >> byte)) return false;
+                        uint8_t op = byte;
+
+                        uint32_t val_bits = 0;
+                        for (int iter = 0; iter < 4; ++iter) {
+                            if (!(stream >> byte)) return false;
+                            val_bits |= (static_cast<uint32_t>(byte) << (8 * iter));
+                        }
+                        float f_val;
+                        std::memcpy(&f_val, &val_bits, 4);
+
+                        subModel.Transforms.push_back({ op, f_val });
+                    }
+                    vecModel.Models.push_back(std::move(subModel));
+                }
+
+                if (!(stream >> byte)) return false;
+                vecModel.UVLock = static_cast<bool>(byte & 1);
+
+                if (!read_uint16(stream, v16)) return false;
+                vecModel.Transforms.clear();
+                for (uint16_t k = 0; k < v16; ++k) {
+                    if (!(stream >> byte)) return false;
+                    uint8_t op = byte;
+
+                    uint32_t val_bits = 0;
+                    for (int iter = 0; iter < 4; ++iter) {
+                        if (!(stream >> byte)) return false;
+                        val_bits |= (static_cast<uint32_t>(byte) << (8 * iter));
+                    }
+                    float f_val;
+                    std::memcpy(&f_val, &val_bits, 4);
+
+                    vecModel.Transforms.push_back({ op, f_val });
+                }
+                variants.emplace_back(weight, std::move(vecModel));
+            } else {
+                return false; // неизвестный тип модели
+            }
+        }
+        Routes[nodeId] = std::move(variants);
+    }
+
+    return true;
+}
+
+uint16_t PreparedNodeState::parseCondition(const std::string_view expression) {
+    enum class EnumTokenKind {
+        LParen, RParen,
+        Plus, Minus, Star, Slash, Percent,
+        Not, And, Or,
+        LT, LE, GT, GE, EQ, NE
+    };
+
+    std::vector<std::variant<EnumTokenKind, std::string_view, int, uint16_t>> tokens;
+    ssize_t pos = 0;
+    auto skipWS = [&](){ while(pos<expression.size() && std::isspace((unsigned char) expression[pos])) ++pos; };
+
+    for(; pos < expression.size(); pos++) {
+        skipWS();
+
+        char c = expression[pos];
+
+        // Числа
+        if(std::isdigit(c)) {
+            ssize_t npos = pos;
+            for(; npos < expression.size() && std::isdigit(expression[npos]); npos++);
+            int value;
+            std::string_view value_view = expression.substr(pos, npos-pos);
+            auto [partial_ptr, partial_ec] = std::from_chars(value_view.data(), value_view.data() + value_view.size(), value);
+
+            if(partial_ec == std::errc{} && partial_ptr != value_view.data() + value_view.size()) {
+                MAKE_ERROR("Converted part of the string: " << value << " (remaining: " << std::string_view(partial_ptr, value_view.data() + value_view.size() - partial_ptr) << ")");
+            } else if(partial_ec != std::errc{}) {
+                MAKE_ERROR("Error converting partial string: " << value);
+            }
+
+            tokens.push_back(value);
+            continue;
+        }
+
+        // Переменные
+        if(std::isalpha(c) || c == ':') {
+            ssize_t npos = pos;
+            for(; npos < expression.size() && std::isalpha(expression[npos]); npos++);
+            std::string_view value = expression.substr(pos, npos-pos);
+            if(value == "true")
+                tokens.push_back(1);
+            else if(value == "false")
+                tokens.push_back(0);
+            else
+                tokens.push_back(value);
+            continue;
+        }
+
+        // Двойные операторы
+        if(pos-1 < expression.size()) {
+            char n = expression[pos+1];
+
+            if(c == '<' && n == '=') {
+                tokens.push_back(EnumTokenKind::LE);
+                pos++;
+                continue;
+            } else if(c == '>' && n == '=') {
+                tokens.push_back(EnumTokenKind::GE);
+                pos++;
+                continue;
+            } else if(c == '=' && n == '=') {
+                tokens.push_back(EnumTokenKind::EQ);
+                pos++;
+                continue;
+            } else if(c == '!' && n == '=') {
+                tokens.push_back(EnumTokenKind::NE);
+                pos++;
+                continue;
+            }
+        }
+
+        // Операторы
+        switch(c) {
+            case '(': tokens.push_back(EnumTokenKind::LParen);
+            case ')': tokens.push_back(EnumTokenKind::RParen);
+            case '+': tokens.push_back(EnumTokenKind::Plus);
+            case '-': tokens.push_back(EnumTokenKind::Minus);
+            case '*': tokens.push_back(EnumTokenKind::Star);
+            case '/': tokens.push_back(EnumTokenKind::Slash);
+            case '%': tokens.push_back(EnumTokenKind::Percent);
+            case '!': tokens.push_back(EnumTokenKind::Not);
+            case '&': tokens.push_back(EnumTokenKind::And);
+            case '|': tokens.push_back(EnumTokenKind::Or);
+            case '<': tokens.push_back(EnumTokenKind::LT);
+            case '>': tokens.push_back(EnumTokenKind::GT);
+        }
+
+        MAKE_ERROR("Недопустимый символ: " << c);
+    }
+
+
+    for(size_t index = 0; index < tokens.size(); index++) {
+        auto &token = tokens[index];
+
+        if(std::string_view* value = std::get_if<std::string_view>(&token)) {
+            if(*value == "false") {
+                token = 0;
+            } else if(*value == "true") {
+                token = 1;
+            } else {
+                Node node;
+                node.v = Node::Var((std::string) *value);
+                Nodes.emplace_back(std::move(node));
+                assert(Nodes.size() < std::pow(2, 16)-64);
+                token = uint16_t(Nodes.size()-1);
+            }
+        }
+    }
+
+    // Рекурсивный разбор выражений в скобках
+    std::function<uint16_t(size_t pos)> lambdaParse = [&](size_t pos) -> uint16_t {
+        size_t end = tokens.size();
+        
+        // Парсим выражения в скобках
+        for(size_t index = pos; index < tokens.size(); index++) {
+            if(EnumTokenKind* kind = std::get_if<EnumTokenKind>(&tokens[index])) {
+                if(*kind == EnumTokenKind::LParen) {
+                    uint16_t node = lambdaParse(index+1);
+                    tokens.insert(tokens.begin()+index, node);
+                    tokens.erase(tokens.begin()+index+1, tokens.begin()+index+3);
+                    end = tokens.size();
+                } else if(*kind == EnumTokenKind::RParen) {
+                    end = index;
+                    break;
+                }
+            }
+        }
+
+        // Обрабатываем унарные операции
+        for(ssize_t index = end; index >= pos; index--) {
+            if(EnumTokenKind *kind = std::get_if<EnumTokenKind>(&tokens[index])) {
+                if(*kind != EnumTokenKind::Not && *kind != EnumTokenKind::Plus && *kind != EnumTokenKind::Minus)
+                    continue;
+
+                if(index+1 >= end)
+                    MAKE_ERROR("Отсутствует операнд");
+
+                auto rightToken = tokens[index+1];
+                if(std::holds_alternative<EnumTokenKind>(rightToken))
+                    MAKE_ERROR("Недопустимый операнд");
+
+                if(int* value = std::get_if<int>(&rightToken)) {
+                    if(*kind == EnumTokenKind::Not)
+                        tokens[index] = *value ? 0 : 1;
+                    else if(*kind == EnumTokenKind::Plus)
+                        tokens[index] = +*value;
+                    else if(*kind == EnumTokenKind::Minus)
+                        tokens[index] = -*value;
+
+                } else if(uint16_t* value = std::get_if<uint16_t>(&rightToken)) {
+                    Node node;
+                    Node::Unary un;
+                    un.rhs = *value;
+
+                    if(*kind == EnumTokenKind::Not)
+                        un.op = Op::Not;
+                    else if(*kind == EnumTokenKind::Plus)
+                        un.op = Op::Pos;
+                    else if(*kind == EnumTokenKind::Minus)
+                        un.op = Op::Neg;
+
+                    node.v = un;
+                    Nodes.emplace_back(std::move(node));
+                    assert(Nodes.size() < std::pow(2, 16)-64);
+                    tokens[index] = uint16_t(Nodes.size()-1);
+                }
+
+                end--;
+                tokens.erase(tokens.begin()+index+1);
+            }
+        }
+
+        // Бинарные в порядке приоритета
+        for(int priority = 0; priority < 6; priority++)
+            for(size_t index = pos; index < end; index++) {
+                EnumTokenKind *kind = std::get_if<EnumTokenKind>(&tokens[index]);
+
+                if(!kind)
+                    continue;
+
+                if(priority == 0 && *kind != EnumTokenKind::Star && *kind != EnumTokenKind::Slash && *kind != EnumTokenKind::Percent)
+                    continue;
+                if(priority == 1 && *kind != EnumTokenKind::Plus && *kind != EnumTokenKind::Minus)
+                    continue;
+                if(priority == 2 && *kind != EnumTokenKind::LT && *kind != EnumTokenKind::GT && *kind != EnumTokenKind::LE && *kind != EnumTokenKind::GE)
+                    continue;
+                if(priority == 3 && *kind != EnumTokenKind::EQ && *kind != EnumTokenKind::NE)
+                    continue;
+                if(priority == 4 && *kind != EnumTokenKind::And)
+                    continue;
+                if(priority == 5 && *kind != EnumTokenKind::Or)
+                    continue;
+
+                if(index == pos)
+                    MAKE_ERROR("Отсутствует операнд перед");
+                else if(index == end-1)
+                    MAKE_ERROR("Отсутствует операнд после");
+
+                auto &leftToken = tokens[index-1];
+                auto &rightToken = tokens[index+1];
+
+                if(std::holds_alternative<EnumTokenKind>(leftToken))
+                    MAKE_ERROR("Недопустимый операнд");
+
+                if(std::holds_alternative<EnumTokenKind>(rightToken))
+                    MAKE_ERROR("Недопустимый операнд");
+
+                if(std::holds_alternative<int>(leftToken) && std::holds_alternative<int>(rightToken)) {
+                    int value;
+
+                    switch(*kind) {
+                    case EnumTokenKind::Plus:       value = std::get<int>(leftToken) +  std::get<int>(rightToken); break;
+                    case EnumTokenKind::Minus:      value = std::get<int>(leftToken) -  std::get<int>(rightToken); break;
+                    case EnumTokenKind::Star:       value = std::get<int>(leftToken) *  std::get<int>(rightToken); break;
+                    case EnumTokenKind::Slash:      value = std::get<int>(leftToken) /  std::get<int>(rightToken); break;
+                    case EnumTokenKind::Percent:    value = std::get<int>(leftToken) %  std::get<int>(rightToken); break;
+                    case EnumTokenKind::And:        value = std::get<int>(leftToken) && std::get<int>(rightToken); break;
+                    case EnumTokenKind::Or:         value = std::get<int>(leftToken) || std::get<int>(rightToken); break;
+                    case EnumTokenKind::LT:         value = std::get<int>(leftToken) <  std::get<int>(rightToken); break;
+                    case EnumTokenKind::LE:         value = std::get<int>(leftToken) <= std::get<int>(rightToken); break;
+                    case EnumTokenKind::GT:         value = std::get<int>(leftToken) >  std::get<int>(rightToken); break;
+                    case EnumTokenKind::GE:         value = std::get<int>(leftToken) >= std::get<int>(rightToken); break;
+                    case EnumTokenKind::EQ:         value = std::get<int>(leftToken) == std::get<int>(rightToken); break;
+                    case EnumTokenKind::NE:         value = std::get<int>(leftToken) != std::get<int>(rightToken); break;
+
+                    default: std::unreachable();
+                    }
+
+
+                    leftToken = value;
+                } else {
+                    Node node;
+                    Node::Binary bin;
+
+                    switch(*kind) {
+                    case EnumTokenKind::Plus:       bin.op = Op::Add; break;
+                    case EnumTokenKind::Minus:      bin.op = Op::Sub; break;
+                    case EnumTokenKind::Star:       bin.op = Op::Mul; break;
+                    case EnumTokenKind::Slash:      bin.op = Op::Div; break;
+                    case EnumTokenKind::Percent:    bin.op = Op::Mod; break;
+                    case EnumTokenKind::And:        bin.op = Op::And; break;
+                    case EnumTokenKind::Or:         bin.op = Op::Or;  break;
+                    case EnumTokenKind::LT:         bin.op = Op::LT;  break;
+                    case EnumTokenKind::LE:         bin.op = Op::LE;  break;
+                    case EnumTokenKind::GT:         bin.op = Op::GT;  break;
+                    case EnumTokenKind::GE:         bin.op = Op::GE;  break;
+                    case EnumTokenKind::EQ:         bin.op = Op::EQ;  break;
+                    case EnumTokenKind::NE:         bin.op = Op::NE;  break;
+
+                    default: std::unreachable();
+                    }
+
+                    if(int* value = std::get_if<int>(&leftToken)) {
+                        Node valueNode;
+                        valueNode.v = Node::Num(*value);
+                        Nodes.emplace_back(std::move(valueNode));
+                        assert(Nodes.size() < std::pow(2, 16)-64);
+                        bin.lhs = uint16_t(Nodes.size()-1);
+                    } else if(uint16_t* nodeId = std::get_if<uint16_t>(&leftToken)) {
+                        bin.lhs = *nodeId;
+                    }
+
+                    if(int* value = std::get_if<int>(&rightToken)) {
+                        Node valueNode;
+                        valueNode.v = Node::Num(*value);
+                        Nodes.emplace_back(std::move(valueNode));
+                        assert(Nodes.size() < std::pow(2, 16)-64);
+                        bin.rhs = uint16_t(Nodes.size()-1);
+                    } else if(uint16_t* nodeId = std::get_if<uint16_t>(&rightToken)) {
+                        bin.rhs = *nodeId;
+                    }
+
+                    Nodes.emplace_back(std::move(node));
+                    assert(Nodes.size() < std::pow(2, 16)-64);
+                    leftToken = uint16_t(Nodes.size()-1);
+                }
+
+                tokens.erase(tokens.begin()+index, tokens.begin()+index+2);
+                end -= 2;
+                index--;
+            }
+
+        if(tokens.size() != 1)
+            MAKE_ERROR("Выражение не корректно");
+
+        if(uint16_t* nodeId = std::get_if<uint16_t>(&tokens[0])) {
+            return *nodeId;
+        } else if(int* value = std::get_if<int>(&tokens[0])) {
+            Node node;
+            node.v = Node::Num(*value);
+            Nodes.emplace_back(std::move(node));
+            assert(Nodes.size() < std::pow(2, 16)-64);
+            return uint16_t(Nodes.size()-1);
+        } else {
+            MAKE_ERROR("Выражение не корректно");
+        }
+    };
+
+    uint16_t nodeId = lambdaParse(0);
+    if(!tokens.empty())
+        MAKE_ERROR("Выражение не действительно");
+
+    return nodeId;
+
+    // std::unordered_map<std::string, int> vars;
+    // std::function<int(uint16_t)> lambdaCalcNode = [&](uint16_t nodeId) -> int {
+    //     const Node& node = Nodes[nodeId];
+    //     if(const Node::Num* value = std::get_if<Node::Num>(&node.v)) {
+    //         return value->v;
+    //     } else if(const Node::Var* value = std::get_if<Node::Var>(&node.v)) {
+    //         auto iter = vars.find(value->name);
+    //         if(iter == vars.end())
+    //             MAKE_ERROR("Неопознанное состояние");
+
+    //         return iter->second;
+    //     } else if(const Node::Unary* value = std::get_if<Node::Unary>(&node.v)) {
+    //         int rNodeValue = lambdaCalcNode(value->rhs);
+    //         switch(value->op) {
+    //         case Op::Not: return !rNodeValue;
+    //         case Op::Pos: return +rNodeValue;
+    //         case Op::Neg: return -rNodeValue;
+    //         default:
+    //             std::unreachable();
+    //         }
+    //     } else if(const Node::Binary* value = std::get_if<Node::Binary>(&node.v)) {
+    //         int lNodeValue = lambdaCalcNode(value->lhs);
+    //         int rNodeValue = lambdaCalcNode(value->rhs);
+
+    //         switch(value->op) {
+    //         case Op::Add: return lNodeValue+rNodeValue;
+    //         case Op::Sub: return lNodeValue-rNodeValue;
+    //         case Op::Mul: return lNodeValue*rNodeValue;
+    //         case Op::Div: return lNodeValue/rNodeValue;
+    //         case Op::Mod: return lNodeValue%rNodeValue;
+    //         case Op::LT:  return lNodeValue<rNodeValue;
+    //         case Op::LE:  return lNodeValue<=rNodeValue;
+    //         case Op::GT:  return lNodeValue>rNodeValue;
+    //         case Op::GE:  return lNodeValue>=rNodeValue;
+    //         case Op::EQ:  return lNodeValue==rNodeValue;
+    //         case Op::NE:  return lNodeValue!=rNodeValue;
+    //         case Op::And: return lNodeValue&&rNodeValue;
+    //         case Op::Or:  return lNodeValue||rNodeValue;
+    //         default:
+    //             std::unreachable();
+    //         }
+    //     } else {
+    //         std::unreachable();
+    //     }
+    // };
+}
+
+std::pair<float, std::variant<PreparedNodeState::Model, PreparedNodeState::VectorModel>> PreparedNodeState::parseModel(const std::string_view modid, const js::object& obj) {
+    // ResourceToLocalId
+
+    bool uvlock;
+    float weight = 1;
+    std::vector<Transformation> transforms;
+
+    if(const auto weight_val = obj.try_at("weight")) {
+        weight = weight_val->as_double();
+    }
+
+    if(const auto uvlock_val = obj.try_at("uvlock")) {
+        uvlock = uvlock_val->as_bool();
+    }
+
+    if(const auto transformations_val = obj.try_at("transformations")) {
+        transforms = parseTransormations(transformations_val->as_array());
+    }
+
+    const js::value& model = obj.at("model");
+    if(const auto model_key = model.try_as_string()) {
+        // Одна модель
+        Model result;
+        result.UVLock = uvlock;
+        result.Transforms = std::move(transforms);
+
+        auto [domain, key] = parseDomainKey((std::string) *model_key, modid);
+        
+        uint16_t resId = 0;
+        for(auto& [lDomain, lKey] : ResourceToLocalId) {
+            if(lDomain == domain && lKey == key)
+                break;
+
+            resId++;
+        }
+
+        if(resId == ResourceToLocalId.size()) {
+            ResourceToLocalId.emplace_back(domain, key);
+        }
+
+        result.Id = resId;
+
+        return {weight, result};
+    } else if(model.is_array()) {
+        // Множество моделей
+        VectorModel result;
+        result.UVLock = uvlock;
+        result.Transforms = std::move(transforms);
+
+        for(const js::value& js_value : model.as_array()) {
+            const js::object& js_obj = js_value.as_object();
+
+            Model subModel;
+            if(const auto uvlock_val = js_obj.try_at("uvlock")) {
+                subModel.UVLock = uvlock_val->as_bool();
+            }
+
+            if(const auto transformations_val = js_obj.try_at("transformations")) {
+                subModel.Transforms = parseTransormations(transformations_val->as_array());
+            }
+
+            auto [domain, key] = parseDomainKey((std::string) js_obj.at("model").as_string(), modid);
+        
+            uint16_t resId = 0;
+            for(auto& [lDomain, lKey] : ResourceToLocalId) {
+                if(lDomain == domain && lKey == key)
+                    break;
+
+                resId++;
+            }
+
+            if(resId == ResourceToLocalId.size()) {
+                ResourceToLocalId.emplace_back(domain, key);
+            }
+
+            subModel.Id = resId;
+            result.Models.push_back(std::move(subModel));
+        }
+
+        return {weight, result};
+    } else {
+        MAKE_ERROR("");
+    }
+}
+
+std::vector<PreparedNodeState::Transformation> PreparedNodeState::parseTransormations(const js::array& arr) {
+    std::vector<Transformation> result;
+
+    for(const js::value& js_value : arr) {
+        const js::string_view transform = js_value.as_string();
+
+        auto pos = transform.find('=');
+        std::string_view key = transform.substr(0, pos);
+        std::string_view value = transform.substr(pos+1);
+
+        float f_value;
+        auto [partial_ptr, partial_ec] = std::from_chars(value.data(), value.data() + value.size(), f_value);
+
+        if(partial_ec == std::errc{} && partial_ptr != value.data() + value.size()) {
+            MAKE_ERROR("Converted part of the string: " << value << " (remaining: " << std::string_view(partial_ptr, value.data() + value.size() - partial_ptr) << ")");
+        } else if(partial_ec != std::errc{}) {
+            MAKE_ERROR("Error converting partial string: " << value);
+        }
+
+        if(key == "x")
+            result.emplace_back(Transformation::MoveX, f_value);
+        else if(key == "y")
+            result.emplace_back(Transformation::MoveY, f_value);
+        else if(key == "z")
+            result.emplace_back(Transformation::MoveZ, f_value);
+        else if(key == "rx")
+            result.emplace_back(Transformation::RotateX, f_value);
+        else if(key == "ry")
+            result.emplace_back(Transformation::RotateY, f_value);
+        else if(key == "rz")
+            result.emplace_back(Transformation::RotateZ, f_value);
+        else
+            MAKE_ERROR("Неизвестный ключ трансформации");
+    }
+
+    return result;
 }
 
 }

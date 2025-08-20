@@ -2,6 +2,7 @@
 
 #include "Common/Net.hpp"
 #include "TOSLib.hpp"
+#include "boost/json/array.hpp"
 #include <algorithm>
 #include <cstdint>
 #include <glm/ext.hpp>
@@ -504,6 +505,13 @@ enum struct TexturePipelineCMD : uint8_t {
 
 };
 
+
+struct NodestateEntry {
+    std::string Name;
+    int Variability = 0;                    // Количество возможный значений состояния
+    std::vector<std::string> ValueNames;    // Имена состояний, если имеются
+};
+
 /*
     Хранит распаршенное определение состояний нод.
     Не привязано ни к какому окружению.
@@ -517,7 +525,7 @@ struct PreparedNodeState {
     };
 
     struct Node {
-        struct Num { int v; };
+        struct Num { int32_t v; };
         struct Var { std::string name; };
         struct Unary { Op op; uint16_t rhs; };
         struct Binary { Op op; uint16_t lhs, rhs; };
@@ -525,7 +533,13 @@ struct PreparedNodeState {
     };
 
     struct Transformation {
-        int a; float b;
+        enum EnumTransform {
+            MoveX, MoveY, MoveZ,
+            RotateX, RotateY, RotateZ,
+            MAX_ENUM
+        } Op;
+
+        float Value;
     };
 
     struct Model {
@@ -546,18 +560,18 @@ struct PreparedNodeState {
     // Ноды выражений
     std::vector<Node> Nodes;
     // Условия -> вариации модели + веса
-    std::vector<
+    boost::container::small_vector<
         std::pair<uint16_t,
             boost::container::small_vector<
-                std::pair<std::variant<Model, VectorModel>, uint16_t>,
+                std::pair<float, std::variant<Model, VectorModel>>,
                 1
             >
         >
-    > Routes;
+    , 1> Routes;
 
-    PreparedNodeState(const js::object& profile);
-    PreparedNodeState(const sol::table& profile);
-    PreparedNodeState(const std::u8string& data);
+    PreparedNodeState(const std::string_view modid, const js::object& profile);
+    PreparedNodeState(const std::string_view modid, const sol::table& profile);
+    PreparedNodeState(const std::string_view modid, const std::u8string& data);
 
     PreparedNodeState() = default;
     PreparedNodeState(const PreparedNodeState&) = default;
@@ -568,6 +582,27 @@ struct PreparedNodeState {
 
     // Пишет в сжатый двоичный формат
     std::u8string dump() const;
+
+    bool hasVariability() const {
+        return HasVariability;
+    }
+
+private:
+    bool HasVariability = false;
+
+    static bool read_uint16(std::basic_istream<char8_t>& stream, uint16_t& value) noexcept;
+    bool load(const std::u8string& data) noexcept;
+    uint16_t parseCondition(const std::string_view condition);
+    std::pair<float, std::variant<Model, VectorModel>> parseModel(const std::string_view modid, const js::object& obj);
+    std::vector<Transformation> parseTransormations(const js::array& arr);
+};
+
+/*
+    Хранит распаршенную и по необходимости упрощённую модель
+
+*/
+struct PreparedModel {
+
 };
 
 struct TexturePipeline {
@@ -576,6 +611,18 @@ struct TexturePipeline {
 };
 
 using Hash_t = std::array<uint8_t, 32>;
+
+inline std::pair<std::string, std::string> parseDomainKey(const std::string& value, const std::string_view defaultDomain = "core") {
+    auto regResult = TOS::Str::match(value, "(?:([\\w\\d_]+):)?([\\w\\d_]+)");
+    if(!regResult)
+        MAKE_ERROR("Недействительный домен:ключ");
+
+    if(regResult->at(1)) {
+        return std::pair<std::string, std::string>{*regResult->at(1), *regResult->at(2)};
+    } else {
+        return std::pair<std::string, std::string>{defaultDomain, *regResult->at(2)};
+    }
+}
 
 }
 

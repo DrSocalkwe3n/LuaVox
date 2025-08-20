@@ -29,7 +29,7 @@ void ContentManager::registerBase_Node(ResourceId id, const sol::table& profile)
 
                 std::string realKey;
 
-                if(regResult->at(1)) {
+                if(!regResult->at(1)) {
                     realKey = *key;
                 } else {
                     realKey = "core:" + *regResult->at(2);

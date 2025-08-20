@@ -154,30 +154,6 @@ struct CollisionAABB : public AABB {
 };
 
 /*
-    Модель, считанная с файла и предкомпилированна
-    Для компиляции нужно собрать зависимости модели,
-    и в случае их изменения нужно перекомпилировать модель (может просто перекомпилировать всё разом?)
-*/
-struct PreCompiledModel_t {
-
-};
-
-struct NodestateEntry {
-    std::string Name;
-    int Variability = 0;
-    std::vector<std::string> ValueNames;
-};
-
-using NodeStateCondition = std::bitset<256>;
-NodeStateCondition nodestateExpression(const std::vector<NodestateEntry>& entries, const std::string& expression);
-
-struct ModelTransform {
-    std::vector<AssetsModel> Ids;
-    uint16_t Weight = 1;
-    bool UVLock = false;
-};
-
-/*
     Указать модель, текстуры и поворот по конкретным осям.
     Может быть вариативность моделей относительно одного условия (случайность в зависимости от координат?)
     Допускается активация нескольких условий одновременно
@@ -197,13 +173,11 @@ struct ModelTransform {
     uvlock ? https://minecraft.wiki/w/Blockstates_definition/format
 */
 
-using DefNodestates_t = std::unordered_map<NodeStateCondition, std::vector<ModelTransform>>;
-
 // Скомпилированный профиль ноды
 struct DefNode_t {
     // Зарегистрированные состояния (мета)
     // Подгружается с файла assets/<modid>/nodestate/node/nodeId.json
-    std::variant<DefNodestates_t, std::vector<ModelTransform>> StatesRouter;
+    // std::variant<DefNodestates_t, std::vector<ModelTransform>> StatesRouter;
 
     // Параметры рендера
     struct {

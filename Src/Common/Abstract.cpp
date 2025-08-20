@@ -1010,7 +1010,7 @@ bool PreparedNodeState::read_uint16(std::basic_istream<char8_t>& stream, uint16_
 }
 
 bool PreparedNodeState::load(const std::u8string& data) noexcept {
-std::basic_istringstream<char8_t> stream(data);
+    std::basic_istringstream<char8_t> stream(data);
     char8_t byte;
     uint16_t size, v16;
     char8_t buffer[32];
@@ -1065,7 +1065,7 @@ std::basic_istringstream<char8_t> stream(data);
                 if (!(stream >> byte)) return false;
                 uint8_t op = byte;
                 if (!read_uint16(stream, v16)) return false;
-                node.v = Node::Unary{ op, v16 };
+                node.v = Node::Unary{Op(op), v16};
                 break;
             }
             case 3: { // Node::Binary
@@ -1075,7 +1075,7 @@ std::basic_istringstream<char8_t> stream(data);
                 uint16_t lhs = v16;
                 if (!read_uint16(stream, v16)) return false;
                 uint16_t rhs = v16;
-                node.v = Node::Binary{ op, lhs, rhs };
+                node.v = Node::Binary{Op(op), lhs, rhs};
                 break;
             }
             default:
@@ -1092,7 +1092,7 @@ std::basic_istringstream<char8_t> stream(data);
         uint16_t nodeId = v16;
 
         if (!read_uint16(stream, size)) return false;
-        std::vector<std::pair<float, std::variant<Model, VectorModel>>> variants;
+        boost::container::small_vector<std::pair<float, std::variant<Model, VectorModel>>, 1> variants;
         variants.reserve(size);
 
         for (uint16_t j = 0; j < size; ++j) {
@@ -1130,7 +1130,7 @@ std::basic_istringstream<char8_t> stream(data);
                     float f_val;
                     std::memcpy(&f_val, &val_bits, 4);
 
-                    model.Transforms.push_back({ op, f_val });
+                    model.Transforms.emplace_back(Transformation::EnumTransform(op), f_val);
                 }
                 variants.emplace_back(weight, std::move(model));
             } else if (model_tag == 1) { // VectorModel
@@ -1162,7 +1162,7 @@ std::basic_istringstream<char8_t> stream(data);
                         float f_val;
                         std::memcpy(&f_val, &val_bits, 4);
 
-                        subModel.Transforms.push_back({ op, f_val });
+                        subModel.Transforms.emplace_back(Transformation::EnumTransform(op), f_val);
                     }
                     vecModel.Models.push_back(std::move(subModel));
                 }
@@ -1184,14 +1184,15 @@ std::basic_istringstream<char8_t> stream(data);
                     float f_val;
                     std::memcpy(&f_val, &val_bits, 4);
 
-                    vecModel.Transforms.push_back({ op, f_val });
+                    vecModel.Transforms.emplace_back(Transformation::EnumTransform(op), f_val);
                 }
                 variants.emplace_back(weight, std::move(vecModel));
             } else {
                 return false; // неизвестный тип модели
             }
         }
-        Routes[nodeId] = std::move(variants);
+
+        Routes.emplace_back(nodeId, std::move(variants));
     }
 
     return true;

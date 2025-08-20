@@ -93,7 +93,7 @@ private:
         std::vector<std::unique_ptr<TableEntry<DataEntry>>> Table[(int) EnumAssets::MAX_ENUM];
 
         // Распаршенные ресурсы, для использования сервером
-        std::vector<std::unique_ptr<TableEntry<DefNodeState>>> Table_NodeState;
+        // std::vector<std::unique_ptr<TableEntry<DefNodeState>>> Table_NodeState;
         std::vector<std::unique_ptr<TableEntry<DefModel>>> Table_Model;
 
         // Связь домены -> {ключ -> идентификатор}

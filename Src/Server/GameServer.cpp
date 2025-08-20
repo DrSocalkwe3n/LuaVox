@@ -1651,12 +1651,12 @@ void GameServer::initLuaPre() {
             Content.CM.registerBase(type, CurrentModId, *result[2], profile);
     };
 
-    core.set_function("register_voxel",    [&](const std::string& key, const sol::table& profile) { reg(EnumDefContent::Voxel, key, profile); });
-    core.set_function("register_node",     [&](const std::string& key, const sol::table& profile) { reg(EnumDefContent::Node, key, profile); });
-    core.set_function("register_world",    [&](const std::string& key, const sol::table& profile) { reg(EnumDefContent::World, key, profile); });
-    core.set_function("register_portal",   [&](const std::string& key, const sol::table& profile) { reg(EnumDefContent::Portal, key, profile); });
-    core.set_function("register_entity",   [&](const std::string& key, const sol::table& profile) { reg(EnumDefContent::Entity, key, profile); });
-    core.set_function("register_item",     [&](const std::string& key, const sol::table& profile) { reg(EnumDefContent::Item, key, profile); });
+    core.set_function("register_voxel",    [reg](const std::string& key, const sol::table& profile) { reg(EnumDefContent::Voxel, key, profile); });
+    core.set_function("register_node",     [reg](const std::string& key, const sol::table& profile) { reg(EnumDefContent::Node, key, profile); });
+    core.set_function("register_world",    [reg](const std::string& key, const sol::table& profile) { reg(EnumDefContent::World, key, profile); });
+    core.set_function("register_portal",   [reg](const std::string& key, const sol::table& profile) { reg(EnumDefContent::Portal, key, profile); });
+    core.set_function("register_entity",   [reg](const std::string& key, const sol::table& profile) { reg(EnumDefContent::Entity, key, profile); });
+    core.set_function("register_item",     [reg](const std::string& key, const sol::table& profile) { reg(EnumDefContent::Item, key, profile); });
 }
 
 void GameServer::initLua() {
@@ -2364,9 +2364,11 @@ void GameServer::stepSyncContent() {
             Pos::bvec4u cPos = (node >> 4) & 0x3;
             Pos::bvec16u nPos = node & 0xf;
 
-            auto &region = Expanse.Worlds[0]->Regions[rPos];
-            region->Nodes[cPos.pack()][nPos.pack()].NodeId = 4;
-            region->IsChunkChanged_Nodes |= 1ull << cPos.pack();
+            auto region = Expanse.Worlds[0]->Regions.find(rPos);
+            if(region != Expanse.Worlds[0]->Regions.end()) {
+                region->second->Nodes[cPos.pack()][nPos.pack()].NodeId = 4;
+                region->second->IsChunkChanged_Nodes |= 1ull << cPos.pack();
+            }
         }
 
         while(!remoteClient->Break.empty()) {
@@ -2377,9 +2379,11 @@ void GameServer::stepSyncContent() {
             Pos::bvec4u cPos = (node >> 4) & 0x3;
             Pos::bvec16u nPos = node & 0xf;
 
-            auto &region = Expanse.Worlds[0]->Regions[rPos];
-            region->Nodes[cPos.pack()][nPos.pack()].NodeId = 0;
-            region->IsChunkChanged_Nodes |= 1ull << cPos.pack();
+            auto region = Expanse.Worlds[0]->Regions.find(rPos);
+            if(region != Expanse.Worlds[0]->Regions.end()) {
+                region->second->Nodes[cPos.pack()][nPos.pack()].NodeId = 0;
+                region->second->IsChunkChanged_Nodes |= 1ull << cPos.pack();
+            }
         }
     }
 

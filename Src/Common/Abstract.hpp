@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <vector>
 #include <boost/json.hpp>
+#include <boost/container/small_vector.hpp>
 
 
 namespace LV {

@@ -622,24 +622,24 @@ coro<> ServerSession::rP_Definition(Net::AsyncSocket &sock) {
     }
     case ToClient::L2Definition::Node:
     {
-        DefNodeId id;
-        DefNode_t def;
-        id = co_await sock.read<DefNodeId>();
-        def.DrawType = (DefNode_t::EnumDrawType) co_await sock.read<uint8_t>();
-        for(int iter = 0; iter < 6; iter++) {
-            auto &pl = def.Texs[iter].Pipeline;
-            pl.resize(co_await sock.read<uint16_t>());
-            co_await sock.read((std::byte*) pl.data(), pl.size());
-        }
+        // DefNodeId id;
+        // DefNode_t def;
+        // id = co_await sock.read<DefNodeId>();
+        // def.DrawType = (DefNode_t::EnumDrawType) co_await sock.read<uint8_t>();
+        // for(int iter = 0; iter < 6; iter++) {
+        //     auto &pl = def.Texs[iter].Pipeline;
+        //     pl.resize(co_await sock.read<uint16_t>());
+        //     co_await sock.read((std::byte*) pl.data(), pl.size());
+        // }
 
-        PP_Definition_Node *packet = new PP_Definition_Node(
-            id,
-            def
-        );
+        // PP_Definition_Node *packet = new PP_Definition_Node(
+        //     id,
+        //     def
+        // );
 
-        while(!NetInputPackets.push(packet));
+        // while(!NetInputPackets.push(packet));
 
-        co_return;
+        // co_return;
     }
     case ToClient::L2Definition::FreeNode:
     {

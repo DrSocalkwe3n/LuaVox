@@ -131,6 +131,9 @@ struct DefItemInfo {
 
 };
 
+struct DefVoxel_t {};
+struct DefNode_t {};
+
 /* Интерфейс обработчика сессии с сервером */
 class IServerSession {
     struct ArrayHasher {

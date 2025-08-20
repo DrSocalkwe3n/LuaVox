@@ -2231,12 +2231,24 @@ void Vulkan::gui_ConnectedToServer() {
 			std::string text = std::to_string(ImGui::GetIO().Framerate);
 			ImGui::Text(text.c_str());
 			if(ImGui::Button("Выйти")) {
-        		Game.RSession->pushStage(EnumRenderStage::Shutdown);
-				Game.Session->shutdown(EnumDisconnect::ByInterface);
+				try {
+					if(Game.Session)
+						Game.Session->shutdown(EnumDisconnect::ByInterface);
+				} catch(const std::exception &exc) {
+					LOG.error() << "Game.Session->shutdown: " << exc.what();
+				}
+
 				Game.RSession = nullptr;
-				Game.Session = nullptr;
+				Game.ImGuiInterfaces.pop_back();
+				int mode = glfwGetInputMode(Graphics.Window, GLFW_CURSOR);
+				if(mode != GLFW_CURSOR_NORMAL)
+					glfwSetInputMode(Graphics.Window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 			}
+
 			ImGui::End();
+
+			if(!Game.RSession)
+				return;
 		}
 
 		if(Game.Session->isConnected())

@@ -598,11 +598,84 @@ private:
 };
 
 /*
-    Хранит распаршенную и по необходимости упрощённую модель
-
+    Парсит json модель
 */
 struct PreparedModel {
+    enum class EnumGuiLight {
+        Default
+    };
+    
+    std::optional<std::pair<std::string, std::string>> Parent;
+    std::optional<EnumGuiLight> GuiLight = EnumGuiLight::Default;
+    std::optional<bool> AmbientOcclusion = false;
+    
+    struct FullTransformation {
+        glm::vec3
+            Rotation = glm::vec3(0),
+            Translation = glm::vec3(0),
+            Scale = glm::vec3(1);
+    };
+    
+    std::unordered_map<std::string, FullTransformation> Display;
+    std::unordered_map<std::string, std::pair<std::string, std::string>> Textures;
 
+    struct Cuboid {
+        bool Shade;
+        glm::vec3 From, To;
+
+        enum class EnumFace {
+            Down, Up, North, South, West, East
+        };
+
+        struct Face {
+            glm::vec4 UV;
+            std::string Texture;
+            std::optional<EnumFace> Cullface;
+            int TintIndex = -1;
+            int16_t Rotation = 0;
+        };
+
+        std::unordered_map<EnumFace, Face> Faces;
+
+        struct Transformation {
+            enum EnumTransform {
+                MoveX, MoveY, MoveZ,
+                RotateX, RotateY, RotateZ,
+                MAX_ENUM
+            } Op;
+
+            float Value;
+        };
+    
+        std::vector<Transformation> Transformations;
+    };
+
+    std::vector<Cuboid> Cuboids;
+    
+    struct SubGLTF {
+        std::string Domain, Key;
+        std::optional<uint16_t> Scene; 
+    };
+    
+    std::vector<SubGLTF> GLTF;
+
+    // Json
+    PreparedModel(const std::string_view modid, const js::object& profile);
+    PreparedModel(const std::string_view modid, const sol::table& profile);
+    PreparedModel(const std::string_view modid, const std::u8string& data);
+
+    PreparedModel() = default;
+    PreparedModel(const PreparedModel&) = default;
+    PreparedModel(PreparedModel&&) = default;
+
+    PreparedModel& operator=(const PreparedModel&) = default;
+    PreparedModel& operator=(PreparedModel&&) = default;
+
+    // Пишет в сжатый двоичный формат
+    std::u8string dump() const;
+
+private:
+    bool load(const std::u8string& data) noexcept;
 };
 
 struct TexturePipeline {

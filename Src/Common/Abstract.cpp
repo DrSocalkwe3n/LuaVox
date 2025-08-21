@@ -1,11 +1,15 @@
 #include "Abstract.hpp"
+#include "TOSLib.hpp"
 #include "boost/json.hpp"
+#include "boost/json/array.hpp"
+#include "boost/json/object.hpp"
 #include "boost/json/string_view.hpp"
 #include <algorithm>
 #include <boost/iostreams/filtering_streambuf.hpp>
 #include <boost/iostreams/copy.hpp>
 #include <boost/iostreams/filter/zlib.hpp>
 #include <cstddef>
+#include <endian.h>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -1010,6 +1014,8 @@ bool PreparedNodeState::read_uint16(std::basic_istream<char8_t>& stream, uint16_
 }
 
 bool PreparedNodeState::load(const std::u8string& data) noexcept {
+    // TODO: Это нейронка писала
+
     std::basic_istringstream<char8_t> stream(data);
     char8_t byte;
     uint16_t size, v16;
@@ -1558,7 +1564,7 @@ std::pair<float, std::variant<PreparedNodeState::Model, PreparedNodeState::Vecto
     std::vector<Transformation> transforms;
 
     if(const auto weight_val = obj.try_at("weight")) {
-        weight = weight_val->as_double();
+        weight = weight_val->to_number<float>();
     }
 
     if(const auto uvlock_val = obj.try_at("uvlock")) {
@@ -1671,6 +1677,349 @@ std::vector<PreparedNodeState::Transformation> PreparedNodeState::parseTransorma
     }
 
     return result;
+}
+
+
+PreparedModel::PreparedModel(const std::string_view modid, const js::object& profile) {
+    if(profile.contains("parent")) {
+        auto [domain, key] = parseDomainKey((const std::string) profile.at("parent").as_string(), modid);
+        Parent.emplace(std::move(domain), std::move(key));
+    }
+
+    if(profile.contains("gui_light")) {
+        std::string_view gui_light = profile.at("gui_light").as_string();
+
+        GuiLight = EnumGuiLight::Default;
+    }
+
+    if(profile.contains("AmbientOcclusion")) {
+        AmbientOcclusion = profile.at("ambientocclusion").as_bool();
+    }
+
+    if(profile.contains("display")) {
+        const js::object& list = profile.at("display").as_object();
+        for(auto& [key, value] : list) {
+            FullTransformation result;
+
+            const js::object& display_value = value.as_object();
+
+            if(boost::system::result<const js::value&> arr_val = display_value.try_at("rotation")) {
+                const js::array& arr = arr_val->as_array();
+                if(arr.size() != 3)
+                    MAKE_ERROR("3");
+
+                for(int iter = 0; iter < 3; iter++)
+                    result.Rotation[iter] = arr[iter].to_number<float>();
+            }
+
+            if(boost::system::result<const js::value&> arr_val = display_value.try_at("translation")) {
+                const js::array& arr = arr_val->as_array();
+                if(arr.size() != 3)
+                    MAKE_ERROR("3");
+
+                for(int iter = 0; iter < 3; iter++)
+                    result.Translation[iter] = arr[iter].to_number<float>();
+            }
+
+            if(boost::system::result<const js::value&> arr_val = display_value.try_at("scale")) {
+                const js::array& arr = arr_val->as_array();
+                if(arr.size() != 3)
+                    MAKE_ERROR("3");
+
+                for(int iter = 0; iter < 3; iter++)
+                    result.Scale[iter] = arr[iter].to_number<float>();
+            }
+
+            Display[key] = result;
+        }
+
+    }
+
+    if(boost::system::result<const js::value&> textures_val = profile.try_at("textures")) {
+        const js::object& textures = textures_val->as_object();
+
+        for(const auto& [key, value] : textures) {
+            auto [domain, key2] = parseDomainKey((const std::string) value.as_string(), modid);
+            Textures[key] = {domain, key2};
+        }
+    }
+
+    if(boost::system::result<const js::value&> cuboids_val = profile.try_at("cuboids")) {
+        const js::array& cuboids = cuboids_val->as_array();
+
+        for(const auto& value : cuboids) {
+            const js::object& cuboid = value.as_object();
+
+            Cuboid result;
+
+            if(boost::system::result<const js::value&> shade_val = cuboid.try_at("shade")) {
+                result.Shade = shade_val->as_bool();
+            } else {
+                result.Shade = true;
+            }
+
+            {
+                const js::array& from = cuboid.at("from").as_array();
+                if(from.size() != 3)
+                    MAKE_ERROR("3");
+
+                for(int iter = 0; iter < 3; iter++)
+                    result.From[iter] = from[iter].to_number<float>();
+            }
+
+            {
+                const js::array& to = cuboid.at("to").as_array();
+                if(to.size() != 3)
+                    MAKE_ERROR("3");
+
+                for(int iter = 0; iter < 3; iter++)
+                    result.To[iter] = to[iter].to_number<float>();
+            }
+
+            {
+                const js::object& faces = cuboid.at("faces").as_object();
+
+                for(const auto& [key, value] : faces) {
+                    Cuboid::EnumFace type;
+
+                    if(key == "down")
+                        type = Cuboid::EnumFace::Down;
+                    else if(key == "up")
+                        type = Cuboid::EnumFace::Up;
+                    else if(key == "north")
+                        type = Cuboid::EnumFace::North;
+                    else if(key == "south")
+                        type = Cuboid::EnumFace::South;
+                    else if(key == "west")
+                        type = Cuboid::EnumFace::West;
+                    else if(key == "east")
+                        type = Cuboid::EnumFace::East;
+                    else
+                        MAKE_ERROR("Unknown face");
+
+                    const js::object& js_face = value.as_object();
+                    Cuboid::Face face;
+
+                    if(boost::system::result<const js::value&> uv_val = js_face.try_at("uv")) {
+                        const js::array& arr = uv_val->as_array();
+                        if(arr.size() != 4)
+                            MAKE_ERROR(4);
+
+                        for(int iter = 0; iter < 4; iter++)
+                            face.UV[iter] = arr[iter].to_number<float>();
+                    }
+
+                    if(boost::system::result<const js::value&> texture_val = js_face.try_at("texture")) {
+                        face.Texture = texture_val->as_string();
+                    }
+
+                    if(boost::system::result<const js::value&> cullface_val = js_face.try_at("cullface")) {
+                        const std::string_view cullface = cullface_val->as_string();
+
+                        if(cullface == "down")
+                            face.Cullface = Cuboid::EnumFace::Down;
+                        else if(cullface == "up")
+                            face.Cullface = Cuboid::EnumFace::Up;
+                        else if(cullface == "north")
+                            face.Cullface = Cuboid::EnumFace::North;
+                        else if(cullface == "south")
+                            face.Cullface = Cuboid::EnumFace::South;
+                        else if(cullface == "west")
+                            face.Cullface = Cuboid::EnumFace::West;
+                        else if(cullface == "east")
+                            face.Cullface = Cuboid::EnumFace::East;
+                        else
+                            MAKE_ERROR("Unknown face");
+                    }
+
+                    if(boost::system::result<const js::value&> tintindex_val = js_face.try_at("tintindex")) {
+                        face.TintIndex = tintindex_val->to_number<int>();
+                    } else
+                        face.TintIndex = -1;
+
+                    if(boost::system::result<const js::value&> rotation_val = js_face.try_at("rotation")) {
+                        face.Rotation = rotation_val->to_number<int16_t>();
+                    } else
+                        face.Rotation = 0;
+                    
+
+                    result.Faces[type] = face;
+                }
+            }
+
+            if(boost::system::result<const js::value&> transformations_val = cuboid.try_at("transformations")) {
+                const js::array& transformations = transformations_val->as_array();
+
+                for(const js::value& tobj : transformations) {
+                    const js::string_view transform = tobj.as_string();
+
+                    auto pos = transform.find('=');
+                    std::string_view key = transform.substr(0, pos);
+                    std::string_view value = transform.substr(pos+1);
+
+                    float f_value;
+                    auto [partial_ptr, partial_ec] = std::from_chars(value.data(), value.data() + value.size(), f_value);
+
+                    if(partial_ec == std::errc{} && partial_ptr != value.data() + value.size()) {
+                        MAKE_ERROR("Converted part of the string: " << value << " (remaining: " << std::string_view(partial_ptr, value.data() + value.size() - partial_ptr) << ")");
+                    } else if(partial_ec != std::errc{}) {
+                        MAKE_ERROR("Error converting partial string: " << value);
+                    }
+
+                    if(key == "x")
+                        result.Transformations.emplace_back(Cuboid::Transformation::MoveX, f_value);
+                    else if(key == "y")
+                        result.Transformations.emplace_back(Cuboid::Transformation::MoveY, f_value);
+                    else if(key == "z")
+                        result.Transformations.emplace_back(Cuboid::Transformation::MoveZ, f_value);
+                    else if(key == "rx")
+                        result.Transformations.emplace_back(Cuboid::Transformation::RotateX, f_value);
+                    else if(key == "ry")
+                        result.Transformations.emplace_back(Cuboid::Transformation::RotateY, f_value);
+                    else if(key == "rz")
+                        result.Transformations.emplace_back(Cuboid::Transformation::RotateZ, f_value);
+                    else
+                        MAKE_ERROR("Неизвестный ключ трансформации");
+                }
+            }
+        }
+    }
+
+    if(boost::system::result<const js::value&> gltf_val = profile.try_at("gltf")) {
+        const js::array& gltf = gltf_val->as_array();
+
+        for(const js::value& sub_val : gltf) {
+            SubGLTF result;
+            const js::object& sub = sub_val.as_object();
+            auto [domain, key] = parseDomainKey((std::string) sub.at("path").as_string(), modid);
+            result.Domain = std::move(domain);
+            result.Key = std::move(key);
+
+            if(boost::system::result<const js::value&> scene_val = profile.try_at("scene"))
+                result.Scene = scene_val->to_number<uint16_t>();
+        }
+    }
+}
+
+PreparedModel::PreparedModel(const std::string_view modid, const sol::table& profile) {
+    std::unreachable();
+}
+
+PreparedModel::PreparedModel(const std::string_view modid, const std::u8string& data) {
+    std::unreachable();
+}
+
+std::u8string PreparedModel::dump() const {
+    std::basic_ostringstream<char8_t> result;
+
+    uint16_t val;
+
+    auto push16 = [&]() {
+        result.put(uint8_t(val & 0xff));
+        result.put(uint8_t((val >> 8) & 0xff));
+    };
+
+    if(Parent.has_value()) {
+        result.put(1);
+
+        assert(Parent->first.size() < 32);
+        val = Parent->first.size();
+        push16();
+        result.write((const char8_t*) Parent->first.data(), val);
+        
+        assert(Parent->second.size() < 32);
+        val = Parent->second.size();
+        push16();
+        result.write((const char8_t*) Parent->second.data(), val);
+    } else {
+        result.put(0);
+    }
+
+    if(GuiLight.has_value()) {
+        result.put(1);
+        result.put(int(GuiLight.value()));
+    } else
+        result.put(0);
+
+    if(AmbientOcclusion.has_value()) {
+        if(*AmbientOcclusion)
+            result.put(2);
+        else
+            result.put(1);
+    } else
+        result.put(0);
+
+    assert(Display.size() < (1 << 16));
+    val = Display.size();
+    push16();
+
+    union {
+        float f_value;
+        uint32_t u_value;
+    };
+
+    for(const auto& [key, tsf] : Display) {
+        assert(key.size() < (1 << 16));
+        val = key.size();
+        push16();
+        result.write((const char8_t*) key.data(), val);
+
+        for(int iter = 0; iter < 3; iter++) {
+            f_value = tsf.Rotation[iter];
+
+            for(int iter2 = 0; iter2 < 4; iter2++) {
+                result.put(uint8_t((u_value >> (iter2*8)) & 0xff));
+            }
+        }
+
+        for(int iter = 0; iter < 3; iter++) {
+            f_value = tsf.Translation[iter];
+
+            for(int iter2 = 0; iter2 < 4; iter2++) {
+                result.put(uint8_t((u_value >> (iter2*8)) & 0xff));
+            }
+        }
+
+        for(int iter = 0; iter < 3; iter++) {
+            f_value = tsf.Scale[iter];
+
+            for(int iter2 = 0; iter2 < 4; iter2++) {
+                result.put(uint8_t((u_value >> (iter2*8)) & 0xff));
+            }
+        }  
+    }
+
+    assert(Textures.size() < (1 << 16));
+    val = Textures.size();
+    push16();
+
+    for(const auto& [tkey, dk] : Textures) {
+        assert(tkey.size() < 32);
+        val = tkey.size();
+        push16();
+        result.write((const char8_t*) tkey.data(), val);
+
+        assert(dk.first.size() < 32);
+        val = dk.first.size();
+        push16();
+        result.write((const char8_t*) dk.first.data(), val);
+
+        assert(dk.second.size() < 32);
+        val = dk.second.size();
+        push16();
+        result.write((const char8_t*) dk.second.data(), val);
+    }
+
+    assert(Cuboids.size() < (1 << 16));
+    val = Cuboids.size();
+    push16();
+
+    for(const Cub)
+
+    // Cuboids
+    // GLTF
+
+    return result.str();
 }
 
 }

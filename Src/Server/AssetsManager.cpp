@@ -1,6 +1,10 @@
 #include "AssetsManager.hpp"
 #include "Common/Abstract.hpp"
+#include "boost/json/impl/parse.ipp"
+#include "boost/json/object.hpp"
+#include "boost/json/parser.hpp"
 #include "png++/rgb_pixel.hpp"
+#include <exception>
 #include <filesystem>
 #include <png.h>
 #include <pngconf.h>
@@ -10,6 +14,27 @@
 
 
 namespace LV::Server {
+
+PreparedModelCollision::PreparedModelCollision(const PreparedModel& model) {
+
+}
+
+PreparedModelCollision::PreparedModelCollision(const std::string& domain, const js::object& glTF) {
+    // gltf
+
+    // Сцена по умолчанию
+    // Сцены -> Ноды
+    // Ноды -> Ноды, меши, матрицы, translation, rotation
+    // Меши -> Примитивы
+    // Примитивы -> Материал, вершинные данные
+    // Материалы -> текстуры
+    // Текстуры
+    // Буферы
+}
+
+PreparedModelCollision::PreparedModelCollision(const std::string& domain, Resource res) {
+
+}
 
 void AssetsManager::loadResourceFromFile(EnumAssets type, ResourceChangeObj& out, const std::string& domain, const std::string& key, fs::path path) const {
     switch(type) {
@@ -40,7 +65,13 @@ void AssetsManager::loadResourceFromLua(EnumAssets type, ResourceChangeObj& out,
 }
 
 void AssetsManager::loadResourceFromFile_Nodestate(ResourceChangeObj& out, const std::string& domain, const std::string& key, fs::path path) const {
-    std::unreachable();
+    Resource res(path);
+    js::object obj = js::parse(std::string_view((const char*) res.data(), res.size())).as_object();
+    PreparedNodeState pns(domain, obj);
+    std::u8string data = pns.dump();
+    Resource result((const uint8_t*) data.data(), data.size());
+    out.Nodestates[domain].emplace_back(key, std::move(pns));
+    out.NewOrChange[(int) EnumAssets::Nodestate][domain].emplace_back(key, result, fs::last_write_time(path));
 }
 
 void AssetsManager::loadResourceFromFile_Particle(ResourceChangeObj& out, const std::string& domain, const std::string& key, fs::path path) const {
@@ -53,9 +84,17 @@ void AssetsManager::loadResourceFromFile_Animation(ResourceChangeObj& out, const
 
 void AssetsManager::loadResourceFromFile_Model(ResourceChangeObj& out, const std::string& domain, const std::string& key, fs::path path) const {
     /*
-        json, obj, glTF
+        json, glTF glB
     */
-    std::unreachable();
+
+    // Либо это внутренний формат, либо glTF
+
+    Resource res(path);
+    
+    if(path.extension() == "json" || path.extension() == "gltf") {
+        js::object obj = js::parse(std::string_view((const char*) res.data(), res.size())).as_object();
+        PreparedModelCollision pmc(domain, obj, path.extension() == "gltf");
+    }
 }
 
 void AssetsManager::loadResourceFromFile_Texture(ResourceChangeObj& out, const std::string& domain, const std::string& key, fs::path path) const {

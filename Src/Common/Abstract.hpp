@@ -1,12 +1,9 @@
 #pragma once
 
-#include "Common/Net.hpp"
 #include "TOSLib.hpp"
 #include "boost/json/array.hpp"
-#include <algorithm>
 #include <cstdint>
 #include <glm/ext.hpp>
-#include <initializer_list>
 #include <memory>
 #include <sol/forward.hpp>
 #include <type_traits>
@@ -571,7 +568,7 @@ struct PreparedNodeState {
 
     PreparedNodeState(const std::string_view modid, const js::object& profile);
     PreparedNodeState(const std::string_view modid, const sol::table& profile);
-    PreparedNodeState(const std::string_view modid, const std::u8string& data);
+    PreparedNodeState(const std::u8string& data);
 
     PreparedNodeState() = default;
     PreparedNodeState(const PreparedNodeState&) = default;
@@ -590,8 +587,6 @@ struct PreparedNodeState {
 private:
     bool HasVariability = false;
 
-    static bool read_uint16(std::basic_istream<char8_t>& stream, uint16_t& value) noexcept;
-    bool load(const std::u8string& data) noexcept;
     uint16_t parseCondition(const std::string_view condition);
     std::pair<float, std::variant<Model, VectorModel>> parseModel(const std::string_view modid, const js::object& obj);
     std::vector<Transformation> parseTransormations(const js::array& arr);
@@ -662,7 +657,7 @@ struct PreparedModel {
     // Json
     PreparedModel(const std::string_view modid, const js::object& profile);
     PreparedModel(const std::string_view modid, const sol::table& profile);
-    PreparedModel(const std::string_view modid, const std::u8string& data);
+    PreparedModel(const std::u8string& data);
 
     PreparedModel() = default;
     PreparedModel(const PreparedModel&) = default;

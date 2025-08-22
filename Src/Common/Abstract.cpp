@@ -1,9 +1,7 @@
 #include "Abstract.hpp"
+#include "Common/Net.hpp"
 #include "TOSLib.hpp"
 #include "boost/json.hpp"
-#include "boost/json/array.hpp"
-#include "boost/json/object.hpp"
-#include "boost/json/string_view.hpp"
 #include <algorithm>
 #include <boost/iostreams/filtering_streambuf.hpp>
 #include <boost/iostreams/copy.hpp>
@@ -864,55 +862,152 @@ PreparedNodeState::PreparedNodeState(const std::string_view modid, const sol::ta
 
 }
 
-PreparedNodeState::PreparedNodeState(const std::string_view modid, const std::u8string& data) {
+PreparedNodeState::PreparedNodeState(const std::u8string& data) {
+    Net::LinearReader lr(data);
+
+    uint16_t size;
+    lr >> size;
+
+    ResourceToLocalId.reserve(size);
+    for(int counter = 0; counter < size; counter++) {
+        std::string domain, key;
+        lr >> domain >> key;
+        ResourceToLocalId.emplace_back(std::move(domain), std::move(key));
+    }
+
+    lr >> size;
+    Nodes.reserve(size);
+    for(int counter = 0; counter < size; counter++) {
+        uint8_t index = lr.read<uint8_t>();
+        Node node;
+
+        switch(index) {
+        case 0: node.v = Node::Num(lr.read<int>()); break;
+        case 1: node.v = Node::Var(lr.read<std::string>()); break;
+        case 2: {
+            Node::Unary unary;
+            unary.op = Op(lr.read<uint8_t>());
+            unary.rhs = lr.read<uint16_t>();
+            node.v = unary;
+            break;
+        }
+        case 3: {
+            Node::Binary binary;
+            binary.op = Op(lr.read<uint8_t>());
+            binary.lhs = lr.read<uint16_t>();
+            binary.rhs = lr.read<uint16_t>();
+            node.v = binary;
+            break;
+        }
+        default:
+            MAKE_ERROR("Ошибка формата данных");
+        }
+
+        Nodes.emplace_back(std::move(node));
+    }
+
+    lr >> size;
+    Routes.reserve(size);
+    for(int counter = 0; counter < size; counter++) {
+        uint16_t nodeId, variantsSize;
+        lr >> nodeId >> variantsSize;
+
+        boost::container::small_vector<
+            std::pair<float, std::variant<Model, VectorModel>>,
+            1
+        > variants;
+        variants.reserve(variantsSize);
+
+        for(int counter2 = 0; counter2 < variantsSize; counter2++) {
+            float weight;
+            lr >> weight;
+
+            if(lr.read<uint8_t>()) {
+                VectorModel mod;
+                uint16_t modelsSize;
+                lr >> modelsSize;
+                mod.Models.reserve(modelsSize);
+
+                for(int counter3 = 0; counter3 < modelsSize; counter3++) {
+                    Model mod2;
+                    lr >> mod2.Id;
+                    mod2.UVLock = lr.read<uint8_t>();
+
+                    uint16_t transformsSize;
+                    lr >> transformsSize;
+
+                    mod2.Transforms.reserve(transformsSize);
+                    for(int counter4 = 0; counter4 < transformsSize; counter4++) {
+                        Transformation tr;
+                        tr.Op = Transformation::EnumTransform(lr.read<uint8_t>());
+                        mod2.Transforms.push_back(tr);
+                    }
+                }
+
+                mod.UVLock = lr.read<uint8_t>();
+
+                uint16_t transformsSize;
+                lr >> transformsSize;
+
+                mod.Transforms.reserve(transformsSize);
+                for(int counter3 = 0; counter3 < transformsSize; counter3++) {
+                    Transformation tr;
+                    tr.Op = Transformation::EnumTransform(lr.read<uint8_t>());
+                    mod.Transforms.push_back(tr);
+                }
+
+                variants.emplace_back(weight, std::move(mod));
+            } else {
+                Model mod;
+                lr >> mod.Id;
+                mod.UVLock = lr.read<uint8_t>();
+                uint16_t transformsSize;
+                lr >> transformsSize;
+
+                mod.Transforms.reserve(transformsSize);
+                for(int counter3 = 0; counter3 < transformsSize; counter3++) {
+                    Transformation tr;
+                    tr.Op = Transformation::EnumTransform(lr.read<uint8_t>());
+                    mod.Transforms.push_back(tr);
+                }
+
+                variants.emplace_back(weight, std::move(mod));
+            }
+        }
+    }
 
 }
 
 std::u8string PreparedNodeState::dump() const {
-    std::basic_stringstream<char8_t> result;
-    uint16_t v16;
+    Net::Packet result;
 
     // ResourceToLocalId
     assert(ResourceToLocalId.size() < (1 << 16));
-    v16 = ResourceToLocalId.size();
-    result.put(uint8_t(v16 & 0xff));
-    result.put(uint8_t((v16 >> 8) & 0xff));
+    result << uint16_t(ResourceToLocalId.size());
 
     for(const auto& [domain, key] : ResourceToLocalId) {
         assert(domain.size() < 32);
-        result.put(uint8_t(domain.size() & 0xff));
-        result << (const std::u8string&) domain;
+        result << domain;
         assert(key.size() < 32);
-        result.put(uint8_t(key.size() & 0xff));
-        result << (const std::u8string&) key;
+        result << key;
     }
 
     // Nodes
     assert(Nodes.size() < (1 << 16));
-    v16 = Nodes.size();
-    result.put(uint8_t(v16 & 0xff));
-    result.put(uint8_t((v16 >> 8) & 0xff));
+    result << uint16_t(Nodes.size());
 
     for(const Node& node : Nodes) {
-        result.put(uint8_t(node.v.index()));
+        result << uint8_t(node.v.index());
         
         if(const Node::Num* val = std::get_if<Node::Num>(&node.v)) {
-            for(int iter = 0; iter < 4; iter++) {
-                result.put((val->v >> 8*iter) & 0xff);
-            }
+            result << val->v;
         } else if(const Node::Var* val = std::get_if<Node::Var>(&node.v)) {
             assert(val->name.size() < 32);
-            result << (const std::u8string&) val->name;
+            result << val->name;
         } else if(const Node::Unary* val = std::get_if<Node::Unary>(&node.v)) {
-            result.put(uint8_t(val->op));
-            result.put(uint8_t(val->rhs & 0xff));
-            result.put(uint8_t((val->rhs >> 8) & 0xff));
+            result << uint8_t(val->op) << val->rhs;
         } else if(const Node::Binary* val = std::get_if<Node::Binary>(&node.v)) {
-            result.put(uint8_t(val->op));
-            result.put(uint8_t(val->lhs & 0xff));
-            result.put(uint8_t((val->lhs >> 8) & 0xff));
-            result.put(uint8_t(val->rhs & 0xff));
-            result.put(uint8_t((val->rhs >> 8) & 0xff));
+            result << uint8_t(val->op) << val->lhs << val->rhs;
         } else {
             std::unreachable();
         }
@@ -920,288 +1015,52 @@ std::u8string PreparedNodeState::dump() const {
 
     // Routes
     assert(Routes.size() < (1 << 16));
-    v16 = Routes.size();
-    result.put(uint8_t(v16 & 0xff));
-    result.put(uint8_t((v16 >> 8) & 0xff));
+    result << uint16_t(Routes.size());
 
     for(const auto& [nodeId, variants] : Routes) {
-        result.put(uint8_t(nodeId & 0xff));
-        result.put(uint8_t((nodeId >> 8) & 0xff));
+        result << nodeId;
 
         assert(variants.size() < (1 << 16));
-        v16 = variants.size();
-        result.put(uint8_t(v16 & 0xff));
-        result.put(uint8_t((v16 >> 8) & 0xff));
+        result << uint16_t(variants.size());
 
         for(const auto& [weight, model] : variants) {
-            union {
-                float f_val;
-                uint32_t i_val;
-            };
-
-            f_val = weight;
-
-            for(int iter = 0; iter < 4; iter++) {
-                result.put((i_val >> 8*iter) & 0xff);
-            }
-
-            result.put(uint8_t(model.index()));
+            result << weight << uint8_t(model.index());
+            
             if(const Model* val = std::get_if<Model>(&model)) {
-                result.put(uint8_t(val->Id & 0xff));
-                result.put(uint8_t((val->Id >> 8) & 0xff));
-
-                result.put(uint8_t(val->UVLock));
+                result << val->Id << uint8_t(val->UVLock);
 
                 assert(val->Transforms.size() < (1 << 16));
-                v16 = val->Transforms.size();
-                result.put(uint8_t(v16 & 0xff));
-                result.put(uint8_t((v16 >> 8) & 0xff));
+                result << uint16_t(val->Transforms.size());
 
                 for(const Transformation& val : val->Transforms) {
-                    result.put(uint8_t(val.Op));
-                    f_val = val.Value;
-                    for(int iter = 0; iter < 4; iter++)
-                        result.put((i_val >> 8*iter) & 0xff);
+                    result << uint8_t(val.Op) << val.Value;
                 }
             } else if(const VectorModel* val = std::get_if<VectorModel>(&model)) {
                 assert(val->Models.size() < (1 << 16));
-                v16 = val->Models.size();
-                for(const Model& subModel : val->Models) {
-                    result.put(uint8_t(subModel.Id & 0xff));
-                    result.put(uint8_t((subModel.Id >> 8) & 0xff));
+                result << uint16_t(val->Models.size());
 
-                    result.put(uint8_t(subModel.UVLock));
+                for(const Model& subModel : val->Models) {
+                    result << subModel.Id << uint8_t(subModel.UVLock);
 
                     assert(subModel.Transforms.size() < (1 << 16));
-                    v16 = subModel.Transforms.size();
-                    result.put(uint8_t(v16 & 0xff));
-                    result.put(uint8_t((v16 >> 8) & 0xff));
+                    result << uint16_t(subModel.Transforms.size());
 
-                    for(const Transformation& val : subModel.Transforms) {
-                        result.put(uint8_t(val.Op));
-                        f_val = val.Value;
-                        for(int iter = 0; iter < 4; iter++)
-                            result.put((i_val >> 8*iter) & 0xff);
-                    }
+                    for(const Transformation& val : subModel.Transforms)
+                        result << uint8_t(val.Op) << val.Value;
                 }
 
-                result.put(uint8_t(val->UVLock));
+                result << uint8_t(val->UVLock);
 
                 assert(val->Transforms.size() < (1 << 16));
-                v16 = val->Transforms.size();
-                result.put(uint8_t(v16 & 0xff));
-                result.put(uint8_t((v16 >> 8) & 0xff));
+                result << uint16_t(val->Transforms.size());
 
-                for(const Transformation& val : val->Transforms) {
-                    result.put(uint8_t(val.Op));
-                    f_val = val.Value;
-                    for(int iter = 0; iter < 4; iter++)
-                        result.put((i_val >> 8*iter) & 0xff);
-                }
+                for(const Transformation& val : val->Transforms)
+                    result << uint8_t(val.Op) << val.Value;
             }
         }
     }
 
-    return result.str();
-}
-
-bool PreparedNodeState::read_uint16(std::basic_istream<char8_t>& stream, uint16_t& value) noexcept {
-    char8_t lo, hi;
-    if (!(stream >> lo)) return false;
-    if (!(stream >> hi)) return false;
-    value = (static_cast<uint16_t>(hi) << 8) | lo;
-    return true;
-}
-
-bool PreparedNodeState::load(const std::u8string& data) noexcept {
-    // TODO: Это нейронка писала
-
-    std::basic_istringstream<char8_t> stream(data);
-    char8_t byte;
-    uint16_t size, v16;
-    char8_t buffer[32];
-
-    // Читаем ResourceToLocalId
-    if (!read_uint16(stream, size)) return false;
-    ResourceToLocalId.clear();
-    for (uint16_t i = 0; i < size; ++i) {
-        if (!(stream >> byte)) return false;
-        size_t domain_len = byte & 0xff;
-        if (domain_len >= 32) return false;
-        if (!stream.read(buffer, domain_len)) return false;
-        std::string domain((const char*) buffer, domain_len);
-
-        if (!(stream >> byte)) return false;
-        size_t key_len = byte & 0xff;
-        if (key_len >= 32) return false;
-        if (!stream.read(buffer, key_len)) return false;
-        std::string key((const char*) buffer, key_len);
-
-        ResourceToLocalId.emplace_back(std::move(domain), std::move(key));
-    }
-
-    // Читаем Nodes
-    if (!read_uint16(stream, size)) return false;
-    Nodes.clear();
-    Nodes.reserve(size);
-    for (uint16_t i = 0; i < size; ++i) {
-        if (!(stream >> byte)) return false;
-        uint8_t tag = byte;
-
-        Node node;
-        switch (tag) {
-            case 0: { // Node::Num
-                uint32_t val = 0;
-                for (int iter = 0; iter < 4; ++iter) {
-                    if (!(stream >> byte)) return false;
-                    val |= (static_cast<uint32_t>(byte) << (8 * iter));
-                }
-                node.v = Node::Num{ int32_t(val) };
-                break;
-            }
-            case 1: { // Node::Var
-                if (!(stream >> byte)) return false;
-                size_t len = byte & 0xff;
-                if (len >= 32) return false;
-                if (!stream.read(buffer, len)) return false;
-                node.v = Node::Var{ std::string((const char*) buffer, len) };
-                break;
-            }
-            case 2: { // Node::Unary
-                if (!(stream >> byte)) return false;
-                uint8_t op = byte;
-                if (!read_uint16(stream, v16)) return false;
-                node.v = Node::Unary{Op(op), v16};
-                break;
-            }
-            case 3: { // Node::Binary
-                if (!(stream >> byte)) return false;
-                uint8_t op = byte;
-                if (!read_uint16(stream, v16)) return false;
-                uint16_t lhs = v16;
-                if (!read_uint16(stream, v16)) return false;
-                uint16_t rhs = v16;
-                node.v = Node::Binary{Op(op), lhs, rhs};
-                break;
-            }
-            default:
-                return false; // неизвестный тип
-        }
-        Nodes.push_back(std::move(node));
-    }
-
-    // Читаем Routes
-    if (!read_uint16(stream, size)) return false;
-    Routes.clear();
-    for (uint16_t i = 0; i < size; ++i) {
-        if (!read_uint16(stream, v16)) return false;
-        uint16_t nodeId = v16;
-
-        if (!read_uint16(stream, size)) return false;
-        boost::container::small_vector<std::pair<float, std::variant<Model, VectorModel>>, 1> variants;
-        variants.reserve(size);
-
-        for (uint16_t j = 0; j < size; ++j) {
-            // Читаем вес (float)
-            uint32_t f_bits = 0;
-            for (int iter = 0; iter < 4; ++iter) {
-                if (!(stream >> byte)) return false;
-                f_bits |= (static_cast<uint32_t>(byte) << (8 * iter));
-            }
-            float weight;
-            std::memcpy(&weight, &f_bits, 4);
-
-            if (!(stream >> byte)) return false;
-            uint8_t model_tag = byte;
-
-            if (model_tag == 0) { // Model
-                Model model;
-                if (!read_uint16(stream, v16)) return false;
-                model.Id = v16;
-
-                if (!(stream >> byte)) return false;
-                model.UVLock = static_cast<bool>(byte & 1);
-
-                if (!read_uint16(stream, v16)) return false;
-                model.Transforms.clear();
-                for (uint16_t k = 0; k < v16; ++k) {
-                    if (!(stream >> byte)) return false;
-                    uint8_t op = byte;
-
-                    uint32_t val_bits = 0;
-                    for (int iter = 0; iter < 4; ++iter) {
-                        if (!(stream >> byte)) return false;
-                        val_bits |= (static_cast<uint32_t>(byte) << (8 * iter));
-                    }
-                    float f_val;
-                    std::memcpy(&f_val, &val_bits, 4);
-
-                    model.Transforms.emplace_back(Transformation::EnumTransform(op), f_val);
-                }
-                variants.emplace_back(weight, std::move(model));
-            } else if (model_tag == 1) { // VectorModel
-                VectorModel vecModel;
-                if (!read_uint16(stream, v16)) return false;
-                size_t num_models = v16;
-                vecModel.Models.clear();
-                vecModel.Models.reserve(num_models);
-
-                for (size_t m = 0; m < num_models; ++m) {
-                    Model subModel;
-                    if (!read_uint16(stream, v16)) return false;
-                    subModel.Id = v16;
-
-                    if (!(stream >> byte)) return false;
-                    subModel.UVLock = static_cast<bool>(byte & 1);
-
-                    if (!read_uint16(stream, v16)) return false;
-                    subModel.Transforms.clear();
-                    for (uint16_t k = 0; k < v16; ++k) {
-                        if (!(stream >> byte)) return false;
-                        uint8_t op = byte;
-
-                        uint32_t val_bits = 0;
-                        for (int iter = 0; iter < 4; ++iter) {
-                            if (!(stream >> byte)) return false;
-                            val_bits |= (static_cast<uint32_t>(byte) << (8 * iter));
-                        }
-                        float f_val;
-                        std::memcpy(&f_val, &val_bits, 4);
-
-                        subModel.Transforms.emplace_back(Transformation::EnumTransform(op), f_val);
-                    }
-                    vecModel.Models.push_back(std::move(subModel));
-                }
-
-                if (!(stream >> byte)) return false;
-                vecModel.UVLock = static_cast<bool>(byte & 1);
-
-                if (!read_uint16(stream, v16)) return false;
-                vecModel.Transforms.clear();
-                for (uint16_t k = 0; k < v16; ++k) {
-                    if (!(stream >> byte)) return false;
-                    uint8_t op = byte;
-
-                    uint32_t val_bits = 0;
-                    for (int iter = 0; iter < 4; ++iter) {
-                        if (!(stream >> byte)) return false;
-                        val_bits |= (static_cast<uint32_t>(byte) << (8 * iter));
-                    }
-                    float f_val;
-                    std::memcpy(&f_val, &val_bits, 4);
-
-                    vecModel.Transforms.emplace_back(Transformation::EnumTransform(op), f_val);
-                }
-                variants.emplace_back(weight, std::move(vecModel));
-            } else {
-                return false; // неизвестный тип модели
-            }
-        }
-
-        Routes.emplace_back(nodeId, std::move(variants));
-    }
-
-    return true;
+    return result.complite();
 }
 
 uint16_t PreparedNodeState::parseCondition(const std::string_view expression) {
@@ -1905,121 +1764,233 @@ PreparedModel::PreparedModel(const std::string_view modid, const sol::table& pro
     std::unreachable();
 }
 
-PreparedModel::PreparedModel(const std::string_view modid, const std::u8string& data) {
-    std::unreachable();
+PreparedModel::PreparedModel(const std::u8string& data) {
+    Net::LinearReader lr(data);
+
+    if(lr.read<uint8_t>()) {
+        std::string domain, key;
+        lr >> domain >> key;
+        Parent.emplace(std::move(domain), std::move(key));
+    }
+
+    if(lr.read<uint8_t>()) {
+        GuiLight = (EnumGuiLight) lr.read<uint8_t>();
+    }
+
+    {
+        uint8_t val;
+        lr >> val;
+
+        if(val == 2)
+            AmbientOcclusion = true;
+        else if(val == 1)
+            AmbientOcclusion = false;
+        else if(val != 0)
+            MAKE_ERROR("Ошибка формата данных");
+    }
+
+    uint16_t size;
+    lr >> size;
+    Display.reserve(size);
+
+    for(int counter = 0; counter < size; counter++) {
+        std::string key;
+        lr >> key;
+
+        FullTransformation tsf;
+        for(int iter = 0; iter < 3; iter++)
+            lr >> tsf.Rotation[iter];
+        
+        for(int iter = 0; iter < 3; iter++)
+            lr >> tsf.Translation[iter];
+        
+        for(int iter = 0; iter < 3; iter++)
+            lr >> tsf.Scale[iter];
+
+        Display.insert({key, tsf});
+    }
+
+    lr >> size;
+    Textures.reserve(size);
+    for(int counter = 0; counter < size; counter++) {
+        std::string tkey, domain, key;
+        lr >> tkey >> domain >> key;
+        Textures.insert({tkey, {std::move(domain), std::move(key)}});
+    }
+
+    lr >> size;
+    Cuboids.reserve(size);
+    for(int counter = 0; counter < size; counter++) {
+        Cuboid cuboid;
+        cuboid.Shade = lr.read<uint8_t>();
+
+        for(int iter = 0; iter < 3; iter++)
+            lr >> cuboid.From[iter];
+        
+        for(int iter = 0; iter < 3; iter++)
+            lr >> cuboid.To[iter];
+
+        uint16_t facesSize;
+        lr >> facesSize;
+        cuboid.Faces.reserve(facesSize);
+
+        for(int counter2 = 0; counter2 < facesSize; counter2++) {
+            Cuboid::Face face;
+            uint8_t type;
+            lr >> type;
+
+            for(int iter = 0; iter < 4; iter++)
+                lr >> face.UV[iter];
+
+            lr >> face.Texture;
+            uint8_t val = lr.read<uint8_t>();
+            if(val != uint8_t(-1)) {
+                face.Cullface = Cuboid::EnumFace(val);
+            }
+
+            lr >> face.TintIndex >> face.Rotation;
+
+            cuboid.Faces.insert({(Cuboid::EnumFace) type, face});
+        }
+
+        uint16_t transformationsSize;
+        lr >> transformationsSize;
+        cuboid.Transformations.reserve(transformationsSize);
+
+        for(int counter2 = 0; counter2 < transformationsSize; counter2++) {
+            Cuboid::Transformation tsf;
+            tsf.Op = (Cuboid::Transformation::EnumTransform) lr.read<uint8_t>();
+            lr >> tsf.Value;
+            cuboid.Transformations.emplace_back(tsf);
+        }
+
+        Cuboids.emplace_back(std::move(cuboid));
+    }
+
+    lr >> size;
+    GLTF.reserve(size);
+    for(int counter = 0; counter < size; counter++) {
+        SubGLTF sub;
+        lr >> sub.Domain >> sub.Key;
+        uint16_t val = lr.read<uint16_t>();
+        if(val != uint16_t(-1)) {
+            sub.Scene = val;
+        }
+
+        GLTF.push_back(std::move(sub));
+    }
 }
 
 std::u8string PreparedModel::dump() const {
-    std::basic_ostringstream<char8_t> result;
-
-    uint16_t val;
-
-    auto push16 = [&]() {
-        result.put(uint8_t(val & 0xff));
-        result.put(uint8_t((val >> 8) & 0xff));
-    };
+    Net::Packet result;
 
     if(Parent.has_value()) {
-        result.put(1);
+        result << uint8_t(1);
 
         assert(Parent->first.size() < 32);
-        val = Parent->first.size();
-        push16();
-        result.write((const char8_t*) Parent->first.data(), val);
+        result << Parent->first;
         
         assert(Parent->second.size() < 32);
-        val = Parent->second.size();
-        push16();
-        result.write((const char8_t*) Parent->second.data(), val);
+        result << Parent->second;
     } else {
-        result.put(0);
+        result << uint8_t(0);
     }
 
     if(GuiLight.has_value()) {
-        result.put(1);
-        result.put(int(GuiLight.value()));
+        result << uint8_t(1);
+        result << uint8_t(GuiLight.value());
     } else
-        result.put(0);
+        result << uint8_t(0);
 
     if(AmbientOcclusion.has_value()) {
         if(*AmbientOcclusion)
-            result.put(2);
+            result << uint8_t(2);
         else
-            result.put(1);
+            result << uint8_t(1);
     } else
-        result.put(0);
+        result << uint8_t(0);
 
     assert(Display.size() < (1 << 16));
-    val = Display.size();
-    push16();
-
-    union {
-        float f_value;
-        uint32_t u_value;
-    };
+    result << uint16_t(Display.size());
 
     for(const auto& [key, tsf] : Display) {
         assert(key.size() < (1 << 16));
-        val = key.size();
-        push16();
-        result.write((const char8_t*) key.data(), val);
+        result << key;
 
-        for(int iter = 0; iter < 3; iter++) {
-            f_value = tsf.Rotation[iter];
+        for(int iter = 0; iter < 3; iter++)
+            result << tsf.Rotation[iter];
 
-            for(int iter2 = 0; iter2 < 4; iter2++) {
-                result.put(uint8_t((u_value >> (iter2*8)) & 0xff));
-            }
-        }
+        for(int iter = 0; iter < 3; iter++)
+            result << tsf.Translation[iter];
 
-        for(int iter = 0; iter < 3; iter++) {
-            f_value = tsf.Translation[iter];
-
-            for(int iter2 = 0; iter2 < 4; iter2++) {
-                result.put(uint8_t((u_value >> (iter2*8)) & 0xff));
-            }
-        }
-
-        for(int iter = 0; iter < 3; iter++) {
-            f_value = tsf.Scale[iter];
-
-            for(int iter2 = 0; iter2 < 4; iter2++) {
-                result.put(uint8_t((u_value >> (iter2*8)) & 0xff));
-            }
-        }  
+        for(int iter = 0; iter < 3; iter++)
+            result << tsf.Scale[iter];
     }
 
     assert(Textures.size() < (1 << 16));
-    val = Textures.size();
-    push16();
+    result << uint16_t(Textures.size());
 
     for(const auto& [tkey, dk] : Textures) {
         assert(tkey.size() < 32);
-        val = tkey.size();
-        push16();
-        result.write((const char8_t*) tkey.data(), val);
+        result << tkey;
 
         assert(dk.first.size() < 32);
-        val = dk.first.size();
-        push16();
-        result.write((const char8_t*) dk.first.data(), val);
+        result << dk.first;
 
         assert(dk.second.size() < 32);
-        val = dk.second.size();
-        push16();
-        result.write((const char8_t*) dk.second.data(), val);
+        result << dk.second;
     }
 
     assert(Cuboids.size() < (1 << 16));
-    val = Cuboids.size();
-    push16();
+    result << uint16_t(Cuboids.size());
 
-    for(const Cub)
+    for(const Cuboid& cuboid : Cuboids) {
+        result << uint8_t(cuboid.Shade);
 
-    // Cuboids
-    // GLTF
+        for(int iter = 0; iter < 3; iter++)
+            result << cuboid.From[iter];
 
-    return result.str();
+        for(int iter = 0; iter < 3; iter++)
+            result << cuboid.To[iter];
+
+        assert(cuboid.Faces.size() < 7);
+        result << uint8_t(cuboid.Faces.size());
+        for(const auto& [type, face] : cuboid.Faces) {
+            result << uint8_t(type);
+
+            for(int iter = 0; iter < 4; iter++)
+                result << face.UV[iter];
+
+            result << face.Texture;
+            if(face.Cullface)
+                result << uint8_t(*face.Cullface);
+            else
+                result << uint8_t(-1);
+
+            result << face.TintIndex << face.Rotation;
+        }
+
+        assert(cuboid.Transformations.size() < 256);
+        result << uint8_t(cuboid.Transformations.size());
+        for(const auto& [op, value] : cuboid.Transformations) {
+            result << uint8_t(op) << value;
+        }
+    }
+
+    assert(GLTF.size() < 256);
+    result << uint8_t(GLTF.size());
+    for(const SubGLTF& gltf : GLTF) {
+        assert(gltf.Domain.size() < 32);
+        assert(gltf.Key.size() < 32);
+
+        result << gltf.Domain << gltf.Key;
+        if(gltf.Scene)
+            result << uint16_t(*gltf.Scene);
+        else
+            result << uint16_t(-1);
+    }
+
+    return result.complite();
 }
 
 }

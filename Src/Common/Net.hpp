@@ -7,13 +7,12 @@
 #include "Async.hpp"
 #include "TOSLib.hpp"
 
-#include <atomic>
 #include <boost/asio.hpp>
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/write.hpp>
 #include <boost/thread.hpp>
 #include <boost/circular_buffer.hpp>
-#include <condition_variable>
+#include <type_traits>
 
 namespace LV::Net {
 
@@ -40,10 +39,10 @@ protected:
 };
 
 #if defined(__BYTE_ORDER) && __BYTE_ORDER == __LITTLE_ENDIAN
-    template <typename T, std::enable_if_t<std::is_integral_v<T>, int> = 0>
+    template <typename T, std::enable_if_t<std::is_floating_point_v<T> or std::is_integral_v<T>, int> = 0>
     static inline T swapEndian(const T &u) { return u; }
 #else
-    template <typename T, std::enable_if_t<std::is_integral_v<T>, int> = 0>
+    template <typename T, std::enable_if_t<std::is_floating_point_v<T> or std::is_integral_v<T>, int> = 0>
     static inline T swapEndian(const T &u) {
         if constexpr (sizeof(T) == 1) {
             return u;
@@ -65,7 +64,7 @@ protected:
     using NetPool = BoostPool<12, 14>;
 
     class Packet {
-        static constexpr size_t MAX_PACKET_SIZE = 1 << 16;
+        static constexpr size_t MAX_PACKET_SIZE = 1 << 24;
         uint16_t Size = 0;
         std::vector<NetPool::PagePtr> Pages;
 
@@ -109,7 +108,7 @@ protected:
             return *this;
         }
 
-        template<typename T, std::enable_if_t<std::is_integral_v<T>, int> = 0>
+        template<typename T, std::enable_if_t<std::is_integral_v<T> || std::is_floating_point_v<T>, int> = 0>
         inline Packet& write(T u) {
             u = swapEndian(u);
             write((const std::byte*) &u, sizeof(u));
@@ -130,7 +129,7 @@ protected:
         inline uint16_t size() const { return Size; }
         inline const std::vector<NetPool::PagePtr>& getPages() const { return Pages; }
 
-        template<typename T, std::enable_if_t<std::is_integral_v<T> or std::is_convertible_v<T, std::string_view>, int> = 0>
+        template<typename T, std::enable_if_t<std::is_floating_point_v<T> || std::is_integral_v<T> or std::is_convertible_v<T, std::string_view>, int> = 0>
         inline Packet& operator<<(const T &value) {
             if constexpr (std::is_convertible_v<T, std::string_view>)
                 return write((std::string_view) value);
@@ -147,7 +146,7 @@ protected:
             Size = 0;
         }
 
-        Packet& complite(std::vector<std::byte> &out) {
+        Packet& complite(std::u8string &out) {
             out.resize(Size);
 
             for(size_t pos = 0; pos < Size; pos += NetPool::PageSize) {
@@ -158,8 +157,8 @@ protected:
             return *this;
         }
 
-        std::vector<std::byte> complite() {
-            std::vector<std::byte> out;
+        std::u8string complite() {
+            std::u8string out;
             complite(out);
             return out;
         }
@@ -173,6 +172,61 @@ protected:
 
             clearFast();
         }
+    };
+
+    class LinearReader {
+    public:
+        LinearReader(const std::u8string& input, size_t pos = 0)
+            : Pos(pos), Input(input)
+        {}
+
+        LinearReader(const LinearReader&) = delete;
+        LinearReader(LinearReader&&) = delete;
+        LinearReader& operator=(const LinearReader&) = delete;
+        LinearReader& operator=(LinearReader&&) = delete;
+
+        void read(std::byte *data, uint32_t size) {
+            if(Input.size()-Pos < size)
+                MAKE_ERROR("Недостаточно данных");
+
+            std::copy((const std::byte*) Input.data()+Pos, (const std::byte*) Input.data()+Pos+size, data);
+            Pos += size;
+        }
+
+        template<typename T, std::enable_if_t<std::is_floating_point_v<T> || std::is_integral_v<T> or std::is_same_v<T, std::string>, int> = 0>
+        T read() {
+            if constexpr(std::is_floating_point_v<T> || std::is_integral_v<T>) {
+                T value;
+                read((std::byte*) &value, sizeof(value));
+                return swapEndian(value);
+            } else {
+                uint16_t size = read<uint16_t>();
+                T value(size, ' ');
+                read((std::byte*) value.data(), size);
+                return value;
+            }
+        }
+
+        template<typename T>
+        LinearReader& read(T& val) {
+            val = read<T>();
+            return *this;
+        }
+
+        template<typename T>
+        LinearReader& operator>>(T& val) {
+            val = read<T>();
+            return *this;
+        }
+
+        void checkUnreaded() {
+            if(Pos != Input.size())
+                MAKE_ERROR("Остались не использованные данные");
+        }
+
+    private:
+        size_t Pos = 0;
+        const std::u8string& Input;
     };
 
     class SmartPacket : public Packet {
@@ -221,7 +275,7 @@ protected:
 
             boost::asio::socket_base::linger optionLinger(true, 4); // После закрытия сокета оставшиеся данные будут доставлены
             Socket.set_option(optionLinger);
-            boost::asio::ip::tcp::no_delay optionNoDelay(true); // Отключает попытки объёденить данные в крупные пакеты
+            boost::asio::ip::tcp::no_delay optionNoDelay(true); // Отключает попытки объединить данные в крупные пакеты
             Socket.set_option(optionNoDelay);
 
             co_spawn(runSender(SendPackets.Context));
@@ -243,9 +297,9 @@ protected:
         coro<> read(std::byte *data, uint32_t size);
         void closeRead();
 
-        template<typename T, std::enable_if_t<std::is_integral_v<T> or std::is_same_v<T, std::string>, int> = 0>
+        template<typename T, std::enable_if_t<std::is_floating_point_v<T> or std::is_integral_v<T> or std::is_same_v<T, std::string>, int> = 0>
         coro<T> read() {
-            if constexpr(std::is_integral_v<T>) {
+            if constexpr(std::is_floating_point_v<T> or std::is_integral_v<T>) {
                 T value;
                 co_await read((std::byte*) &value, sizeof(value));
                 co_return swapEndian(value);
@@ -263,9 +317,9 @@ protected:
             co_await asio::async_read(socket, asio::mutable_buffer(data, size));
         }
 
-        template<typename T, std::enable_if_t<std::is_integral_v<T> or std::is_same_v<T, std::string>, int> = 0>
+        template<typename T, std::enable_if_t<std::is_floating_point_v<T> or std::is_integral_v<T> or std::is_same_v<T, std::string>, int> = 0>
         static inline coro<T> read(tcp::socket &socket) {
-            if constexpr(std::is_integral_v<T>) {
+            if constexpr(std::is_floating_point_v<T> or std::is_integral_v<T>) {
                 T value;
                 co_await read(socket, (std::byte*) &value, sizeof(value));
                 co_return swapEndian(value);
@@ -280,7 +334,7 @@ protected:
             co_await asio::async_write(socket, asio::const_buffer(data, size));
         }
 
-        template<typename T, std::enable_if_t<std::is_integral_v<T>, int> = 0>
+        template<typename T, std::enable_if_t<std::is_floating_point_v<T> or std::is_integral_v<T>, int> = 0>
         static inline coro<> write(tcp::socket &socket, T u) {
             u = swapEndian(u);
             co_await write(socket, (const std::byte*) &u, sizeof(u));

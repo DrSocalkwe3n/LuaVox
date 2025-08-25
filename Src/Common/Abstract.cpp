@@ -1,7 +1,10 @@
 #include "Abstract.hpp"
 #include "Common/Net.hpp"
 #include "TOSLib.hpp"
+#include <boost/interprocess/file_mapping.hpp>
+#include <boost/interprocess/mapped_region.hpp>
 #include "boost/json.hpp"
+#include "sha2.hpp"
 #include <algorithm>
 #include <boost/iostreams/filtering_streambuf.hpp>
 #include <boost/iostreams/copy.hpp>
@@ -15,6 +18,8 @@
 
 
 namespace LV {
+
+namespace fs = std::filesystem;
 
 
 CompressedVoxels compressVoxels_byte(const std::vector<VoxelCube>& voxels) {
@@ -1969,5 +1974,50 @@ std::u8string PreparedModel::dump() const {
 
     return result.complite();
 }
+
+struct Resource::InlineMMap {
+    boost::interprocess::file_mapping MMap;
+    boost::interprocess::mapped_region Region;
+    Hash_t Hash;
+
+    InlineMMap(fs::path path)
+        : MMap(path.c_str(), boost::interprocess::read_only),
+            Region(MMap, boost::interprocess::read_only)
+    {
+        Hash = sha2::sha256((const uint8_t*) Region.get_address(), Region.get_size());
+    }
+
+    const std::byte* data() const { return (const std::byte*) Region.get_address(); }
+    size_t size() const { return Region.get_size(); }
+};
+
+struct Resource::InlinePtr {
+    std::vector<uint8_t> Data;
+    Hash_t Hash;
+
+    InlinePtr(const uint8_t* data, size_t size) {
+        Data.resize(size);
+        std::copy(data, data+size, Data.data());
+        Hash = sha2::sha256(data, size);
+    }
+
+    const std::byte* data() const { return (const std::byte*) Data.data(); }
+    size_t size() const { return Data.size(); }
+};
+
+
+Resource::Resource(fs::path path)
+    : In(std::make_shared<std::variant<InlineMMap, InlinePtr>>(InlineMMap(path)))
+{}
+
+Resource::Resource(const uint8_t* data, size_t size)
+    : In(std::make_shared<std::variant<InlineMMap, InlinePtr>>(InlinePtr(data, size)))
+{}
+
+const std::byte* Resource::data() const { assert(In); return std::visit<const std::byte*>([](auto& obj){ return obj.data(); }, *In); }
+size_t Resource::size() const { assert(In); return std::visit<size_t>([](auto& obj){ return obj.size(); }, *In); }
+Hash_t Resource::hash() const { assert(In); return std::visit<Hash_t>([](auto& obj){ return obj.Hash; }, *In); }
+
+auto Resource::operator<=>(const Resource&) const = default;
 
 }

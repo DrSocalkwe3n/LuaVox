@@ -691,6 +691,29 @@ inline std::pair<std::string, std::string> parseDomainKey(const std::string& val
     }
 }
 
+
+struct Resource {
+private:
+    struct InlineMMap;
+    struct InlinePtr;
+
+    std::shared_ptr<std::variant<InlineMMap, InlinePtr>> In;
+
+public:
+    Resource(std::filesystem::path path);
+    Resource(const uint8_t* data, size_t size);
+
+    Resource(const Resource&) = default;
+    Resource(Resource&&) = default;
+    Resource& operator=(const Resource&) = default;
+    Resource& operator=(Resource&&) = default;
+    auto operator<=>(const Resource&) const;
+
+    const std::byte* data() const;
+    size_t size() const;
+    Hash_t hash() const;
+};
+
 }
 
 

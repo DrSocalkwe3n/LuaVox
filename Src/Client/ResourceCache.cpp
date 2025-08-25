@@ -156,7 +156,7 @@ std::pair<std::string, size_t> CacheDatabase::getAllHash() {
     return {out, readed};
 }
 
-void CacheDatabase::updateTimeFor(HASH hash) {
+void CacheDatabase::updateTimeFor(Hash_t hash) {
     sqlite3_bind_blob(STMT_UPDATE_TIME, 1, (const void*) hash.data(), 32, SQLITE_STATIC);
     sqlite3_bind_int(STMT_UPDATE_TIME, 2, time(nullptr));
     if(sqlite3_step(STMT_UPDATE_TIME) != SQLITE_DONE) {
@@ -167,7 +167,7 @@ void CacheDatabase::updateTimeFor(HASH hash) {
     sqlite3_reset(STMT_UPDATE_TIME);
 }
 
-void CacheDatabase::insert(HASH hash, size_t size) {
+void CacheDatabase::insert(Hash_t hash, size_t size) {
     assert(size < (size_t(1) << 31)-1 && size > 0);
 
     sqlite3_bind_blob(STMT_INSERT, 1, (const void*) hash.data(), 32, SQLITE_STATIC);
@@ -181,8 +181,8 @@ void CacheDatabase::insert(HASH hash, size_t size) {
     sqlite3_reset(STMT_INSERT);
 }
 
-std::vector<CacheDatabase::HASH> CacheDatabase::findExcessHashes(size_t bytesToFree, int timeBefore = time(nullptr)-604800) {
-    std::vector<HASH> out;
+std::vector<Hash_t> CacheDatabase::findExcessHashes(size_t bytesToFree, int timeBefore = time(nullptr)-604800) {
+    std::vector<Hash_t> out;
     size_t removed = 0;
 
     sqlite3_bind_int(STMT_OLD, 1, timeBefore);
@@ -197,7 +197,7 @@ std::vector<CacheDatabase::HASH> CacheDatabase::findExcessHashes(size_t bytesToF
 
         const uint8_t *hash = (const uint8_t*) sqlite3_column_blob(STMT_OLD, 0);
         removed += sqlite3_column_int(STMT_OLD, 1);
-        HASH obj;
+        Hash_t obj;
         for(int iter = 0; iter < 32; iter++)
             obj[iter] = hash[iter];
 
@@ -221,7 +221,7 @@ std::vector<CacheDatabase::HASH> CacheDatabase::findExcessHashes(size_t bytesToF
         }
 
         const uint8_t *hash = (const uint8_t*) sqlite3_column_blob(STMT_TO_FREE, 0);
-        HASH obj;
+        Hash_t obj;
         for(int iter = 0; iter < 32; iter++)
             obj[iter] = hash[iter];
 
@@ -232,7 +232,7 @@ std::vector<CacheDatabase::HASH> CacheDatabase::findExcessHashes(size_t bytesToF
     return out;
 }
 
-void CacheDatabase::remove(HASH hash) {
+void CacheDatabase::remove(Hash_t hash) {
     sqlite3_bind_blob(STMT_REMOVE, 1, (const void*) hash.data(), 32, SQLITE_STATIC);
     if(sqlite3_step(STMT_REMOVE) != SQLITE_DONE) {
         sqlite3_reset(STMT_REMOVE);
@@ -242,7 +242,7 @@ void CacheDatabase::remove(HASH hash) {
     sqlite3_reset(STMT_REMOVE);
 }
 
-std::string CacheDatabase::hashToString(HASH hash) {
+std::string CacheDatabase::hashToString(Hash_t hash) {
     std::string text;
     text.reserve(64);
 
@@ -263,125 +263,41 @@ std::string CacheDatabase::hashToString(HASH hash) {
     return text;
 }
 
-int CacheDatabase::hexCharToInt(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    throw std::invalid_argument("Invalid hexadecimal character");
+// int CacheDatabase::hexCharToInt(char c) {
+//     if (c >= '0' && c <= '9') return c - '0';
+//     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+//     throw std::invalid_argument("Invalid hexadecimal character");
+// }
+
+// Hash_t CacheDatabase::stringToHash(const std::string_view view) {
+//     if (view.size() != 64)
+//         throw std::invalid_argument("Hex string must be exactly 64 characters long");
+
+//     Hash_t hash;
+
+//     for (size_t i = 0; i < 32; ++i) {
+//         size_t offset = 62 - i * 2;
+//         int high = hexCharToInt(view[offset]);
+//         int low = hexCharToInt(view[offset + 1]);
+//         hash[i] = (high << 4) | low;
+//     }
+
+//     return hash;
+// }
+
+coro<> ResourceHandler::asyncDestructor() {
+    assert(NeedShutdown); // Нормальный shutdown должен быть вызван
+    co_await IAsyncDestructible::asyncDestructor();
 }
 
-CacheDatabase::HASH CacheDatabase::stringToHash(const std::string_view view) {
-    if (view.size() != 64)
-        throw std::invalid_argument("Hex string must be exactly 64 characters long");
-
-    HASH hash;
-
-    for (size_t i = 0; i < 32; ++i) {
-        size_t offset = 62 - i * 2;
-        int high = hexCharToInt(view[offset]);
-        int low = hexCharToInt(view[offset + 1]);
-        hash[i] = (high << 4) | low;
-    }
-
-    return hash;
-}
-
-CacheHandler::CacheHandler(boost::asio::io_context &ioc, const fs::path &cachePath,
-        size_t maxCacheDirectorySize, size_t maxLifeTime)
-    : IAsyncDestructible(ioc), Path(cachePath), DB(Path),
-        MaxCacheDirectorySize(maxCacheDirectorySize), MaxLifeTime(maxLifeTime)
-{
-}
-
-CacheHandler::~CacheHandler() = default;
-
-std::pair<std::string, size_t> CacheHandler::getAll() {
-    return DB.getAllHash();
-}
-
-size_t CacheHandler::getCacheSize() {
-    return DB.getCacheSize();
-}
-
-coro<> CacheHandlerBasic::asyncDestructor() {
-    NeedShutdown = true;
-    co_await CacheHandler::asyncDestructor();
-}
-
-void CacheHandlerBasic::readThread(AsyncUseControl::Lock lock) {
-    LOG.info() << "Поток чтения запущен";
-
-    while(!NeedShutdown) {
-        if(ReadQueue.get_read().empty())
-            goto wait;
-        else {
-            auto lock = ReadQueue.lock();
-            if(lock->empty())
-                goto wait;
-
-            CacheDatabase::HASH hash = lock->front();
-            lock->pop();
-            lock.unlock();
-
-            std::string name = CacheDatabase::hashToString(hash);
-            fs::path path = Path / name.substr(0, 2) / name.substr(2, 2) / name.substr(4);
-
-            std::shared_ptr<std::string> data;
-            
-            {
-                auto lock_wc = WriteCache.lock();
-                auto iter = lock_wc->begin();
-                while(iter != lock_wc->end()) {
-                    if(iter->first == hash) {
-                        // Копируем
-                        data = std::make_shared<std::string>(*iter->second);
-                        break;
-                    }
-                }
-            }
-            
-            if(!data) {
-                data = std::make_shared<std::string>();
-
-                try {
-                    std::ifstream fd(path, std::ios::binary | std::ios::ate);
-                    if (!fd.is_open())
-                        MAKE_ERROR("!is_open(): " << fd.exceptions());
-                    
-                    if (fd.fail())
-                        MAKE_ERROR("fail(): " << fd.exceptions());
-                    
-                    std::ifstream::pos_type size = fd.tellg();
-                    fd.seekg(0, std::ios::beg);
-                    data->resize(size);
-                    fd.read(data->data(), size);
-
-                    if (!fd.good()) 
-                        MAKE_ERROR("!good(): " << fd.exceptions());
-                } catch(const std::exception &exc) {
-                    LOG.error() << "Не удалось считать ресурс " << path.c_str() << ": " << exc.what();
-                }   
-            }
-
-            ReadedQueue.lock()->emplace_back(hash, std::move(data));
-            continue;
-        }
-
-        wait:
-        TOS::Time::sleep3(20);
-    }
-
-    LOG.info() << "Поток чтения остановлен";
-    lock.unlock();
-}
-
-void CacheHandlerBasic::readWriteThread(AsyncUseControl::Lock lock) {
+void ResourceHandler::readWriteThread(AsyncUseControl::Lock lock) {
     LOG.info() << "Поток чтения/записи запущен";
     
     while(!NeedShutdown || !WriteQueue.get_read().empty()) {
         if(!ReadQueue.get_read().empty()) {
             auto lock = ReadQueue.lock();
             if(!lock->empty()) {
-                CacheDatabase::HASH hash = lock->front();
+                Hash_t hash = lock->front();
                 lock->pop();
                 lock.unlock();
 
@@ -448,11 +364,11 @@ void CacheHandlerBasic::readWriteThread(AsyncUseControl::Lock lock) {
                     if(ssize_t free = ssize_t(MaxCacheDirectorySize)-DB.getCacheSize(); free < task.Data->size()) {
                         // Недостаточно места, сколько необходимо освободить с запасом
                         ssize_t need = task.Data->size()-free + 64*1024*1024;
-                        std::vector<CacheDatabase::HASH> hashes = DB.findExcessHashes(need, time(nullptr)-MaxLifeTime);
+                        std::vector<Hash_t> hashes = DB.findExcessHashes(need, time(nullptr)-MaxLifeTime);
                         
                         LOG.warn() << "Удаление устаревшего кеша в количестве " << hashes.size() << "...";
 
-                        for(CacheDatabase::HASH hash : hashes) {
+                        for(Hash_t hash : hashes) {
                             std::string name = CacheDatabase::hashToString(hash);
                             fs::path path = Path / name.substr(0, 2) / name.substr(2, 2) / name.substr(4);
                             DB.remove(hash);
@@ -496,80 +412,46 @@ void CacheHandlerBasic::readWriteThread(AsyncUseControl::Lock lock) {
     lock.unlock();
 }
 
-CacheHandlerBasic::CacheHandlerBasic(boost::asio::io_context &ioc, const fs::path &cachePath,
+ResourceHandler::ResourceHandler(boost::asio::io_context &ioc, const fs::path &cachePath,
         size_t maxCacheDirectorySize, size_t maxLifeTime)
-    : CacheHandler(ioc, cachePath, maxCacheDirectorySize, maxLifeTime),
-        ReadThread(&CacheHandlerBasic::readThread, this, AUC.use()),
-        ReadWriteThread(&CacheHandlerBasic::readWriteThread, this, AUC.use())
+    :   IAsyncDestructible(ioc),
+        OffThread(&ResourceHandler::readWriteThread, this, AUC.use())
 {
     LOG.info() << "Инициализировано хранилище кеша: " << cachePath.c_str();
 }
 
-CacheHandlerBasic::~CacheHandlerBasic() {
-    ReadThread.join();
-    ReadWriteThread.join();
-    LOG.info() << "ДеИнициализировано хранилище кеша: " << Path.c_str();
-}
 
-void CacheHandlerBasic::pushWrite(std::string &&data, CacheDatabase::HASH hash) {
-    std::shared_ptr<std::string> dat = std::make_shared<std::string>(std::move(data));
-    WriteCache.lock()->push_back({hash, dat});
-    WriteQueue.lock()->push({hash, dat});
-}
-
-void CacheHandlerBasic::pushRead(CacheDatabase::HASH hash) {
-    ReadQueue.lock()->push(hash);
-}
-
-std::vector<std::pair<CacheDatabase::HASH, std::string>> CacheHandlerBasic::pullReads() {
-    std::vector<DataTask> data;
-
-    {
-        auto lock = ReadedQueue.lock();
-        data = std::move(*lock);
-    }
-
-    std::vector<std::pair<CacheDatabase::HASH, std::string>> out;
-    out.reserve(data.size());
-
-    for(auto &value : data) {
-        out.emplace_back(value.Hash, std::move(*value.Data));
-    }
-
-    return out;
-}
-
-void CacheHandlerBasic::updateParams(size_t maxLifeTime, size_t maxCacheDirectorySize) {
-    MaxLifeTime = maxLifeTime;
+// void ResourceHandler::updateParams(size_t maxLifeTime, size_t maxCacheDirectorySize) {
+//     MaxLifeTime = maxLifeTime;
     
-    if(MaxCacheDirectorySize != maxCacheDirectorySize) {
-        MaxCacheDirectorySize = maxCacheDirectorySize;
+//     if(MaxCacheDirectorySize != maxCacheDirectorySize) {
+//         MaxCacheDirectorySize = maxCacheDirectorySize;
 
-        size_t size = DB.getCacheSize();
-        if(size > maxCacheDirectorySize) {
-            size_t needToFree = size-maxCacheDirectorySize+64*1024*1024;
-            try {
-                LOG.info() << "Начата вычистка кеша на сумму  " << needToFree/1024/1024 << " Мб";
-                std::vector<CacheDatabase::HASH> hashes = DB.findExcessHashes(needToFree, time(nullptr)-MaxLifeTime);
-                LOG.warn() << "Удаление кеша в количестве " << hashes.size() << "...";
+//         size_t size = DB.getCacheSize();
+//         if(size > maxCacheDirectorySize) {
+//             size_t needToFree = size-maxCacheDirectorySize+64*1024*1024;
+//             try {
+//                 LOG.info() << "Начата вычистка кеша на сумму  " << needToFree/1024/1024 << " Мб";
+//                 std::vector<Hash_t> hashes = DB.findExcessHashes(needToFree, time(nullptr)-MaxLifeTime);
+//                 LOG.warn() << "Удаление кеша в количестве " << hashes.size() << "...";
 
-                for(CacheDatabase::HASH hash : hashes) {
-                    std::string name = CacheDatabase::hashToString(hash);
-                    fs::path path = Path / name.substr(0, 2) / name.substr(2, 2) / name.substr(4);
-                    DB.remove(hash);
-                    fs::remove(path);
+//                 for(Hash_t hash : hashes) {
+//                     std::string name = CacheDatabase::hashToString(hash);
+//                     fs::path path = Path / name.substr(0, 2) / name.substr(2, 2) / name.substr(4);
+//                     DB.remove(hash);
+//                     fs::remove(path);
                     
-                    fs::path up1 = path.parent_path();
-                    LOG.info() << "В директории " << up1.c_str() << " не осталось файлов, удаляем...";
-                    size_t count = std::distance(fs::directory_iterator(up1), fs::directory_iterator());
-                    if(count == 0)
-                        fs::remove(up1);
-                }
-            } catch(const std::exception &exc) {
-                LOG.error() << "Не удалось очистить кеш до новой границы: " << exc.what();
-            }
-        }
-    }
-}
+//                     fs::path up1 = path.parent_path();
+//                     LOG.info() << "В директории " << up1.c_str() << " не осталось файлов, удаляем...";
+//                     size_t count = std::distance(fs::directory_iterator(up1), fs::directory_iterator());
+//                     if(count == 0)
+//                         fs::remove(up1);
+//                 }
+//             } catch(const std::exception &exc) {
+//                 LOG.error() << "Не удалось очистить кеш до новой границы: " << exc.what();
+//             }
+//         }
+//     }
+// }
 
 }

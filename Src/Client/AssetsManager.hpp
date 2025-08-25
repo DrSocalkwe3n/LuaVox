@@ -1,10 +1,7 @@
 #pragma once
 
 #include "Common/Abstract.hpp"
-#include <array>
-#include <boost/lockfree/spsc_queue.hpp>
 #include <cassert>
-#include <chrono>
 #include <functional>
 #include <memory>
 #include <queue>
@@ -15,7 +12,6 @@
 #include <filesystem>
 #include <string_view>
 #include <thread>
-#include <unordered_map>
 
 
 namespace LV::Client {
@@ -91,9 +87,9 @@ public:
 
     Обработка файлов в отдельном потоке
 */
-class ResourceHandler : public IAsyncDestructible {
+class AssetsManager : public IAsyncDestructible {
 public:
-    using Ptr = std::shared_ptr<ResourceHandler>;
+    using Ptr = std::shared_ptr<AssetsManager>;
 
     struct ResourceKey {
         Hash_t Hash;
@@ -101,15 +97,11 @@ public:
         std::string Domain, Key;
     };
 
-protected:
-    ResourceHandler(boost::asio::io_context &ioc, const fs::path &cachePath,
-        size_t maxCacheDatabaseSize, size_t maxLifeTime);
-
 public:
-    virtual ~ResourceHandler();
-    static std::shared_ptr<ResourceHandler> Create(asio::io_context &ioc, const fs::path& cachePath,
+    virtual ~AssetsManager();
+    static std::shared_ptr<AssetsManager> Create(asio::io_context &ioc, const fs::path& cachePath,
             size_t maxCacheDirectorySize = 8*1024*1024*1024ULL, size_t maxLifeTime = 7*24*60*60) {
-        return createShared(ioc, new ResourceHandler(ioc, cachePath, maxCacheDirectorySize, maxLifeTime));
+        return createShared(ioc, new AssetsManager(ioc, cachePath, maxCacheDirectorySize, maxLifeTime));
     }
 
     // Добавить новый полученный с сервера ресурс
@@ -189,6 +181,11 @@ private:
 
     bool NeedShutdown = false;
     std::thread OffThread;
+
+    
+    virtual coro<> asyncDestructor();
+    AssetsManager(boost::asio::io_context &ioc, const fs::path &cachePath,
+        size_t maxCacheDatabaseSize, size_t maxLifeTime);
 
     void readWriteThread(AsyncUseControl::Lock lock);
 };

@@ -1,4 +1,4 @@
-#include "ResourceCache.hpp"
+#include "AssetsManager.hpp"
 #include "sqlite3.h"
 #include <fstream>
 
@@ -285,12 +285,12 @@ std::string CacheDatabase::hashToString(Hash_t hash) {
 //     return hash;
 // }
 
-coro<> ResourceHandler::asyncDestructor() {
+coro<> AssetsManager::asyncDestructor() {
     assert(NeedShutdown); // Нормальный shutdown должен быть вызван
     co_await IAsyncDestructible::asyncDestructor();
 }
 
-void ResourceHandler::readWriteThread(AsyncUseControl::Lock lock) {
+void AssetsManager::readWriteThread(AsyncUseControl::Lock lock) {
     LOG.info() << "Поток чтения/записи запущен";
     
     while(!NeedShutdown || !WriteQueue.get_read().empty()) {
@@ -412,10 +412,10 @@ void ResourceHandler::readWriteThread(AsyncUseControl::Lock lock) {
     lock.unlock();
 }
 
-ResourceHandler::ResourceHandler(boost::asio::io_context &ioc, const fs::path &cachePath,
+AssetsManager::AssetsManager(boost::asio::io_context &ioc, const fs::path &cachePath,
         size_t maxCacheDirectorySize, size_t maxLifeTime)
     :   IAsyncDestructible(ioc),
-        OffThread(&ResourceHandler::readWriteThread, this, AUC.use())
+        OffThread(&AssetsManager::readWriteThread, this, AUC.use())
 {
     LOG.info() << "Инициализировано хранилище кеша: " << cachePath.c_str();
 }

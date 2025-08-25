@@ -600,7 +600,6 @@ struct PreparedModel {
         Default
     };
     
-    std::optional<std::pair<std::string, std::string>> Parent;
     std::optional<EnumGuiLight> GuiLight = EnumGuiLight::Default;
     std::optional<bool> AmbientOcclusion = false;
     
@@ -647,12 +646,12 @@ struct PreparedModel {
 
     std::vector<Cuboid> Cuboids;
     
-    struct SubGLTF {
+    struct SubModel {
         std::string Domain, Key;
         std::optional<uint16_t> Scene; 
     };
     
-    std::vector<SubGLTF> GLTF;
+    std::vector<SubModel> SubModels;
 
     // Json
     PreparedModel(const std::string_view modid, const js::object& profile);

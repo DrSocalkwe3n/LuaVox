@@ -1,8 +1,6 @@
 #include "AssetsManager.hpp"
 #include "Common/Abstract.hpp"
-#include "boost/json/impl/parse.ipp"
-#include "boost/json/object.hpp"
-#include "boost/json/parser.hpp"
+#include "boost/json.hpp"
 #include "png++/rgb_pixel.hpp"
 #include <exception>
 #include <filesystem>
@@ -11,12 +9,27 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include "sol/sol.hpp"
 
 
 namespace LV::Server {
 
 PreparedModelCollision::PreparedModelCollision(const PreparedModel& model) {
+    Cuboids.reserve(model.Cuboids.size());
 
+    for(const PreparedModel::Cuboid& cuboid : model.Cuboids) {
+        Cuboid result;
+        result.From = cuboid.From;
+        result.To = cuboid.To;
+        result.Faces = 0;
+
+        for(const auto& [key, _] : cuboid.Faces)
+            result.Faces |= (1 << int(key));
+
+        result.Transformations = cuboid.Transformations;
+    }
+
+    SubModels = model.SubModels;
 }
 
 PreparedModelCollision::PreparedModelCollision(const std::string& domain, const js::object& glTF) {
@@ -32,7 +45,7 @@ PreparedModelCollision::PreparedModelCollision(const std::string& domain, const 
     // Буферы
 }
 
-PreparedModelCollision::PreparedModelCollision(const std::string& domain, Resource res) {
+PreparedModelCollision::PreparedModelCollision(const std::string& domain, Resource glb) {
 
 }
 
@@ -84,16 +97,32 @@ void AssetsManager::loadResourceFromFile_Animation(ResourceChangeObj& out, const
 
 void AssetsManager::loadResourceFromFile_Model(ResourceChangeObj& out, const std::string& domain, const std::string& key, fs::path path) const {
     /*
-        json, glTF glB
+        json, glTF, glB
     */
 
     // Либо это внутренний формат, либо glTF
 
     Resource res(path);
+    std::filesystem::file_time_type ftt = fs::last_write_time(path);
     
-    if(path.extension() == "json" || path.extension() == "gltf") {
+    if(path.extension() == "json") {
         js::object obj = js::parse(std::string_view((const char*) res.data(), res.size())).as_object();
-        PreparedModelCollision pmc(domain, obj, path.extension() == "gltf");
+        PreparedModel pm(domain, obj);
+        PreparedModelCollision pmc(pm);
+        std::u8string data = pm.dump();
+        out.Models[domain].emplace_back(key, pmc);
+        out.NewOrChange[(int) EnumAssets::Model][domain].emplace_back(key, Resource((const uint8_t*) data.data(), data.size()), ftt);
+    } else if(path.extension() == "gltf") {
+        js::object obj = js::parse(std::string_view((const char*) res.data(), res.size())).as_object();
+        PreparedModelCollision pmc(domain, obj);
+        out.Models[domain].emplace_back(key, pmc);
+        out.NewOrChange[(int) EnumAssets::Model][domain].emplace_back(key, res, ftt);
+    } else if(path.extension() == "glb") {
+        PreparedModelCollision pmc(domain, res);
+        out.Models[domain].emplace_back(key, pmc);
+        out.NewOrChange[(int) EnumAssets::Model][domain].emplace_back(key, res, ftt);
+    } else {
+        MAKE_ERROR("Не поддерживаемый формат файла");
     }
 }
 
@@ -130,7 +159,7 @@ void AssetsManager::loadResourceFromFile_Font(ResourceChangeObj& out, const std:
 
 void AssetsManager::loadResourceFromLua_Nodestate(ResourceChangeObj& out, const std::string& domain, const std::string& key, const sol::table& profile) const {
     if(std::optional<std::string> path = profile.get<std::optional<std::string>>("path")) {
-        out.NewOrChange[(int) EnumAssets::Nodestate][domain].emplace_back(key, AssetsManager::Resource(*path), fs::file_time_type::min());
+        out.NewOrChange[(int) EnumAssets::Nodestate][domain].emplace_back(key, Resource(*path), fs::file_time_type::min());
         return;
     }
 
@@ -139,7 +168,7 @@ void AssetsManager::loadResourceFromLua_Nodestate(ResourceChangeObj& out, const 
 
 void AssetsManager::loadResourceFromLua_Particle(ResourceChangeObj& out, const std::string& domain, const std::string& key, const sol::table& profile) const {
     if(std::optional<std::string> path = profile.get<std::optional<std::string>>("path")) {
-        out.NewOrChange[(int) EnumAssets::Particle][domain].emplace_back(key, AssetsManager::Resource(*path), fs::file_time_type::min());
+        out.NewOrChange[(int) EnumAssets::Particle][domain].emplace_back(key, Resource(*path), fs::file_time_type::min());
         return;
     }
     
@@ -148,7 +177,7 @@ void AssetsManager::loadResourceFromLua_Particle(ResourceChangeObj& out, const s
 
 void AssetsManager::loadResourceFromLua_Animation(ResourceChangeObj& out, const std::string& domain, const std::string& key, const sol::table& profile) const {
     if(std::optional<std::string> path = profile.get<std::optional<std::string>>("path")) {
-        out.NewOrChange[(int) EnumAssets::Animation][domain].emplace_back(key, AssetsManager::Resource(*path), fs::file_time_type::min());
+        out.NewOrChange[(int) EnumAssets::Animation][domain].emplace_back(key, Resource(*path), fs::file_time_type::min());
         return;
     }
     
@@ -157,7 +186,7 @@ void AssetsManager::loadResourceFromLua_Animation(ResourceChangeObj& out, const 
 
 void AssetsManager::loadResourceFromLua_Model(ResourceChangeObj& out, const std::string& domain, const std::string& key, const sol::table& profile) const {
     if(std::optional<std::string> path = profile.get<std::optional<std::string>>("path")) {
-        out.NewOrChange[(int) EnumAssets::Model][domain].emplace_back(key, AssetsManager::Resource(*path), fs::file_time_type::min());
+        out.NewOrChange[(int) EnumAssets::Model][domain].emplace_back(key, Resource(*path), fs::file_time_type::min());
         return;
     }
     
@@ -166,7 +195,7 @@ void AssetsManager::loadResourceFromLua_Model(ResourceChangeObj& out, const std:
 
 void AssetsManager::loadResourceFromLua_Texture(ResourceChangeObj& out, const std::string& domain, const std::string& key, const sol::table& profile) const {
     if(std::optional<std::string> path = profile.get<std::optional<std::string>>("path")) {
-        out.NewOrChange[(int) EnumAssets::Texture][domain].emplace_back(key, AssetsManager::Resource(*path), fs::file_time_type::min());
+        out.NewOrChange[(int) EnumAssets::Texture][domain].emplace_back(key, Resource(*path), fs::file_time_type::min());
         return;
     }
     
@@ -175,7 +204,7 @@ void AssetsManager::loadResourceFromLua_Texture(ResourceChangeObj& out, const st
 
 void AssetsManager::loadResourceFromLua_Sound(ResourceChangeObj& out, const std::string& domain, const std::string& key, const sol::table& profile) const {
     if(std::optional<std::string> path = profile.get<std::optional<std::string>>("path")) {
-        out.NewOrChange[(int) EnumAssets::Sound][domain].emplace_back(key, AssetsManager::Resource(*path), fs::file_time_type::min());
+        out.NewOrChange[(int) EnumAssets::Sound][domain].emplace_back(key, Resource(*path), fs::file_time_type::min());
         return;
     }
     
@@ -184,7 +213,7 @@ void AssetsManager::loadResourceFromLua_Sound(ResourceChangeObj& out, const std:
 
 void AssetsManager::loadResourceFromLua_Font(ResourceChangeObj& out, const std::string& domain, const std::string& key, const sol::table& profile) const {
     if(std::optional<std::string> path = profile.get<std::optional<std::string>>("path")) {
-        out.NewOrChange[(int) EnumAssets::Font][domain].emplace_back(key, AssetsManager::Resource(*path), fs::file_time_type::min());
+        out.NewOrChange[(int) EnumAssets::Font][domain].emplace_back(key, Resource(*path), fs::file_time_type::min());
         return;
     }
     

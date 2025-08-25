@@ -312,7 +312,7 @@ class RemoteClient {
         std::vector<Hash_t> OnClient, ClientRequested;
         // Отправляемые на клиент ресурсы
         // Тип, домен, ключ, идентификатор, ресурс, количество отправленных байт
-        std::vector<std::tuple<EnumAssets, std::string, std::string, ResourceId, AssetsManager::Resource, size_t>> ToSend;
+        std::vector<std::tuple<EnumAssets, std::string, std::string, ResourceId, Resource, size_t>> ToSend;
     } AssetsInWork;
 
     TOS::SpinlockObject<NetworkAndResource_t> NetworkAndResource;
@@ -417,7 +417,7 @@ public:
     // Глобально их можно запросить в выдаче pushPreparedPackets()
 
     // Оповещение о запрошенных (и не только) ассетах
-    void informateAssets(const std::vector<std::tuple<EnumAssets, ResourceId, const std::string, const std::string, AssetsManager::Resource>>& resources);
+    void informateAssets(const std::vector<std::tuple<EnumAssets, ResourceId, const std::string, const std::string, Resource>>& resources);
 
     // Игровые определения
     void informateDefVoxel(const std::vector<std::pair<DefVoxelId, DefVoxel*>>& voxels)         { NetworkAndResource.lock()->informateDefVoxel(voxels); }

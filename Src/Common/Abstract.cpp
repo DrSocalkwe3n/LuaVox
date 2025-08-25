@@ -1540,11 +1540,6 @@ std::vector<PreparedNodeState::Transformation> PreparedNodeState::parseTransorma
 
 
 PreparedModel::PreparedModel(const std::string_view modid, const js::object& profile) {
-    if(profile.contains("parent")) {
-        auto [domain, key] = parseDomainKey((const std::string) profile.at("parent").as_string(), modid);
-        Parent.emplace(std::move(domain), std::move(key));
-    }
-
     if(profile.contains("gui_light")) {
         std::string_view gui_light = profile.at("gui_light").as_string();
 
@@ -1744,11 +1739,11 @@ PreparedModel::PreparedModel(const std::string_view modid, const js::object& pro
         }
     }
 
-    if(boost::system::result<const js::value&> gltf_val = profile.try_at("gltf")) {
-        const js::array& gltf = gltf_val->as_array();
+    if(boost::system::result<const js::value&> subModels_val = profile.try_at("sub_models")) {
+        const js::array& subModels = subModels_val->as_array();
 
-        for(const js::value& sub_val : gltf) {
-            SubGLTF result;
+        for(const js::value& sub_val : subModels) {
+            SubModel result;
             const js::object& sub = sub_val.as_object();
             auto [domain, key] = parseDomainKey((std::string) sub.at("path").as_string(), modid);
             result.Domain = std::move(domain);
@@ -1766,12 +1761,6 @@ PreparedModel::PreparedModel(const std::string_view modid, const sol::table& pro
 
 PreparedModel::PreparedModel(const std::u8string& data) {
     Net::LinearReader lr(data);
-
-    if(lr.read<uint8_t>()) {
-        std::string domain, key;
-        lr >> domain >> key;
-        Parent.emplace(std::move(domain), std::move(key));
-    }
 
     if(lr.read<uint8_t>()) {
         GuiLight = (EnumGuiLight) lr.read<uint8_t>();
@@ -1868,33 +1857,21 @@ PreparedModel::PreparedModel(const std::u8string& data) {
     }
 
     lr >> size;
-    GLTF.reserve(size);
+    SubModels.reserve(size);
     for(int counter = 0; counter < size; counter++) {
-        SubGLTF sub;
+        SubModel sub;
         lr >> sub.Domain >> sub.Key;
         uint16_t val = lr.read<uint16_t>();
         if(val != uint16_t(-1)) {
             sub.Scene = val;
         }
 
-        GLTF.push_back(std::move(sub));
+        SubModels.push_back(std::move(sub));
     }
 }
 
 std::u8string PreparedModel::dump() const {
     Net::Packet result;
-
-    if(Parent.has_value()) {
-        result << uint8_t(1);
-
-        assert(Parent->first.size() < 32);
-        result << Parent->first;
-        
-        assert(Parent->second.size() < 32);
-        result << Parent->second;
-    } else {
-        result << uint8_t(0);
-    }
 
     if(GuiLight.has_value()) {
         result << uint8_t(1);
@@ -1977,15 +1954,15 @@ std::u8string PreparedModel::dump() const {
         }
     }
 
-    assert(GLTF.size() < 256);
-    result << uint8_t(GLTF.size());
-    for(const SubGLTF& gltf : GLTF) {
-        assert(gltf.Domain.size() < 32);
-        assert(gltf.Key.size() < 32);
+    assert(SubModels.size() < 256);
+    result << uint8_t(SubModels.size());
+    for(const SubModel& model : SubModels) {
+        assert(model.Domain.size() < 32);
+        assert(model.Key.size() < 32);
 
-        result << gltf.Domain << gltf.Key;
-        if(gltf.Scene)
-            result << uint16_t(*gltf.Scene);
+        result << model.Domain << model.Key;
+        if(model.Scene)
+            result << uint16_t(*model.Scene);
         else
             result << uint16_t(-1);
     }

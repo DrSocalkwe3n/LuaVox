@@ -495,7 +495,7 @@ ResourceRequest RemoteClient::pushPreparedPackets() {
     return std::move(nextRequest);
 }
 
-void RemoteClient::informateAssets(const std::vector<std::tuple<EnumAssets, ResourceId, const std::string, const std::string, AssetsManager::Resource>>& resources)
+void RemoteClient::informateAssets(const std::vector<std::tuple<EnumAssets, ResourceId, const std::string, const std::string, Resource>>& resources)
 {
     std::vector<std::tuple<EnumAssets, ResourceId, const std::string, const std::string, Hash_t, size_t>> newForClient;
 

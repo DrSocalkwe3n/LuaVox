@@ -5,6 +5,7 @@
 #include "Common/Net.hpp"
 #include "assets.hpp"
 #include "sha2.hpp"
+#include <bitset>
 #include <boost/interprocess/file_mapping.hpp>
 #include <boost/interprocess/mapped_region.hpp>
 #include <filesystem>
@@ -17,6 +18,59 @@ namespace LV::Server {
 
 namespace fs = std::filesystem;
 
+struct Resource {
+private:
+    struct InlineMMap {
+        boost::interprocess::file_mapping MMap;
+        boost::interprocess::mapped_region Region;
+        Hash_t Hash;
+
+        InlineMMap(fs::path path)
+            : MMap(path.c_str(), boost::interprocess::read_only),
+                Region(MMap, boost::interprocess::read_only)
+        {
+            Hash = sha2::sha256((const uint8_t*) Region.get_address(), Region.get_size());
+        }
+
+        const std::byte* data() const { return (const std::byte*) Region.get_address(); }
+        size_t size() const { return Region.get_size(); }
+    };
+
+    struct InlinePtr {
+        std::vector<uint8_t> Data;
+        Hash_t Hash;
+
+        InlinePtr(const uint8_t* data, size_t size) {
+            Data.resize(size);
+            std::copy(data, data+size, Data.data());
+            Hash = sha2::sha256(data, size);
+        }
+
+        const std::byte* data() const { return (const std::byte*) Data.data(); }
+        size_t size() const { return Data.size(); }
+    };
+
+    std::shared_ptr<std::variant<InlineMMap, InlinePtr>> In;
+
+public:
+    Resource(fs::path path)
+        : In(std::make_shared<std::variant<InlineMMap, InlinePtr>>(InlineMMap(path)))
+    {}
+
+    Resource(const uint8_t* data, size_t size)
+        : In(std::make_shared<std::variant<InlineMMap, InlinePtr>>(InlinePtr(data, size)))
+    {}
+
+    Resource(const Resource&) = default;
+    Resource(Resource&&) = default;
+    Resource& operator=(const Resource&) = default;
+    Resource& operator=(Resource&&) = default;
+    bool operator<=>(const Resource&) const = default;
+
+    const std::byte* data() const { return std::visit<const std::byte*>([](auto& obj){ return obj.data(); }, *In); }
+    size_t size() const { return std::visit<size_t>([](auto& obj){ return obj.size(); }, *In); }
+    Hash_t hash() const { return std::visit<Hash_t>([](auto& obj){ return obj.Hash; }, *In); }
+};
 
 /*
     Используется для расчёта коллизии,
@@ -27,36 +81,17 @@ namespace fs = std::filesystem;
 struct PreparedModelCollision {
     struct Cuboid {
         glm::vec3 From, To;
-
-        enum EnumFace {
-            Down, Up, North, South, West, East
-        };
-
-        struct Face {
-            std::optional<EnumFace> Cullface;
-            uint8_t Rotation = 0;
-        };
-
-        std::unordered_map<EnumFace, Face> Faces;
-
-        struct Transformation {
-            enum EnumTransform {
-                MoveX, MoveY, MoveZ,
-                RotateX, RotateY, RotateZ,
-                MAX_ENUM
-            } Op;
-
-            float Value;
-        };
+        uint8_t Faces;
     
-        std::vector<Transformation> Transformations;
+        std::vector<PreparedModel::Cuboid::Transformation> Transformations;
     };
 
     std::vector<Cuboid> Cuboids;
+    std::vector<PreparedModel::SubModel> SubModels;
 
     PreparedModelCollision(const PreparedModel& model);
     PreparedModelCollision(const std::string& domain, const js::object& glTF);
-    PreparedModelCollision(const std::string& domain, Resource res);
+    PreparedModelCollision(const std::string& domain, Resource glb);
 
     PreparedModelCollision() = default;
     PreparedModelCollision(const PreparedModelCollision&) = default;
@@ -73,60 +108,6 @@ struct PreparedModelCollision {
 */
 class AssetsManager {
 public:
-    struct Resource {
-    private:
-        struct InlineMMap {
-            boost::interprocess::file_mapping MMap;
-            boost::interprocess::mapped_region Region;
-            Hash_t Hash;
-
-            InlineMMap(fs::path path)
-                : MMap(path.c_str(), boost::interprocess::read_only),
-                  Region(MMap, boost::interprocess::read_only)
-            {
-                Hash = sha2::sha256((const uint8_t*) Region.get_address(), Region.get_size());
-            }
-
-            const std::byte* data() const { return (const std::byte*) Region.get_address(); }
-            size_t size() const { return Region.get_size(); }
-        };
-
-        struct InlinePtr {
-            std::vector<uint8_t> Data;
-            Hash_t Hash;
-
-            InlinePtr(const uint8_t* data, size_t size) {
-                Data.resize(size);
-                std::copy(data, data+size, Data.data());
-                Hash = sha2::sha256(data, size);
-            }
-
-            const std::byte* data() const { return (const std::byte*) Data.data(); }
-            size_t size() const { return Data.size(); }
-        };
-
-        std::shared_ptr<std::variant<InlineMMap, InlinePtr>> In;
-
-    public:
-        Resource(fs::path path)
-            : In(std::make_shared<std::variant<InlineMMap, InlinePtr>>(InlineMMap(path)))
-        {}
-
-        Resource(const uint8_t* data, size_t size)
-            : In(std::make_shared<std::variant<InlineMMap, InlinePtr>>(InlinePtr(data, size)))
-        {}
-
-        Resource(const Resource&) = default;
-        Resource(Resource&&) = default;
-        Resource& operator=(const Resource&) = default;
-        Resource& operator=(Resource&&) = default;
-        bool operator<=>(const Resource&) const = default;
-
-        const std::byte* data() const { return std::visit<const std::byte*>([](auto& obj){ return obj.data(); }, *In); }
-        size_t size() const { return std::visit<size_t>([](auto& obj){ return obj.size(); }, *In); }
-        Hash_t hash() const { return std::visit<Hash_t>([](auto& obj){ return obj.Hash; }, *In); }
-    };
-
     struct ResourceChangeObj {
         // Потерянные ресурсы
         std::unordered_map<std::string, std::vector<std::string>> Lost[(int) EnumAssets::MAX_ENUM];

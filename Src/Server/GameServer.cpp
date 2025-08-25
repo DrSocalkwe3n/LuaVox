@@ -2397,10 +2397,10 @@ void GameServer::stepSyncContent() {
     full.uniq();
 
     // Информируем о запрошенных ассетах
-    std::vector<std::tuple<EnumAssets, ResourceId, const std::string, const std::string, AssetsManager::Resource>> resources;
+    std::vector<std::tuple<EnumAssets, ResourceId, const std::string, const std::string, Resource>> resources;
     for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++) {
         for(ResourceId resId : full.AssetsInfo[type]) {
-            std::optional<std::tuple<AssetsManager::Resource, const std::string&, const std::string&>> result = Content.AM.getResource((EnumAssets) type, resId);
+            std::optional<std::tuple<Resource, const std::string&, const std::string&>> result = Content.AM.getResource((EnumAssets) type, resId);
             if(!result)
                 continue;
 

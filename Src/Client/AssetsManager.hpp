@@ -146,17 +146,6 @@ public:
         lock->FullRecheck = true;
     }
 
-    // Уведомление о завершении работы
-    void prepareShutdown() {
-        NeedShutdown = true;
-    }
-
-    // После этого вызова уже нельзя будет обращатся ко внешним ресурсам
-    void shutdown() {
-        assert(NeedShutdown);
-        OffThread.join();
-    }
-
     bool hasError() {
         return IssuedAnError;
     }
@@ -208,7 +197,7 @@ private:
     bool NeedShutdown = false, IssuedAnError = false;
     std::thread OffThread;
 
-    
+
     virtual coro<> asyncDestructor();
     AssetsManager(boost::asio::io_context &ioc, const fs::path &cachePath,
         size_t maxCacheDatabaseSize, size_t maxLifeTime);

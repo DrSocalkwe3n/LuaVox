@@ -313,6 +313,8 @@ class RemoteClient {
         // Отправляемые на клиент ресурсы
         // Тип, домен, ключ, идентификатор, ресурс, количество отправленных байт
         std::vector<std::tuple<EnumAssets, std::string, std::string, ResourceId, Resource, size_t>> ToSend;
+        // Пакет с ресурсами
+        Net::Packet AssetsPacket;
     } AssetsInWork;
 
     TOS::SpinlockObject<NetworkAndResource_t> NetworkAndResource;

@@ -6,12 +6,15 @@
 #include "Common/Lockable.hpp"
 #include "Common/Net.hpp"
 #include "Common/Packets.hpp"
+#include "TOSAsync.hpp"
 #include <TOSLib.hpp>
 #include <boost/asio/io_context.hpp>
 #include <filesystem>
 #include <memory>
 #include <boost/lockfree/spsc_queue.hpp>
-#include <Client/ResourceCache.hpp>
+#include <Client/AssetsManager.hpp>
+#include <queue>
+#include <unordered_map>
 
 
 namespace LV::Client {
@@ -26,17 +29,99 @@ struct ParsedPacket {
     virtual ~ParsedPacket();
 };
 
-class ServerSession : public AsyncObject, public IServerSession, public ISurfaceEventListener {
+class ServerSession : public IAsyncDestructible, public IServerSession, public ISurfaceEventListener {
+public:
+    using Ptr = std::shared_ptr<ServerSession>;
+
+public:
+    static Ptr Create(asio::io_context &ioc, std::unique_ptr<Net::AsyncSocket> &&socket) {
+        return createShared(ioc, new ServerSession(ioc, std::move(socket)));
+    }
+
+    virtual ~ServerSession();
+
+    // Авторизоваться или (зарегистрироваться и авторизоваться) или зарегистрироваться
+    static coro<> asyncAuthorizeWithServer(tcp::socket &socket, const std::string username, const std::string token, int a_ar_r, std::function<void(const std::string&)> onProgress = nullptr);
+    // Начать игровой протокол в авторизированном сокете
+    static coro<std::unique_ptr<Net::AsyncSocket>> asyncInitGameProtocol(asio::io_context &ioc, tcp::socket &&socket, std::function<void(const std::string&)> onProgress = nullptr);
+
+    void shutdown(EnumDisconnect type);
+
+    bool isConnected() {
+        return Socket->isAlive() && IsConnected; 
+    }
+
+    // ISurfaceEventListener
+    
+    virtual void onResize(uint32_t width, uint32_t height) override;
+    virtual void onChangeFocusState(bool isFocused) override;
+    virtual void onCursorPosChange(int32_t width, int32_t height) override;
+    virtual void onCursorMove(float xMove, float yMove) override;
+
+    virtual void onCursorBtn(EnumCursorBtn btn, bool state) override;
+    virtual void onKeyboardBtn(int btn, int state) override;
+    virtual void onJoystick() override;
+
+    // IServerSession
+
+    virtual void atFreeDrawTime(GlobalTime gTime, float dTime) override;
+    void setRenderSession(IRenderSession* session);
+
+private:
+    TOS::Logger LOG = "ServerSession";
+
     std::unique_ptr<Net::AsyncSocket> Socket;
     IRenderSession *RS = nullptr;
 
     // Обработчик кеша ресурсов сервера
-    CacheHandler::Ptr CHDB;
+    AssetsManager::Ptr AM;
 
-    DestroyLock UseLock;
+    struct AssetLoading {
+        EnumAssets Type;
+        ResourceId Id;
+        std::string Domain, Key;
+        std::u8string Data;
+        size_t Offset;
+    };
+
+    struct AssetBindEntry {
+        EnumAssets Type;
+        ResourceId Id;
+        std::string Domain, Key;
+        Hash_t Hash;
+    };
+
+    struct TickData {
+        std::vector<WorldId_t> LostWorld;
+        // std::vector<std::pair<WorldId_t, DefWorld>>
+
+        // Потерянные из видимости ресурсы
+        std::vector<ResourceId> AssetsLost;
+        // Новые привязки ресурсов
+        std::vector<AssetBindEntry> AssetsBinds;
+    };
+
+    struct {
+    // Сюда обращается ветка, обрабатывающая сокет; run()
+        // Получение ресурсов с сервера
+        std::unordered_map<Hash_t, AssetLoading> AssetsLoading;
+        // Получение привязок
+        
+        // Накопление данных за такт сервера
+        TickData ThisTickEntry;
+
+    // Обменный пункт
+        // Привязки ресурсов
+        TOS::SpinlockObject<std::vector<AssetEntry>> AssetsBindings;
+        // Полученные ресурсы с сервера
+        TOS::SpinlockObject<std::vector<AssetEntry>> LoadedAssets;
+        // Пакеты обновлений игрового мира
+        TOS::SpinlockObject<std::queue<TickData>> TickSequence;
+    } AsyncContext;
+
+
+
     bool IsConnected = true, IsGoingShutdown = false;
-
-    TOS::Logger LOG = "ServerSession";
 
     boost::lockfree::spsc_queue<ParsedPacket*> NetInputPackets;
 
@@ -59,70 +144,20 @@ class ServerSession : public AsyncObject, public IServerSession, public ISurface
 
     GlobalTime LastSendPYR_POS;
 
-public:
-    // Нужен сокет, на котором только что был согласован игровой протокол (asyncInitGameProtocol)
-    ServerSession(asio::io_context &ioc, std::unique_ptr<Net::AsyncSocket> &&socket, IRenderSession *rs = nullptr)
-        : AsyncObject(ioc), Socket(std::move(socket)), RS(rs), NetInputPackets(1024)
-    {
-        assert(Socket.get());
-
-        try {
-            fs::create_directories("Cache");
-            CHDB = CacheHandlerBasic::Create(ioc, "Cache");
-
-            // Отправка информации о загруженном кеше
-            // TODO: добавить оптимизацию для подключения клиента к внутреннему серверу
-            auto [data, count] = CHDB->getAll();
-            Net::Packet packet;
-            packet << uint32_t(count);
-            packet.write((const std::byte*) data.data(), data.size());
-            Socket->pushPacket(std::move(packet));
-        } catch(const std::exception &exc) {
-            MAKE_ERROR("Ошибка инициализации обработчика кеша ресурсов сервера:\n" << exc.what());
-        }
-
-        co_spawn(run());
-    }
-
-    virtual ~ServerSession();
-
-    // Авторизоваться или (зарегистрироваться и авторизоваться) или зарегистрироваться
-    static coro<> asyncAuthorizeWithServer(tcp::socket &socket, const std::string username, const std::string token, int a_ar_r, std::function<void(const std::string&)> onProgress = nullptr);
-    // Начать игровой протокол в авторизированном сокете
-    static coro<std::unique_ptr<Net::AsyncSocket>> asyncInitGameProtocol(asio::io_context &ioc, tcp::socket &&socket, std::function<void(const std::string&)> onProgress = nullptr);
-
-    void shutdown(EnumDisconnect type);
-
-    bool isConnected() { 
-        return Socket->isAlive() && IsConnected; 
-    }
-
-    void waitShutdown() {
-        UseLock.wait_no_use();
-    }
-
-
-    // ISurfaceEventListener
-    
-    virtual void onResize(uint32_t width, uint32_t height) override;
-    virtual void onChangeFocusState(bool isFocused) override;
-    virtual void onCursorPosChange(int32_t width, int32_t height) override;
-    virtual void onCursorMove(float xMove, float yMove) override;
-
-    virtual void onCursorBtn(EnumCursorBtn btn, bool state) override;
-    virtual void onKeyboardBtn(int btn, int state) override;
-    virtual void onJoystick() override;
-
-    virtual void atFreeDrawTime(GlobalTime gTime, float dTime) override;
-
-private:
-    coro<> run();
+    // Приём данных с сокета
+    coro<> run(AsyncUseControl::Lock);
     void protocolError();
     coro<> readPacket(Net::AsyncSocket &sock);
     coro<> rP_System(Net::AsyncSocket &sock);
     coro<> rP_Resource(Net::AsyncSocket &sock);
     coro<> rP_Definition(Net::AsyncSocket &sock);
     coro<> rP_Content(Net::AsyncSocket &sock);
+
+
+    // Нужен сокет, на котором только что был согласован игровой протокол (asyncInitGameProtocol)
+    ServerSession(asio::io_context &ioc, std::unique_ptr<Net::AsyncSocket> &&socket);
+
+    virtual coro<> asyncDestructor() override;
 };
 
 }

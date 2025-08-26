@@ -136,23 +136,34 @@ struct DefNode_t {};
 
 /* Интерфейс обработчика сессии с сервером */
 class IServerSession {
-    struct ArrayHasher {
-        std::size_t operator()(const Hash_t& a) const {
-            std::size_t h = 0;
-            for (auto e : a)
-                h ^= std::hash<int>{}(e)  + 0x9e3779b9 + (h << 6) + (h >> 2);
+    // struct ArrayHasher {
+    //     std::size_t operator()(const Hash_t& a) const {
+    //         std::size_t h = 0;
+    //         for (auto e : a)
+    //             h ^= std::hash<int>{}(e)  + 0x9e3779b9 + (h << 6) + (h >> 2);
             
-            return h;
-        }
-    };
+    //         return h;
+    //     }
+    // };
 
 public:
+    struct AssetEntry {
+        EnumAssets Type;
+        ResourceId Id;
+        std::string Domain, Key;
+        Resource Res;
+    };
+
+    static constexpr uint64_t TIME_BEFORE_UNLOAD_RESOURCE = 180;
     struct {
-        std::unordered_map<Hash_t, BinaryResource, ArrayHasher>     Resources;
+        // Оперируемые ресурсы
+        std::unordered_map<Hash_t, AssetEntry>                       Assets;
+        // Недавно использованные ресурсы, пока хранятся здесь в течении TIME_BEFORE_UNLOAD_RESOURCE секунд
+        std::unordered_map<Hash_t, std::pair<AssetEntry, uint64_t>>  NotInUseAssets;
     } Binary;
 
     struct {
-        std::unordered_map<DefVoxelId, DefVoxel_t>              DefVoxel;
+        std::unordered_map<DefVoxelId, DefVoxel_t>                DefVoxel;
         std::unordered_map<DefNodeId, DefNode_t>                  DefNode;
         std::unordered_map<DefWorldId, DefWorldInfo>              DefWorld;
         std::unordered_map<DefPortalId, DefPortalInfo>            DefPortal;

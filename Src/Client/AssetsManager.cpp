@@ -1,10 +1,12 @@
 #include "AssetsManager.hpp"
 #include "Common/Abstract.hpp"
 #include "sqlite3.h"
+#include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <thread>
 #include <utility>
 
 
@@ -114,7 +116,7 @@ AssetsManager::AssetsManager(boost::asio::io_context &ioc, const fs::path &cache
         }
 
         sql = R"(
-            SELECT data inline_cache where sha256=?;
+            SELECT data FROM inline_cache where sha256=?;
         )";
 
         if(sqlite3_prepare_v2(DB, sql, -1, &STMT_INLINE_GET, nullptr) != SQLITE_OK) {
@@ -157,16 +159,21 @@ AssetsManager::~AssetsManager() {
         STMT_DISK_INSERT, STMT_DISK_UPDATE_TIME, STMT_DISK_REMOVE, STMT_DISK_CONTAINS,
         STMT_DISK_SUM, STMT_DISK_COUNT, STMT_INLINE_INSERT, STMT_INLINE_GET,
         STMT_INLINE_UPDATE_TIME, STMT_INLINE_SUM, STMT_INLINE_COUNT
-    })
+    }) {
         if(stmt)
             sqlite3_finalize(stmt);
+    }
 
     if(DB)
         sqlite3_close(DB);
+
+    OffThread.join();
+
+    LOG.info() << "Хранилище кеша закрыто";
 }
 
 coro<> AssetsManager::asyncDestructor() {
-    assert(NeedShutdown); // Должен быть вызван нормальный shutdown
+    NeedShutdown = true;
     co_await IAsyncDestructible::asyncDestructor();
 }
 
@@ -175,7 +182,7 @@ void AssetsManager::readWriteThread(AsyncUseControl::Lock lock) {
         std::vector<fs::path> assets;
         size_t maxCacheDatabaseSize, maxLifeTime;
 
-        while(!NeedShutdown && !WriteQueue.get_read().empty()) {
+        while(!NeedShutdown || !WriteQueue.get_read().empty()) {
             // Получить новые данные
             if(Changes.get_read().AssetsChange) {
                 auto lock = Changes.lock();
@@ -377,9 +384,11 @@ void AssetsManager::readWriteThread(AsyncUseControl::Lock lock) {
 
                 continue;
             }
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     } catch(const std::exception& exc) {
-        LOG.warn() << "Ошибка в работе потока: " << exc.what();
+        LOG.warn() << "Ошибка в работе потока:\n" << exc.what();
         IssuedAnError = true;
     }
 }

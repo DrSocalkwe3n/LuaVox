@@ -250,7 +250,7 @@ public:
     	DestroyLock UseLock;
 		std::thread MainThread;
 		std::shared_ptr<VulkanRenderSession> RSession;
-		std::unique_ptr<ServerSession> Session;
+		ServerSession::Ptr Session;
 
 		std::list<void (Vulkan::*)()> ImGuiInterfaces;
 		std::unique_ptr<ServerObj> Server;

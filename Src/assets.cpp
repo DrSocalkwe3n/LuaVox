@@ -11,17 +11,17 @@ namespace fs = std::filesystem;
 
 namespace LV {
 
-Resource::Resource() = default;
-Resource::~Resource() = default;
+iResource::iResource() = default;
+iResource::~iResource() = default;
 
-static std::mutex ResourceCacheMtx;
-static std::unordered_map<std::string, std::weak_ptr<Resource>> ResourceCache;
+static std::mutex iResourceCacheMtx;
+static std::unordered_map<std::string, std::weak_ptr<iResource>> iResourceCache;
 
-class FS_Resource : public Resource {
+class FS_iResource : public iResource {
     boost::scoped_array<uint8_t> Array;
 
 public:
-    FS_Resource(const std::filesystem::path &path)
+    FS_iResource(const std::filesystem::path &path)
     {
         std::ifstream fd(path);
 
@@ -36,18 +36,18 @@ public:
         Data = Array.get();
     }
 
-    virtual ~FS_Resource() = default;
+    virtual ~FS_iResource() = default;
 };
 
-std::shared_ptr<Resource> getResource(const std::string &path) {
-    std::unique_lock<std::mutex> lock(ResourceCacheMtx);
+std::shared_ptr<iResource> getResource(const std::string &path) {
+    std::unique_lock<std::mutex> lock(iResourceCacheMtx);
 
-    if(auto iter = ResourceCache.find(path); iter != ResourceCache.end()) {
-        std::shared_ptr<Resource> resource = iter->second.lock();
-        if(!resource) {
-            ResourceCache.erase(iter);
+    if(auto iter = iResourceCache.find(path); iter != iResourceCache.end()) {
+        std::shared_ptr<iResource> iResource = iter->second.lock();
+        if(!iResource) {
+            iResourceCache.erase(iter);
         } else {
-            return resource;
+            return iResource;
         }
     }
 
@@ -55,15 +55,15 @@ std::shared_ptr<Resource> getResource(const std::string &path) {
     fs_path /= path;
 
     if(fs::exists(fs_path)) {
-        std::shared_ptr<Resource> resource = std::make_shared<FS_Resource>(fs_path);
-        ResourceCache.emplace(path, resource);
-        TOS::Logger("Resources").debug() << "Ресурс " << fs_path << " найден в фс";
-        return resource;
+        std::shared_ptr<iResource> iResource = std::make_shared<FS_iResource>(fs_path);
+        iResourceCache.emplace(path, iResource);
+        TOS::Logger("iResources").debug() << "Ресурс " << fs_path << " найден в фс";
+        return iResource;
     }
 
     if(auto iter = _binary_assets_symbols.find(path); iter != _binary_assets_symbols.end()) {
-        TOS::Logger("Resources").debug() << "Ресурс " << fs_path << " is inlined";
-        return std::make_shared<Resource>((const uint8_t*) std::get<0>(iter->second), std::get<1>(iter->second)-std::get<0>(iter->second));
+        TOS::Logger("iResources").debug() << "Ресурс " << fs_path << " is inlined";
+        return std::make_shared<iResource>((const uint8_t*) std::get<0>(iter->second), std::get<1>(iter->second)-std::get<0>(iter->second));
     }
     
     MAKE_ERROR("Ресурс " << path << " не найден");

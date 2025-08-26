@@ -2,6 +2,7 @@
 #include "Client/Abstract.hpp"
 #include "Common/Abstract.hpp"
 #include "Common/Net.hpp"
+#include "TOSAsync.hpp"
 #include "TOSLib.hpp"
 #include "glm/ext/quaternion_geometric.hpp"
 #include <GLFW/glfw3.h>
@@ -17,6 +18,28 @@
 
 
 namespace LV::Client {
+
+ServerSession::ServerSession(asio::io_context &ioc, std::unique_ptr<Net::AsyncSocket>&& socket)
+    : IAsyncDestructible(ioc), Socket(std::move(socket)), NetInputPackets(1024)
+{
+    assert(Socket.get());
+
+    try {
+        AM = AssetsManager::Create(ioc, "Cache");
+        asio::co_spawn(ioc, run(AUC.use()), asio::detached);
+        // TODO: добавить оптимизацию для подключения клиента к внутреннему серверу
+    } catch(const std::exception &exc) {
+        MAKE_ERROR("Ошибка инициализации обработчика объекта подключения к серверу:\n" << exc.what());
+    }
+}
+
+coro<> ServerSession::asyncDestructor() {
+    co_await IAsyncDestructible::asyncDestructor();
+}
+
+
+
+
 
 ParsedPacket::~ParsedPacket() = default;
 
@@ -88,20 +111,9 @@ struct PP_Definition_FreeNode : public ParsedPacket {
     {}
 };
 
-struct PP_Resource_InitResSend : public ParsedPacket {
-    Hash_t Hash;
-    BinaryResource Resource;
-
-    PP_Resource_InitResSend(Hash_t hash, BinaryResource res)
-        : ParsedPacket(ToClient::L1::Resource, (uint8_t) ToClient::L2Resource::InitResSend), Hash(hash), Resource(res)
-    {}
-};
-
 using namespace TOS;
 
 ServerSession::~ServerSession() {
-    WorkDeadline.cancel();
-    UseLock.wait_no_use();
 }
 
 coro<> ServerSession::asyncAuthorizeWithServer(tcp::socket &socket, const std::string username, const std::string token, int a_ar_r, std::function<void(const std::string&)> onProgress) {
@@ -338,13 +350,6 @@ void ServerSession::atFreeDrawTime(GlobalTime gTime, float dTime) {
         ParsedPacket *pack;
         while(NetInputPackets.pop(pack)) {
             if(pack->Level1 == ToClient::L1::Definition) {
-                ToClient::L2Resource l2 = ToClient::L2Resource(pack->Level2);
-                if(l2 == ToClient::L2Resource::InitResSend) {
-                    PP_Resource_InitResSend &p = *dynamic_cast<PP_Resource_InitResSend*>(pack);
-                    
-                }
-
-            } else if(pack->Level1 == ToClient::L1::Definition) {
                 ToClient::L2Definition l2 = ToClient::L2Definition(pack->Level2);
 
                 if(l2 == ToClient::L2Definition::Voxel) {
@@ -471,21 +476,17 @@ void ServerSession::atFreeDrawTime(GlobalTime gTime, float dTime) {
     }
 }
 
-coro<> ServerSession::run() {
-    auto useLock = UseLock.lock();
+void ServerSession::setRenderSession(IRenderSession* session) {
+    RS = session;
+}
 
+coro<> ServerSession::run(AsyncUseControl::Lock) {
     try {
         while(!IsGoingShutdown && IsConnected) {
             co_await readPacket(*Socket);
         }
     } catch(const std::exception &exc) {
-        // if(const auto *errc = dynamic_cast<const boost::system::system_error*>(&exc); 
-        //     errc && errc->code() == boost::asio::error::operation_aborted)
-        // {
-        //     co_return;
-        // }
-
-        TOS::Logger("ServerSession").warn() << exc.what();
+        LOG.error() << "Ошибка обработки сокета:\n" << exc.what();
     }
 
     IsConnected = false;
@@ -551,19 +552,33 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
     case ToClient::L2Resource::Bind:
     {
         uint32_t count = co_await sock.read<uint32_t>();
+        AsyncContext.ThisTickEntry.AssetsBinds.reserve(AsyncContext.ThisTickEntry.AssetsBinds.size()+count);
+
         for(size_t iter = 0; iter < count; iter++) {
             uint8_t type = co_await sock.read<uint8_t>();
             uint32_t id = co_await sock.read<uint32_t>();
+            std::string domain, key;
+            domain = co_await sock.read<std::string>();
+            key = co_await sock.read<std::string>();
             Hash_t hash;
             co_await sock.read((std::byte*) hash.data(), hash.size());
+
+            AsyncContext.ThisTickEntry.AssetsBinds.emplace_back(
+                (EnumAssets) type, (ResourceId) id, std::move(domain),
+                std::move(key), hash
+            );
         }
     }
     case ToClient::L2Resource::Lost:
     {
         uint32_t count = co_await sock.read<uint32_t>();
+        AsyncContext.ThisTickEntry.AssetsLost.reserve(AsyncContext.ThisTickEntry.AssetsLost.size()+count);
+
         for(size_t iter = 0; iter < count; iter++) {
-            uint8_t type = co_await sock.read<uint8_t>();
+            // uint8_t type = co_await sock.read<uint8_t>();
             uint32_t id = co_await sock.read<uint32_t>();
+
+            AsyncContext.ThisTickEntry.AssetsLost.push_back(id);
         }
     }
     case ToClient::L2Resource::InitResSend:
@@ -571,26 +586,41 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
         uint32_t size = co_await sock.read<uint32_t>();
         Hash_t hash;
         co_await sock.read((std::byte*) hash.data(), hash.size());
+        ResourceId id = co_await sock.read<uint32_t>();
+        EnumAssets type = (EnumAssets) co_await sock.read<uint8_t>();
+        std::string domain = co_await sock.read<std::string>();
+        std::string key = co_await sock.read<std::string>();
 
-        uint32_t chunkSize = co_await sock.read<uint32_t>();
-        assert(chunkSize < std::pow(2, 26));
-
-        std::u8string data(size, '\0');
-
-        co_await sock.read((std::byte*) data.data(), data.size());
-
-        PP_Resource_InitResSend *packet = new PP_Resource_InitResSend(
-            hash,
-            std::make_shared<std::u8string>(std::move(data))
-        );
-
-        while(!NetInputPackets.push(packet));
+        AsyncContext.AssetsLoading[hash] = AssetLoading{
+            type, id, std::move(domain), std::move(key), 
+            std::u8string(size, '\0'), 0
+        };
 
         co_return;
     }
     case ToClient::L2Resource::ChunkSend:
+    {
+        Hash_t hash;
+        co_await sock.read((std::byte*) hash.data(), hash.size());
+        uint32_t size = co_await sock.read<uint32_t>();
+        AssetLoading& al = AsyncContext.AssetsLoading.at(hash);
+        if(al.Data.size()-al.Offset < size)
+            MAKE_ERROR("Несоответствие ожидаемого размера ресурса");
+
+        co_await sock.read((std::byte*) al.Data.data() + al.Offset, size);
+        al.Offset += size;
+
+        if(al.Offset == al.Data.size()) {
+            // Ресурс полностью загружен
+            AsyncContext.LoadedAssets.lock()->emplace_back(
+                al.Type, al.Id, std::move(al.Domain), std::move(al.Key), std::move(al.Data)
+            );
+
+            AsyncContext.AssetsLoading.erase(AsyncContext.AssetsLoading.find(hash));
+        }
     
         co_return;
+    }
     default:
         protocolError();
     }

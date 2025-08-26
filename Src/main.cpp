@@ -4,8 +4,6 @@
 #include <boost/asio.hpp>
 #include <Client/Vulkan/Vulkan.hpp>
 
-#include <Client/ResourceCache.hpp>
-
 namespace LV {
 
 /*

@@ -411,8 +411,6 @@ using AssetsTexture     = ResourceId;
 using AssetsSound       = ResourceId;
 using AssetsFont        = ResourceId;
 
-using BinaryResource = std::shared_ptr<const std::u8string>;
-
 /*
     Определения контента, доставляются клиентам сразу
 */

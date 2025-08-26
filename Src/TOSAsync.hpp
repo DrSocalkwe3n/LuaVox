@@ -227,12 +227,13 @@ protected:
     template<typename T, typename = typename std::is_same<IAsyncDestructible, T>>
     static std::shared_ptr<T> createShared(asio::io_context &ioc, T *ptr)
     {
-        return std::shared_ptr<T>(ptr, [&ioc = ioc](T *ptr) {
-            boost::asio::co_spawn(ioc, [&ioc = ioc](IAsyncDestructible *ptr) -> coro<> {
-                try { co_await ptr->asyncDestructor(); } catch(...) { }
-                delete ptr;
-                co_return;
-            } (ptr), boost::asio::detached);
+        return std::shared_ptr<T>(ptr, [&ioc](T *ptr) {
+            boost::asio::co_spawn(ioc, 
+                [ptr, &ioc]() mutable -> coro<> {
+                    try { co_await dynamic_cast<IAsyncDestructible*>(ptr)->asyncDestructor(); } catch(...) { }
+                    asio::post(ioc, [ptr](){ delete ptr; });
+                },
+            boost::asio::detached);
         });
     }
 
@@ -240,23 +241,25 @@ protected:
     static coro<std::shared_ptr<T>> createShared(T *ptr)
     {
         co_return std::shared_ptr<T>(ptr, [ioc = asio::get_associated_executor(co_await asio::this_coro::executor)](T *ptr) {
-            boost::asio::co_spawn(ioc, [](IAsyncDestructible *ptr) -> coro<> {
-                try { co_await ptr->asyncDestructor(); } catch(...) { }
-                delete ptr;
-                co_return;
-            } (ptr), boost::asio::detached);
+            boost::asio::co_spawn(ioc, 
+                [ptr, &ioc]() mutable -> coro<> {
+                    try { co_await dynamic_cast<IAsyncDestructible*>(ptr)->asyncDestructor(); } catch(...) { }
+                    asio::post(ioc, [ptr](){ delete ptr; });
+                }, 
+            boost::asio::detached);
         });
     }
 
     template<typename T, typename = typename std::is_same<IAsyncDestructible, T>>
     static std::unique_ptr<T, std::function<void(T*)>> createUnique(asio::io_context &ioc, T *ptr)
     {
-        return std::unique_ptr<T, std::function<void(T*)>>(ptr, [&ioc = ioc](T *ptr) {
-            boost::asio::co_spawn(ioc, [](IAsyncDestructible *ptr) -> coro<> {
-                try { co_await ptr->asyncDestructor(); } catch(...) { }
-                delete ptr;
-                co_return;
-            } (ptr), boost::asio::detached);
+        return std::unique_ptr<T, std::function<void(T*)>>(ptr, [&ioc](T *ptr) {
+            boost::asio::co_spawn(ioc, 
+                [ptr, &ioc]() mutable -> coro<> {
+                    try { co_await dynamic_cast<IAsyncDestructible*>(ptr)->asyncDestructor(); } catch(...) { }
+                    asio::post(ioc, [ptr](){ delete ptr; });
+                }, 
+            boost::asio::detached);
         });
     }
 
@@ -264,11 +267,12 @@ protected:
     static coro<std::unique_ptr<T, std::function<void(T*)>>> createUnique(T *ptr)
     {
         co_return std::unique_ptr<T, std::function<void(T*)>>(ptr, [ioc = asio::get_associated_executor(co_await asio::this_coro::executor)](T *ptr) {
-            boost::asio::co_spawn(ioc, [](IAsyncDestructible *ptr) -> coro<> {
-                try { co_await ptr->asyncDestructor(); } catch(...) { }
-                delete ptr;
-                co_return;
-            } (ptr), boost::asio::detached);
+            boost::asio::co_spawn(ioc, 
+                [ptr, &ioc]() mutable -> coro<> {
+                    try { co_await dynamic_cast<IAsyncDestructible*>(ptr)->asyncDestructor(); } catch(...) { }
+                    asio::post(ioc, [ptr](){ delete ptr; });
+                }, 
+            boost::asio::detached);
         });
     }
 };

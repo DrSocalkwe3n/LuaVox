@@ -487,6 +487,10 @@ ResourceRequest RemoteClient::pushPreparedPackets() {
         nextRequest = std::move(lock->NextRequest);
     }
 
+    if(AssetsInWork.AssetsPacket.size()) {
+        toSend.push_back(std::move(AssetsInWork.AssetsPacket));
+    }
+
     Socket.pushPackets(&toSend);
     toSend.clear();
 
@@ -759,7 +763,7 @@ void RemoteClient::NetworkAndResource_t::decrementAssets(ResUses_t::RefAssets_t&
             << uint32_t(lost.size());
 
         for(auto& [type, id] : lost)
-            NextPacket << uint8_t(type) << uint32_t(id);
+            NextPacket /* << uint8_t(type)*/  << uint32_t(id);
     }
 }
 
@@ -795,6 +799,48 @@ void RemoteClient::onUpdate() {
     }
 
     LastPos = cameraPos;
+
+    // Отправка ресурсов
+    if(!AssetsInWork.ToSend.empty()) {
+        auto& toSend = AssetsInWork.ToSend;
+        size_t chunkSize = std::max<size_t>(1'024'000 / toSend.size(), 4096);
+
+        Net::Packet& p = AssetsInWork.AssetsPacket;
+
+        bool hasFullSended = false;
+
+        for(auto& [type, domain, key, id, res, sended] : toSend) {
+            if(sended == 0) {
+                // Оповещаем о начале отправки ресурса
+                p << (uint8_t) ToClient::L1::Resource
+                    << (uint8_t) ToClient::L2Resource::InitResSend
+                    << uint32_t(res.size());
+                p.write((const std::byte*) res.hash().data(), 32);
+                p << uint32_t(id) << uint8_t(type) << domain << key;
+            }
+
+            // Отправляем чанк
+            size_t willSend = std::min(chunkSize, res.size()-sended);
+            p << (uint8_t) ToClient::L1::Resource
+                << (uint8_t) ToClient::L2Resource::ChunkSend;
+            p.write((const std::byte*) res.hash().data(), 32);
+            p << uint32_t(willSend);
+            p.write(res.data() + sended, willSend);
+            sended += willSend;
+
+            if(sended == willSend) {
+                hasFullSended = true;
+            }
+        }
+
+        if(hasFullSended) {
+            for(ssize_t iter = toSend.size()-1; iter > 0; iter--) {
+                if(std::get<4>(toSend[iter]).size() == std::get<5>(toSend[iter])) {
+                    toSend.erase(toSend.begin()+iter);
+                }
+            }
+        }
+    }
 }
 
 std::vector<std::tuple<WorldId_t, Pos::Object, uint8_t>> RemoteClient::getViewPoints() {

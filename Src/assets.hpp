@@ -22,24 +22,24 @@ struct iBinaryStream : detail::membuf {
 };
 
 
-class Resource {
+class iResource {
 protected:
     const uint8_t* Data;
     size_t Size;
 
 
 public:
-    Resource();
-    Resource(const uint8_t* data, size_t size)
+    iResource();
+    iResource(const uint8_t* data, size_t size)
         : Data(data), Size(size)
     {}
 
-    virtual ~Resource();
+    virtual ~iResource();
 
-    Resource(const Resource&) = delete;
-    Resource(Resource&&) = delete;
-    Resource& operator=(const Resource&) = delete;
-    Resource& operator=(Resource&&) = delete;
+    iResource(const iResource&) = delete;
+    iResource(iResource&&) = delete;
+    iResource& operator=(const iResource&) = delete;
+    iResource& operator=(iResource&&) = delete;
 
     const uint8_t* getData() const { return Data; }
     size_t getSize() const { return Size; }
@@ -49,6 +49,6 @@ public:
 
 };
 
-std::shared_ptr<Resource> getResource(const std::string &path);
+std::shared_ptr<iResource> getResource(const std::string &path);
 
 }

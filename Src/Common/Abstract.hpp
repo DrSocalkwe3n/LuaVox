@@ -700,8 +700,11 @@ private:
     std::shared_ptr<std::variant<InlineMMap, InlinePtr>> In;
 
 public:
+    Resource() = default;
     Resource(std::filesystem::path path);
     Resource(const uint8_t* data, size_t size);
+    Resource(const std::u8string& data);
+    Resource(std::u8string&& data);
 
     Resource(const Resource&) = default;
     Resource(Resource&&) = default;
@@ -712,6 +715,12 @@ public:
     const std::byte* data() const;
     size_t size() const;
     Hash_t hash() const;
+
+    Resource convertToMem() const;
+
+    operator bool() const {
+        return (bool) In;
+    }
 };
 
 }

@@ -1992,13 +1992,18 @@ struct Resource::InlineMMap {
 };
 
 struct Resource::InlinePtr {
-    std::vector<uint8_t> Data;
+    std::u8string Data;
     Hash_t Hash;
 
     InlinePtr(const uint8_t* data, size_t size) {
         Data.resize(size);
         std::copy(data, data+size, Data.data());
         Hash = sha2::sha256(data, size);
+    }
+
+    InlinePtr(std::u8string&& data) {
+        Data = std::move(data);
+        Hash = sha2::sha256((const uint8_t*) Data.data(), Data.size());
     }
 
     const std::byte* data() const { return (const std::byte*) Data.data(); }
@@ -2014,9 +2019,27 @@ Resource::Resource(const uint8_t* data, size_t size)
     : In(std::make_shared<std::variant<InlineMMap, InlinePtr>>(InlinePtr(data, size)))
 {}
 
+Resource::Resource(const std::u8string& data) 
+    : In(std::make_shared<std::variant<InlineMMap, InlinePtr>>(InlinePtr((const uint8_t*) data.data(), data.size())))
+{}
+
+Resource::Resource(std::u8string&& data) {
+
+}
+
 const std::byte* Resource::data() const { assert(In); return std::visit<const std::byte*>([](auto& obj){ return obj.data(); }, *In); }
 size_t Resource::size() const { assert(In); return std::visit<size_t>([](auto& obj){ return obj.size(); }, *In); }
 Hash_t Resource::hash() const { assert(In); return std::visit<Hash_t>([](auto& obj){ return obj.Hash; }, *In); }
+
+Resource Resource::convertToMem() const {
+    if(InlineMMap* ptr = std::get_if<InlineMMap>(&*In)) {
+        std::u8string data(ptr->size(), '\0');
+        std::copy(ptr->data(), ptr->data()+ptr->size(), (std::byte*) data.data());
+        return Resource(std::move(data));
+    } else {
+        return *this;
+    }
+}
 
 auto Resource::operator<=>(const Resource&) const = default;
 

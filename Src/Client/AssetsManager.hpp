@@ -82,10 +82,10 @@ public:
 
 /*
     Менеджер предоставления ресурсов. Управляет ресурс паками 
-    и хранением кешированных ресурсов сервера.
+    и хранением кешированных ресурсов с сервера.
     Интерфейс однопоточный.
 
-    Обработка файлов в отдельном потоке
+    Обработка файлов в отдельном потоке.
 */
 class AssetsManager : public IAsyncDestructible {
 public:
@@ -153,12 +153,38 @@ public:
 
     // После этого вызова уже нельзя будет обращатся ко внешним ресурсам
     void shutdown() {
+        assert(NeedShutdown);
         OffThread.join();
+    }
+
+    bool hasError() {
+        return IssuedAnError;
     }
 
 private:
     Logger LOG = "Client>ResourceHandler";
-    const fs::path CachePath;
+    const fs::path
+        CachePath,
+        PathDatabase = CachePath / "db.sqlite3",
+        PathFiles = CachePath / "blobs";
+    static constexpr size_t SMALL_RESOURCE = 1 << 21;
+
+    sqlite3 *DB = nullptr;                  // База хранения кеша меньше 2мб и информации о кеше на диске
+    sqlite3_stmt
+        *STMT_DISK_INSERT = nullptr,        // Вставка записи о хеше
+        *STMT_DISK_UPDATE_TIME = nullptr,   // Обновить дату последнего использования
+        *STMT_DISK_REMOVE = nullptr,        // Удалить хеш
+        *STMT_DISK_CONTAINS = nullptr,      // Проверка наличия хеша
+        *STMT_DISK_SUM = nullptr,           // Вычисляет занятое место на диске
+        *STMT_DISK_COUNT = nullptr,         // Возвращает количество записей
+        
+        *STMT_INLINE_INSERT = nullptr,      // Вставка ресурса
+        *STMT_INLINE_GET = nullptr,         // Поиск ресурса по хешу
+        *STMT_INLINE_UPDATE_TIME = nullptr, // Обновить дату последнего использования
+        *STMT_INLINE_SUM = nullptr,         // Размер внутреннего хранилища
+        *STMT_INLINE_COUNT = nullptr;       // Возвращает количество записей
+
+    // Полный размер данных на диске (насколько известно)
     volatile size_t DatabaseSize = 0;
 
     // Очередь задач на чтение
@@ -179,7 +205,7 @@ private:
 
     TOS::SpinlockObject<Changes_t> Changes;
 
-    bool NeedShutdown = false;
+    bool NeedShutdown = false, IssuedAnError = false;
     std::thread OffThread;
 
     

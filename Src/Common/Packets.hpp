@@ -76,7 +76,8 @@ enum struct L2System : uint8_t {
     InitEnd,
     Disconnect,
     Test_CAM_PYR_POS,
-    BlockChange
+    BlockChange,
+    ResourceRequest
 };
 
 }
@@ -140,7 +141,8 @@ enum struct L2System : uint8_t {
     Init,
     Disconnect,
     LinkCameraToEntity,
-    UnlinkCamera
+    UnlinkCamera,
+    SyncTick
 };
 
 enum struct L2Resource : uint8_t {

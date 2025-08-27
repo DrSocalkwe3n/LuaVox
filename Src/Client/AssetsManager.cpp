@@ -301,7 +301,7 @@ void AssetsManager::readWriteThread(AsyncUseControl::Lock lock) {
                         }
                         
                         finded = true;
-                        ReadyQueue.lock()->emplace_back(rk.Hash, PathFiles / hashKey.substr(0, 2) / hashKey.substr(2));
+                        ReadyQueue.lock()->emplace_back(rk, PathFiles / hashKey.substr(0, 2) / hashKey.substr(2));
                     } else if(errc != SQLITE_DONE) {
                         sqlite3_reset(STMT_DISK_CONTAINS);
                         MAKE_ERROR("Не удалось выполнить подготовленный запрос STMT_DISK_CONTAINS: " << sqlite3_errmsg(DB));

@@ -987,7 +987,11 @@ void VulkanRenderSession::init(Vulkan *instance) {
     }
 }
 
-void VulkanRenderSession::onBinaryResourceAdd(std::vector<Hash_t>) {
+void VulkanRenderSession::onAssetsChanges(std::unordered_map<EnumAssets, std::vector<AssetEntry>> resources) {
+
+}
+
+void VulkanRenderSession::onAssetsLost(std::unordered_map<EnumAssets, std::vector<ResourceId>> resources) {
 
 }
 

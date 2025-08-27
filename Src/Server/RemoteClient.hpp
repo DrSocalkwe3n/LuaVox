@@ -268,6 +268,9 @@ class RemoteClient {
 
         // Запрос информации об ассетах и профилях контента
         ResourceRequest NextRequest;
+        // Запрошенные клиентом ресурсы
+        /// TODO: здесь может быть засор
+        std::vector<Hash_t> ClientRequested;
 
         void incrementAssets(const ResUses_t::RefAssets_t& bin);
         void decrementAssets(ResUses_t::RefAssets_t&& bin);
@@ -307,9 +310,8 @@ class RemoteClient {
             + хеш. Если у клиента не окажется этого ресурса, он может его запросить
         */
 
-        // Ресурсы, отправленные на клиент в этой сессии и запрошенные клиентом
-        /// TODO: ClientRequested здесь может быть засор
-        std::vector<Hash_t> OnClient, ClientRequested;
+        // Ресурсы, отправленные на клиент в этой сессии
+        std::vector<Hash_t> OnClient;
         // Отправляемые на клиент ресурсы
         // Тип, домен, ключ, идентификатор, ресурс, количество отправленных байт
         std::vector<std::tuple<EnumAssets, std::string, std::string, ResourceId, Resource, size_t>> ToSend;

@@ -321,6 +321,147 @@ void ServerSession::onJoystick() {
 }
 
 void ServerSession::atFreeDrawTime(GlobalTime gTime, float dTime) {
+    // Оповещение модуля рендера об изменениях ресурсов
+    std::unordered_map<EnumAssets, std::unordered_map<ResourceId, AssetEntry>> changedResources;
+    std::unordered_map<EnumAssets, std::unordered_set<ResourceId>> lostResources;
+
+    // Обработка полученных ресурсов
+    if(!AsyncContext.LoadedAssets.get_read().empty()) {
+        std::vector<AssetEntry> assets = std::move(*AsyncContext.LoadedAssets.lock());
+        // Для сохранения ресурсов в кеше
+        std::vector<Resource> resources;
+        resources.reserve(assets.size());
+
+
+        for(AssetEntry& entry : assets) {
+            resources.push_back(entry.Res);
+            
+            // Проверяем используется ли сейчас ресурс
+            auto iter = Assets.ExistBinds[(int) entry.Type].find(entry.Id);
+            if(iter == Assets.ExistBinds[(int) entry.Type].end()) {
+                // Не используется
+                Assets.NotInUse[(int) entry.Type][entry.Domain + ':' + entry.Key] = {entry, TIME_BEFORE_UNLOAD_RESOURCE+time(nullptr)};
+            } else {
+                // Используется
+                Assets.InUse[(int) entry.Type][entry.Id] = entry;
+                changedResources[entry.Type].insert({entry.Id, entry});
+            }
+        }
+
+        // Сохраняем в кеш
+        AM->pushResources(std::move(resources));
+    }
+
+    // Обработка полученных тактов
+    while(!AsyncContext.TickSequence.get_read().empty()) {
+        TickData tick;
+        
+        {
+            auto lock = AsyncContext.TickSequence.lock();
+            tick = lock->front();
+            lock->pop();
+        }
+
+        // Потерянные привязки ресурсов
+        for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++) {
+            for(ResourceId id : tick.AssetsLost[type]) {
+                Assets.ExistBinds[type].erase(id);
+                changedResources[(EnumAssets) type].erase(id);
+            }
+            // Assets.ExistBinds[type].erase(tick.AssetsLost[type].begin(), tick.AssetsLost[type].end());    
+            lostResources[(EnumAssets) type].insert_range(tick.AssetsLost[type]);
+        }
+
+        // Запрос к дисковому кешу
+        std::vector<AssetsManager::ResourceKey> needToLoad;
+        // Новые привязки ресурсов
+        for(const AssetBindEntry& bind : tick.AssetsBinds) {
+            Assets.ExistBinds[(int) bind.Type].insert(bind.Id);
+
+            // Проверить in memory кеш по домену+ключу
+            {
+                std::string dk = bind.Domain + ':' + bind.Key;
+                auto &niubdk = Assets.NotInUse[(int) bind.Type];
+                auto iter = niubdk.find(dk);
+                if(iter != niubdk.end()) {
+                    // Есть ресурс
+                    Assets.InUse[(int) bind.Type][bind.Id] = std::get<0>(iter->second);
+                    changedResources[bind.Type].insert({bind.Id, std::get<0>(iter->second)});
+                    lostResources[bind.Type].erase(bind.Id);
+                    continue;
+                }
+            }
+
+            // Под рукой нет ресурса, отправим на проверку в AssetsManager
+            needToLoad.emplace_back(bind.Hash, bind.Type, bind.Domain, bind.Key, bind.Id);
+        }
+
+        if(!needToLoad.empty())
+            AM->pushReads(std::move(needToLoad));
+    }
+
+    // Получаем ресурсы, загруженные с дискового кеша
+    {
+        std::vector<Hash_t> request;
+        std::vector<std::pair<AssetsManager::ResourceKey, std::optional<Resource>>> resources = AM->pullReads();
+        for(auto& [key, res] : resources) {
+            if(!res) {
+                // Нужно запросить ресурс с сервера
+                request.push_back(key.Hash);
+            } else {
+                auto& a = Assets.ExistBinds[(int) key.Type];
+                AssetEntry entry = {key.Type, key.Id, key.Domain, key.Key, *res};
+
+                if(a.contains(key.Id)) {
+                    // Ресурс ещё нужен
+                    Assets.InUse[(int) key.Type][key.Id] = entry;
+                    changedResources[key.Type].insert({key.Id, entry});
+                } else {
+                    // Ресурс уже не нужен
+                    Assets.NotInUse[(int) key.Type][key.Domain + ':' + key.Key] = {entry, TIME_BEFORE_UNLOAD_RESOURCE+time(nullptr)};
+                }
+            }
+        }
+
+        if(!request.empty()) {
+            assert(request.size() < (1 << 16));
+            Net::Packet p;
+            p << (uint8_t) ToServer::L1::System << (uint8_t) ToServer::L2System::ResourceRequest 
+                << uint16_t(request.size());
+    
+            for(Hash_t& hash : request)
+                p.write((const std::byte*) hash.data(), 32);
+
+            Socket->pushPacket(std::move(p));
+        }
+    }
+
+    if(RS) {
+        // Уведомляем рендер опотерянных и изменённых ресурсах
+        if(!lostResources.empty()) {
+            std::unordered_map<EnumAssets, std::vector<ResourceId>> lostResources2;
+
+            for(auto& [type, list] : lostResources)
+                lostResources2[type].append_range(list);
+            
+            lostResources.clear();
+            RS->onAssetsLost(std::move(lostResources2));
+        }
+
+        if(!changedResources.empty()) {
+            std::unordered_map<EnumAssets, std::vector<AssetEntry>> changedResources2;
+
+            for(auto& [type, list] : changedResources) {
+                auto& a = changedResources2[type];
+                for(auto& [key, val] : list)
+                    a.push_back(val);
+            }
+
+            changedResources.clear();
+            RS->onAssetsChanges(std::move(changedResources2));
+        }
+    }
+
     GTime = gTime;
 
     Pos += glm::vec3(Speed) * dTime;
@@ -540,6 +681,9 @@ coro<> ServerSession::rP_System(Net::AsyncSocket &sock) {
     case ToClient::L2System::UnlinkCamera:
 
         co_return;
+    case ToClient::L2System::SyncTick:
+        AsyncContext.TickSequence.lock()->push(std::move(AsyncContext.ThisTickEntry));
+        co_return;
     default:
         protocolError();
     }
@@ -572,13 +716,12 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
     case ToClient::L2Resource::Lost:
     {
         uint32_t count = co_await sock.read<uint32_t>();
-        AsyncContext.ThisTickEntry.AssetsLost.reserve(AsyncContext.ThisTickEntry.AssetsLost.size()+count);
 
         for(size_t iter = 0; iter < count; iter++) {
-            // uint8_t type = co_await sock.read<uint8_t>();
+            uint8_t type = co_await sock.read<uint8_t>();
             uint32_t id = co_await sock.read<uint32_t>();
 
-            AsyncContext.ThisTickEntry.AssetsLost.push_back(id);
+            AsyncContext.ThisTickEntry.AssetsLost[(int) type].push_back(id);
         }
     }
     case ToClient::L2Resource::InitResSend:

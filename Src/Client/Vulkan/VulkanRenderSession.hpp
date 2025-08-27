@@ -340,7 +340,8 @@ public:
         assert(serverSession);
     }
 
-    virtual void onBinaryResourceAdd(std::vector<Hash_t>) override;
+    virtual void onAssetsChanges(std::unordered_map<EnumAssets, std::vector<AssetEntry>> resources) override;
+    virtual void onAssetsLost(std::unordered_map<EnumAssets, std::vector<ResourceId>> resources) override;
     virtual void onContentDefinesAdd(std::unordered_map<EnumDefContent, std::vector<ResourceId>>) override;
     virtual void onContentDefinesLost(std::unordered_map<EnumDefContent, std::vector<ResourceId>>) override;
     virtual void onChunksChange(WorldId_t worldId, const std::unordered_set<Pos::GlobalChunk>& changeOrAddList, const std::unordered_set<Pos::GlobalRegion>& remove) override;

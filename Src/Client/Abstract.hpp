@@ -60,11 +60,20 @@ public:
     // states
 };
 
+struct AssetEntry {
+    EnumAssets Type;
+    ResourceId Id;
+    std::string Domain, Key;
+    Resource Res;
+};
+
 /* Интерфейс рендера текущего подключения к серверу */
 class IRenderSession {
 public:
-    // Подгрузка двоичных ресурсов
-    virtual void onBinaryResourceAdd(std::vector<Hash_t>) = 0;
+    // Изменённые ресурсы (кроме звуков)
+    virtual void onAssetsChanges(std::unordered_map<EnumAssets, std::vector<AssetEntry>> resources) = 0;
+    // Потерянные ресурсы
+    virtual void onAssetsLost(std::unordered_map<EnumAssets, std::vector<ResourceId>> resources) = 0;
 
     virtual void onContentDefinesAdd(std::unordered_map<EnumDefContent, std::vector<ResourceId>>) = 0;
     virtual void onContentDefinesLost(std::unordered_map<EnumDefContent, std::vector<ResourceId>>) = 0;
@@ -147,21 +156,6 @@ class IServerSession {
     // };
 
 public:
-    struct AssetEntry {
-        EnumAssets Type;
-        ResourceId Id;
-        std::string Domain, Key;
-        Resource Res;
-    };
-
-    static constexpr uint64_t TIME_BEFORE_UNLOAD_RESOURCE = 180;
-    struct {
-        // Оперируемые ресурсы
-        std::unordered_map<Hash_t, AssetEntry>                       Assets;
-        // Недавно использованные ресурсы, пока хранятся здесь в течении TIME_BEFORE_UNLOAD_RESOURCE секунд
-        std::unordered_map<Hash_t, std::pair<AssetEntry, uint64_t>>  NotInUseAssets;
-    } Binary;
-
     struct {
         std::unordered_map<DefVoxelId, DefVoxel_t>                DefVoxel;
         std::unordered_map<DefNodeId, DefNode_t>                  DefNode;

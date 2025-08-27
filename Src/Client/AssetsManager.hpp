@@ -95,6 +95,7 @@ public:
         Hash_t Hash;
         EnumAssets Type;
         std::string Domain, Key;
+        ResourceId Id;
     };
 
 public:
@@ -115,7 +116,7 @@ public:
     }
 
     // Получить считанные данные
-    std::vector<std::pair<Hash_t, std::optional<Resource>>> pullReads() {
+    std::vector<std::pair<ResourceKey, std::optional<Resource>>> pullReads() {
         return std::move(*ReadyQueue.lock());
     }
 
@@ -181,7 +182,7 @@ private:
     // Очередь на запись ресурсов
     TOS::SpinlockObject<std::queue<Resource>> WriteQueue;
     // Очередь на выдачу результатов чтения
-    TOS::SpinlockObject<std::vector<std::pair<Hash_t, std::optional<Resource>>>> ReadyQueue;
+    TOS::SpinlockObject<std::vector<std::pair<ResourceKey, std::optional<Resource>>>> ReadyQueue;
 
     struct Changes_t {
         std::vector<fs::path> Assets;

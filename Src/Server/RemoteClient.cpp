@@ -491,6 +491,12 @@ ResourceRequest RemoteClient::pushPreparedPackets() {
         toSend.push_back(std::move(AssetsInWork.AssetsPacket));
     }
 
+    {
+        Net::Packet p;
+        p << (uint8_t) ToClient::L1::System << (uint8_t) ToClient::L2System::SyncTick;
+        toSend.push_back(std::move(p));
+    }
+
     Socket.pushPackets(&toSend);
     toSend.clear();
 
@@ -505,22 +511,27 @@ void RemoteClient::informateAssets(const std::vector<std::tuple<EnumAssets, Reso
 
     for(auto& [type, resId, domain, key, resource] : resources) {
         auto hash = resource.hash();
+        auto lock = NetworkAndResource.lock();
 
         // Проверка запрашиваемых клиентом ресурсов
         {
-            auto iter = std::find(AssetsInWork.ClientRequested.begin(), AssetsInWork.ClientRequested.end(), hash);
-            if(iter != AssetsInWork.ClientRequested.end())
+            auto iter = std::find(lock->ClientRequested.begin(), lock->ClientRequested.end(), hash);
+            if(iter != lock->ClientRequested.end())
             {
+                lock->ClientRequested.erase(iter);
+                lock.unlock();
+
                 auto it = std::lower_bound(AssetsInWork.OnClient.begin(), AssetsInWork.OnClient.end(), hash);
 
                 if(it == AssetsInWork.OnClient.end() || *it != hash)
                     AssetsInWork.OnClient.insert(it, hash);
 
                 AssetsInWork.ToSend.emplace_back(type, domain, key, resId, resource, 0);
+
+                lock = NetworkAndResource.lock();
             }
         }
 
-        auto lock = NetworkAndResource.lock();
         // Информирование клиента о привязках ресурсов к идентификатору
         {
             // Посмотрим что известно клиенту
@@ -528,6 +539,7 @@ void RemoteClient::informateAssets(const std::vector<std::tuple<EnumAssets, Reso
                 iter != lock->ResUses.AssetsUse[(int) type].end() 
                 && std::get<Hash_t>(iter->second) != hash
             ) {
+                lock.unlock();
                 // Требуется перепривязать идентификатор к новому хешу
                 newForClient.push_back({(EnumAssets) type, resId, domain, key, hash, resource.size()});
                 std::get<Hash_t>(iter->second) = hash;
@@ -720,6 +732,23 @@ coro<> RemoteClient::rP_System(Net::AsyncSocket &sock) {
         Actions.lock()->push(action);
         co_return;
     }
+    case ToServer::L2System::ResourceRequest:
+    {
+        uint16_t count = co_await sock.read<uint32_t>();
+        std::vector<Hash_t> hashes;
+        hashes.reserve(count);
+
+        for(int iter = 0; iter < count; iter++) {
+            Hash_t hash;
+            co_await sock.read((std::byte*) hash.data(), 32);
+            hashes.push_back(hash);
+        }
+
+        auto lock = NetworkAndResource.lock();
+        lock->NextRequest.Hashes.append_range(hashes);
+        lock->ClientRequested.append_range(hashes);
+        co_return;
+    }
     default:
         protocolError();
     }
@@ -763,7 +792,7 @@ void RemoteClient::NetworkAndResource_t::decrementAssets(ResUses_t::RefAssets_t&
             << uint32_t(lost.size());
 
         for(auto& [type, id] : lost)
-            NextPacket /* << uint8_t(type)*/  << uint32_t(id);
+            NextPacket << uint8_t(type) << uint32_t(id);
     }
 }
 

@@ -76,6 +76,16 @@ private:
     // Обработчик кеша ресурсов сервера
     AssetsManager::Ptr AM;
 
+    static constexpr uint64_t TIME_BEFORE_UNLOAD_RESOURCE = 180;
+    struct {
+        // Существующие привязки ресурсов
+        std::unordered_set<ResourceId> ExistBinds[(int) EnumAssets::MAX_ENUM];
+        // Используемые в данных момент ресурсы (определяется по действующей привязке)
+        std::unordered_map<ResourceId, AssetEntry> InUse[(int) EnumAssets::MAX_ENUM];
+        // Недавно использованные ресурсы, пока хранятся здесь в течении TIME_BEFORE_UNLOAD_RESOURCE секунд
+        std::unordered_map<std::string, std::pair<AssetEntry, uint64_t>> NotInUse[(int) EnumAssets::MAX_ENUM];
+    } Assets;
+
     struct AssetLoading {
         EnumAssets Type;
         ResourceId Id;
@@ -95,10 +105,10 @@ private:
         std::vector<WorldId_t> LostWorld;
         // std::vector<std::pair<WorldId_t, DefWorld>>
 
-        // Потерянные из видимости ресурсы
-        std::vector<ResourceId> AssetsLost;
         // Новые привязки ресурсов
         std::vector<AssetBindEntry> AssetsBinds;
+        // Потерянные из видимости ресурсы
+        std::vector<ResourceId> AssetsLost[(int) EnumAssets::MAX_ENUM];
     };
 
     struct {
@@ -111,8 +121,6 @@ private:
         TickData ThisTickEntry;
 
     // Обменный пункт
-        // Привязки ресурсов
-        TOS::SpinlockObject<std::vector<AssetEntry>> AssetsBindings;
         // Полученные ресурсы с сервера
         TOS::SpinlockObject<std::vector<AssetEntry>> LoadedAssets;
         // Пакеты обновлений игрового мира

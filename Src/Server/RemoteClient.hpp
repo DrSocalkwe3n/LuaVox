@@ -336,7 +336,7 @@ public:
     std::queue<Pos::GlobalNode> Build, Break;
 
 public:
-    RemoteClient(asio::io_context &ioc, tcp::socket socket, const std::string username, std::vector<ResourceFile::Hash_t> &&client_cache)
+    RemoteClient(asio::io_context &ioc, tcp::socket socket, const std::string username)
         : LOG("RemoteClient " + username), Socket(ioc, std::move(socket)), Username(username)
     {}
 

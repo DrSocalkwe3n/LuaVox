@@ -1105,18 +1105,9 @@ coro<> GameServer::pushSocketGameProtocol(tcp::socket socket, const std::string 
             lock.unlock();
 
             co_await Net::AsyncSocket::write<uint8_t>(socket, 0);
-            // Считываем ресурсы хранимые в кеше клиента
-            uint32_t count = co_await Net::AsyncSocket::read<uint32_t>(socket);
-            if(count > 262144)
-                MAKE_ERROR("Не поддерживаемое количество ресурсов в кеше у клиента");
-            
-            std::vector<Hash_t> clientCache;
-            clientCache.resize(count);
-            co_await Net::AsyncSocket::read(socket, (std::byte*) clientCache.data(), count*32);
-            std::sort(clientCache.begin(), clientCache.end());
 
             External.NewConnectedPlayers.lock_write()
-               ->push_back(std::make_unique<RemoteClient>(IOC, std::move(socket), username, std::move(clientCache)));
+               ->push_back(std::make_shared<RemoteClient>(IOC, std::move(socket), username));
         }
     }
 }

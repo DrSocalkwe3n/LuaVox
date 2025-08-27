@@ -1,4 +1,5 @@
 #include <boost/asio/io_context.hpp>
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -158,17 +159,35 @@ void Vulkan::run()
 	NeedShutdown = false;
 	Graphics.ThisThread = std::this_thread::get_id();
 
-	VkSemaphoreCreateInfo semaphoreCreateInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, nullptr, 0 };
-	VkSemaphore SemaphoreImageAcquired, SemaphoreDrawComplete;
+	VkSemaphoreCreateInfo semaphoreCreateInfo = { 
+		VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, 
+		nullptr, 
+		0
+	};
 
-	vkAssert(!vkCreateSemaphore(Graphics.Device, &semaphoreCreateInfo, NULL, &SemaphoreImageAcquired));
-	vkAssert(!vkCreateSemaphore(Graphics.Device, &semaphoreCreateInfo, NULL, &SemaphoreDrawComplete));
+	VkSemaphore SemaphoreImageAcquired[4], SemaphoreDrawComplete[4];
+	int semNext = 0;
 
+	for(int iter = 0; iter < 4; iter++) {
+		vkAssert(!vkCreateSemaphore(Graphics.Device, &semaphoreCreateInfo, nullptr, &SemaphoreImageAcquired[iter]));
+		vkAssert(!vkCreateSemaphore(Graphics.Device, &semaphoreCreateInfo, nullptr, &SemaphoreDrawComplete[iter]));
+	}
+
+	VkFence drawEndFence = VK_NULL_HANDLE;
+
+	{
+		VkFenceCreateInfo info = {
+			.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+			.pNext = nullptr,
+			.flags = 0
+		};
+
+		vkCreateFence(Graphics.Device, &info, nullptr, &drawEndFence);
+	}
 
 	double prevTime = glfwGetTime();
 	while(!NeedShutdown)
 	{
-
 		float dTime = glfwGetTime()-prevTime;
 		prevTime += dTime;
 
@@ -230,7 +249,8 @@ void Vulkan::run()
 		glfwPollEvents();
 
 		VkResult err;
-		err = vkAcquireNextImageKHR(Graphics.Device, Graphics.Swapchain, 1000000000ULL/20, SemaphoreImageAcquired, (VkFence) 0, &Graphics.DrawBufferCurrent);
+		semNext = ++semNext % 4;
+		err = vkAcquireNextImageKHR(Graphics.Device, Graphics.Swapchain, 1000000000ULL/20, SemaphoreImageAcquired[semNext], (VkFence) 0, &Graphics.DrawBufferCurrent);
 		GlobalTime gTime = glfwGetTime();
 
 		if (err == VK_ERROR_OUT_OF_DATE_KHR)
@@ -529,19 +549,25 @@ void Vulkan::run()
 					.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
 					.pNext = nullptr,
 					.waitSemaphoreCount = 1,
-					.pWaitSemaphores = &SemaphoreImageAcquired,
+					.pWaitSemaphores = &SemaphoreImageAcquired[semNext],
 					.pWaitDstStageMask = &pipe_stage_flags,
 					.commandBufferCount = 1,
 					.pCommandBuffers = &Graphics.CommandBufferRender,
 					.signalSemaphoreCount = 1,
-					.pSignalSemaphores = &SemaphoreDrawComplete
+					.pSignalSemaphores = &SemaphoreDrawComplete[semNext]
 				};
 
-				//Рисуем, когда получим картинку
+				// Отправляем команды рендера в очередь
 				{
 					auto lockQueue = Graphics.DeviceQueueGraphic.lock();
-					vkAssert(!vkQueueSubmit(*lockQueue, 1, &submit_info, nullFence));
+					vkAssert(!vkQueueSubmit(*lockQueue, 1, &submit_info, drawEndFence));
 				}
+
+				// auto now = std::chrono::high_resolution_clock::now();
+				// Насильно ожидаем завершения рендера кадра
+				vkWaitForFences(Graphics.Device, 1, &drawEndFence, true, -1);
+				vkResetFences(Graphics.Device, 1, &drawEndFence);
+				// LOG.debug() << (std::chrono::high_resolution_clock::now()-now).count();
 			}
 
 			{
@@ -550,13 +576,13 @@ void Vulkan::run()
 					.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
 					.pNext = NULL,
 					.waitSemaphoreCount = 1,
-					.pWaitSemaphores = &SemaphoreDrawComplete,
+					.pWaitSemaphores = &SemaphoreDrawComplete[semNext],
 					.swapchainCount = 1,
 					.pSwapchains = &Graphics.Swapchain,
 					.pImageIndices = &Graphics.DrawBufferCurrent
 				};
 
-				// Завершаем картинку
+				// Передадим фрейм, когда рендер будет завершён
 				{
 					auto lockQueue = Graphics.DeviceQueueGraphic.lock();
 					err = vkQueuePresentKHR(*lockQueue, &present);
@@ -580,20 +606,21 @@ void Vulkan::run()
 
 			Game.Session->atFreeDrawTime(gTime, dTime);
 		}
-
-		// vkAssert(!vkQueueWaitIdle(Graphics.DeviceQueueGraphic));
-
-		{
-			// Эту хрень надо убрать
-			auto lockQueue = Graphics.DeviceQueueGraphic.lock();
-			vkDeviceWaitIdle(Graphics.Device);
-			lockQueue.unlock();
-		}
 		Screen.State = DrawState::End;
 	}
 
-	vkDestroySemaphore(Graphics.Device, SemaphoreImageAcquired, nullptr);
-	vkDestroySemaphore(Graphics.Device, SemaphoreDrawComplete, nullptr);
+	{
+		auto lockQueue = Graphics.DeviceQueueGraphic.lock();
+		vkDeviceWaitIdle(Graphics.Device);
+		lockQueue.unlock();
+	}
+
+	for(int iter = 0; iter < 4; iter++) {
+		vkDestroySemaphore(Graphics.Device, SemaphoreImageAcquired[iter], nullptr);
+		vkDestroySemaphore(Graphics.Device, SemaphoreDrawComplete[iter], nullptr);
+	}
+
+	vkDestroyFence(Graphics.Device, drawEndFence, nullptr);
 }
 
 void Vulkan::glfwCallbackError(int error, const char *description)
@@ -777,8 +804,8 @@ void Vulkan::buildSwapchains()
 		.imageColorSpace = Graphics.SurfaceColorSpace,
 		.imageExtent = swapchainExtent,
 		.imageArrayLayers = 1,
-		.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
-			| VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+			// | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 		.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
 		.queueFamilyIndexCount = 0,
 		.pQueueFamilyIndices = nullptr,

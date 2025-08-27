@@ -3,6 +3,7 @@
 #include "Client/Abstract.hpp"
 #include "Common/Abstract.hpp"
 #include <Client/Vulkan/Vulkan.hpp>
+#include <algorithm>
 #include <memory>
 #include <optional>
 #include <queue>
@@ -15,6 +16,7 @@
 #include "VertexPool.hpp"
 #include "glm/fwd.hpp"
 #include "../FrustumCull.h"
+#include "glm/geometric.hpp"
 
 /*
     У движка есть один текстурный атлас VK_IMAGE_VIEW_TYPE_2D_ARRAY(RGBA_UINT) и к нему Storage с инфой о положении текстур
@@ -184,10 +186,11 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
             std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>>,
             std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>>
         > getChunksForRender(WorldId_t worldId, Pos::Object pos, uint8_t distance, glm::mat4 projView, Pos::GlobalRegion x64offset) {
-            Pos::GlobalRegion center = pos >> Pos::Object_t::BS_Bit >> 4 >> 2;
+            Pos::GlobalChunk playerChunk = pos >> Pos::Object_t::BS_Bit >> 4;
+            Pos::GlobalRegion center = playerChunk >> 2;
 
-            std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>> vertexVoxels;
-            std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>> vertexNodes;
+            std::vector<std::tuple<float, Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>> vertexVoxels;
+            std::vector<std::tuple<float, Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>> vertexNodes;
 
             auto iterWorld = ChunkMesh.find(worldId);
             if(iterWorld == ChunkMesh.end())
@@ -220,17 +223,50 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
                                 continue;
 
                             auto &chunk = iterRegion->second[index];
+                            
+                            float distance;
 
-                            if(chunk.VoxelPointer)
-                                vertexVoxels.emplace_back(local+Pos::GlobalChunk(localPos), VertexPool_Voxels.map(chunk.VoxelPointer), chunk.VoxelPointer.VertexCount);
-                            if(chunk.NodePointer)
-                                vertexNodes.emplace_back(local+Pos::GlobalChunk(localPos), VertexPool_Nodes.map(chunk.NodePointer), chunk.NodePointer.VertexCount);
+                            if(chunk.VoxelPointer || chunk.NodePointer) {
+                                Pos::GlobalChunk cp = local+Pos::GlobalChunk(localPos)-playerChunk;
+                                distance = cp.x*cp.x+cp.y*cp.y+cp.z*cp.z;
+                            }
+
+                            if(chunk.VoxelPointer) {
+                                vertexVoxels.emplace_back(distance, local+Pos::GlobalChunk(localPos), VertexPool_Voxels.map(chunk.VoxelPointer), chunk.VoxelPointer.VertexCount);
+                            }
+
+                            if(chunk.NodePointer) {
+                                vertexNodes.emplace_back(distance, local+Pos::GlobalChunk(localPos), VertexPool_Nodes.map(chunk.NodePointer), chunk.NodePointer.VertexCount);
+                            }
                         }
                     }
                 }
             }
 
-            return std::pair{vertexVoxels, vertexNodes};
+            auto sortByDistance = []
+            (
+                const std::tuple<float, Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>& a, 
+                const std::tuple<float, Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>& b
+            ) {
+                return std::get<0>(a) < std::get<0>(b);
+            };
+            
+            std::sort(vertexVoxels.begin(), vertexVoxels.end(), sortByDistance);
+            std::sort(vertexNodes.begin(), vertexNodes.end(), sortByDistance);
+
+            std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>> resVertexVoxels;
+            std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>> resVertexNodes;
+
+            resVertexVoxels.reserve(vertexVoxels.size());
+            resVertexNodes.reserve(vertexNodes.size());
+
+            for(const auto& [d, pos, ptr, count] : vertexVoxels)
+                resVertexVoxels.emplace_back(pos, ptr, count);
+
+            for(const auto& [d, pos, ptr, count] : vertexNodes)
+                resVertexNodes.emplace_back(pos, ptr, count);
+
+            return std::pair{resVertexVoxels, resVertexNodes};
         }
 
         void join() {

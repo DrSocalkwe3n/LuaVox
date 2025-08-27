@@ -1,4 +1,4 @@
-#version 450
+#version 460
 
 layout(location = 0) in FragmentObj {
     vec3 GeoPos;    // Реальная позиция в мире
@@ -20,5 +20,5 @@ layout(set = 1, binding = 1) readonly buffer LightMapLayoutObj {
 } LightMapLayout;
 
 void main() {
-    Frame = vec4(1);
+    Frame = vec4(Fragment.GeoPos, 1);
 }

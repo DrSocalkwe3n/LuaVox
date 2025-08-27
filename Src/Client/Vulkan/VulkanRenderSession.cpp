@@ -816,7 +816,7 @@ void VulkanRenderSession::init(Vulkan *instance) {
             .flags = 0,
             .depthTestEnable = true,
             .depthWriteEnable = true,
-            .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
+            .depthCompareOp = VK_COMPARE_OP_LESS,
             .depthBoundsTestEnable = false,
             .stencilTestEnable = false,
             .front = VkStencilOpState
@@ -1209,7 +1209,7 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
         Pos::GlobalChunk x64offset = X64Offset >> Pos::Object_t::BS_Bit >> 4;
         Pos::GlobalRegion x64offset_region = x64offset >> 2;
 
-        auto [voxelVertexs, nodeVertexs] = VKCTX->ThreadVertexObj.getChunksForRender(WorldId, Pos, 1, PCO.ProjView, x64offset_region);
+        auto [voxelVertexs, nodeVertexs] = VKCTX->ThreadVertexObj.getChunksForRender(WorldId, Pos, 2, PCO.ProjView, x64offset_region);
 
         size_t count = 0;
 
@@ -1233,8 +1233,8 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
             vkCmdDraw(drawCmd, vertexCount, 1, offset, 0);
         }
 
-        TOS::Logger LOG = "VRS";
-        LOG.debug() << "Node: drawCals: " << nodeVertexs.size() << " vertexs: " << count;
+        // TOS::Logger LOG = "VRS";
+        // LOG.debug() << "Node: drawCals: " << nodeVertexs.size() << " vertexs: " << count;
 
         PCO.Model = orig;
 

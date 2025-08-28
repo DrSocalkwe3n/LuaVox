@@ -209,7 +209,7 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
                             continue;
 
                         auto iterRegion = iterWorld->second.find(region);
-                        if(iterRegion == iterWorld->second.end())
+                        if(iterRegion == iterWorld->second.end()) 
                             continue;
 
                         Pos::GlobalChunk local = Pos::GlobalChunk(region) << 2;
@@ -364,6 +364,8 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
 
 public:
     WorldPCO PCO;
+    WorldId_t WI = 0;
+    glm::vec3 PlayerPos = glm::vec3(0);
 
 public:
     VulkanRenderSession();

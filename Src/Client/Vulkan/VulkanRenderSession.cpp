@@ -80,6 +80,7 @@ void VulkanRenderSession::ThreadVertexObj_t::run() {
                         toRemove.push_back(worldId);
                 }
 
+
                 for(WorldId_t worldId : toRemove)
                     ChunkMesh.erase(ChunkMesh.find(worldId));
 
@@ -101,6 +102,7 @@ void VulkanRenderSession::ThreadVertexObj_t::run() {
 
 
                 State.lock()->ChunkMesh_IsUse = false;
+                changedContent_RegionRemove.clear();
                 chunksUpdate.clear();
 
                 // LOG.debug() << "ChunkMesh_IsUse: " << Time::nowSystem() - now;
@@ -167,6 +169,7 @@ void VulkanRenderSession::ThreadVertexObj_t::run() {
 
                             {
                                 std::vector<NodeVertexStatic> nodes = generateMeshForNodeChunks(chunk.Nodes.data());
+
                                 if(!nodes.empty()) {
                                     drawChunk.NodePointer = VertexPool_Nodes.pushVertexs(std::move(nodes));
                                     hasVertexChanges = true;
@@ -1007,9 +1010,11 @@ void VulkanRenderSession::onChunksChange(WorldId_t worldId, const std::unordered
     std::unordered_map<WorldId_t, std::vector<Pos::GlobalChunk>> chunkChanges;
     if(!changeOrAddList.empty())
         chunkChanges[worldId] = std::vector<Pos::GlobalChunk>(changeOrAddList.begin(), changeOrAddList.end());
+    
     std::unordered_map<WorldId_t, std::vector<Pos::GlobalRegion>> regionRemove;
     if(!remove.empty())
         regionRemove[worldId] = std::vector<Pos::GlobalRegion>(remove.begin(), remove.end());
+    
     VKCTX->ThreadVertexObj.onContentChunkChange(chunkChanges, regionRemove);
     
         // if(chunk.Voxels.empty()) {
@@ -1041,6 +1046,10 @@ void VulkanRenderSession::setCameraPos(WorldId_t worldId, Pos::Object pos, glm::
     WorldId = worldId;
     Pos = pos;
     Quat = quat;
+
+    WI = worldId;
+    PlayerPos = pos;
+    PlayerPos /= float(Pos::Object_t::BS);
 }
 
 void VulkanRenderSession::beforeDraw() {
@@ -1209,7 +1218,15 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
         Pos::GlobalChunk x64offset = X64Offset >> Pos::Object_t::BS_Bit >> 4;
         Pos::GlobalRegion x64offset_region = x64offset >> 2;
 
-        auto [voxelVertexs, nodeVertexs] = VKCTX->ThreadVertexObj.getChunksForRender(WorldId, Pos, 2, PCO.ProjView, x64offset_region);
+        auto [voxelVertexs, nodeVertexs] = VKCTX->ThreadVertexObj.getChunksForRender(WorldId, Pos, 4, PCO.ProjView, x64offset_region);
+
+        {
+            static uint32_t l = TOS::Time::getSeconds();
+            if(l != TOS::Time::getSeconds()) {
+                l = TOS::Time::getSeconds();
+                TOS::Logger("Test").debug() << nodeVertexs.size();
+            }
+        }
 
         size_t count = 0;
 

@@ -255,14 +255,17 @@ void Vulkan::run()
 
 		if (err == VK_ERROR_OUT_OF_DATE_KHR)
 		{
+			if(Game.RSession)
+				Game.RSession->pushStage(EnumRenderStage::WorldUpdate);
+			
 			freeSwapchains();
 			buildSwapchains();
 			continue;
-		} else if (err == VK_SUBOPTIMAL_KHR)
-		{
-			LOGGER.debug() << "VK_SUBOPTIMAL_KHR Pre";
-			continue;
-		} else if(err == VK_SUCCESS) {
+		// } else if (err == VK_SUBOPTIMAL_KHR)
+		// {
+		// 	LOGGER.debug() << "VK_SUBOPTIMAL_KHR Pre";
+		// 	continue;
+		} else if(err == VK_SUBOPTIMAL_KHR || err == VK_SUCCESS) {
 
 			Screen.State = DrawState::Drawing;
 			//Готовим инструкции рисовки
@@ -563,11 +566,9 @@ void Vulkan::run()
 					vkAssert(!vkQueueSubmit(*lockQueue, 1, &submit_info, drawEndFence));
 				}
 
-				// auto now = std::chrono::high_resolution_clock::now();
 				// Насильно ожидаем завершения рендера кадра
 				vkWaitForFences(Graphics.Device, 1, &drawEndFence, true, -1);
 				vkResetFences(Graphics.Device, 1, &drawEndFence);
-				// LOG.debug() << (std::chrono::high_resolution_clock::now()-now).count();
 			}
 
 			{
@@ -586,6 +587,12 @@ void Vulkan::run()
 				{
 					auto lockQueue = Graphics.DeviceQueueGraphic.lock();
 					err = vkQueuePresentKHR(*lockQueue, &present);
+				}
+
+				{
+					auto lockQueue = Graphics.DeviceQueueGraphic.lock();
+					vkDeviceWaitIdle(Graphics.Device);
+					lockQueue.unlock();
 				}
 				
 				if (err == VK_ERROR_OUT_OF_DATE_KHR)
@@ -1557,7 +1564,7 @@ void Vulkan::initNextSettings()
 			"VK_LAYER_LUNARG_monitor"
 		};
 
-		if(!SettingsNext.Debug)
+		if(!SettingsNext.Debug || getenv("no_vk_debug"))
 			knownDebugLayers.clear();
 
 		std::vector<vkInstanceLayer> enableDebugLayers;
@@ -2256,8 +2263,15 @@ void Vulkan::gui_ConnectedToServer() {
 	if(Game.Session) {
 		if(ImGui::Begin("MainMenu", nullptr, ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove))
 		{
-			std::string text = std::to_string(ImGui::GetIO().Framerate);
-			ImGui::Text("%s", text.c_str());
+			ImGui::Text("fps: %2.2f World: %u Pos: %i %i %i Region: %i %i %i", 
+				ImGui::GetIO().Framerate, Game.RSession->WI,
+				(int) Game.RSession->PlayerPos.x, (int) Game.RSession->PlayerPos.y, (int) Game.RSession->PlayerPos.z,
+				(int) Game.RSession->PlayerPos.x >> 6, (int) Game.RSession->PlayerPos.y >> 6, (int) Game.RSession->PlayerPos.z >> 6
+			);
+
+			if(ImGui::Button("Delimeter"))
+				LOG.debug();
+
 			if(ImGui::Button("Выйти")) {
 				try {
 					if(Game.Session)

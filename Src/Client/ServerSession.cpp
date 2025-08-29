@@ -1,5 +1,6 @@
 #include "ServerSession.hpp"
 #include "Client/Abstract.hpp"
+#include "Client/AssetsManager.hpp"
 #include "Common/Abstract.hpp"
 #include "Common/Net.hpp"
 #include "TOSAsync.hpp"
@@ -21,7 +22,7 @@
 namespace LV::Client {
 
 ServerSession::ServerSession(asio::io_context &ioc, std::unique_ptr<Net::AsyncSocket>&& socket)
-    : IAsyncDestructible(ioc), Socket(std::move(socket)), NetInputPackets(1024)
+    : IAsyncDestructible(ioc), Socket(std::move(socket)) //, NetInputPackets(1024)
 {
     assert(Socket.get());
 
@@ -39,78 +40,6 @@ coro<> ServerSession::asyncDestructor() {
 }
 
 
-
-
-
-ParsedPacket::~ParsedPacket() = default;
-
-struct PP_Content_ChunkVoxels : public ParsedPacket {
-    WorldId_t Id;
-    Pos::GlobalChunk Pos;
-    std::vector<VoxelCube> Cubes;
-
-    PP_Content_ChunkVoxels(WorldId_t id, Pos::GlobalChunk pos, std::vector<VoxelCube> &&cubes)
-        : ParsedPacket(ToClient::L1::Content, (uint8_t) ToClient::L2Content::ChunkVoxels), Id(id), Pos(pos), Cubes(std::move(cubes))
-    {}
-};
-
-struct PP_Content_ChunkNodes : public ParsedPacket {
-    WorldId_t Id;
-    Pos::GlobalChunk Pos;
-    std::array<Node, 16*16*16> Nodes;
-
-    PP_Content_ChunkNodes(WorldId_t id, Pos::GlobalChunk pos)
-        : ParsedPacket(ToClient::L1::Content, (uint8_t) ToClient::L2Content::ChunkNodes), Id(id), Pos(pos)
-    {
-    }
-};
-
-struct PP_Content_RegionRemove : public ParsedPacket {
-    WorldId_t Id;
-    Pos::GlobalRegion Pos;
-
-    PP_Content_RegionRemove(WorldId_t id, Pos::GlobalRegion pos)
-        : ParsedPacket(ToClient::L1::Content, (uint8_t) ToClient::L2Content::RemoveRegion), Id(id), Pos(pos)
-    {}
-};
-
-struct PP_Definition_Voxel : public ParsedPacket {
-    DefVoxelId Id;
-    DefVoxel_t Def;
-
-    PP_Definition_Voxel(DefVoxelId id, DefVoxel_t def)
-        : ParsedPacket(ToClient::L1::Definition, (uint8_t) ToClient::L2Definition::Voxel), 
-            Id(id), Def(def)
-    {}
-};
-
-struct PP_Definition_FreeVoxel : public ParsedPacket {
-    DefVoxelId Id;
-
-    PP_Definition_FreeVoxel(DefVoxelId id)
-        : ParsedPacket(ToClient::L1::Definition, (uint8_t) ToClient::L2Definition::FreeVoxel), 
-            Id(id)
-    {}
-};
-
-struct PP_Definition_Node : public ParsedPacket {
-    DefNodeId Id;
-    DefNode_t Def;
-
-    PP_Definition_Node(DefNodeId id, DefNode_t def)
-        : ParsedPacket(ToClient::L1::Definition, (uint8_t) ToClient::L2Definition::Node), 
-            Id(id), Def(def)
-    {}
-};
-
-struct PP_Definition_FreeNode : public ParsedPacket {
-    DefNodeId Id;
-
-    PP_Definition_FreeNode(DefNodeId id)
-        : ParsedPacket(ToClient::L1::Definition, (uint8_t) ToClient::L2Definition::FreeNode), 
-            Id(id)
-    {}
-};
 
 using namespace TOS;
 
@@ -347,7 +276,36 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
         AM->pushResources(std::move(resources));
     }
 
+    // Получить ресурсы с AssetsManager
+    {
+        std::vector<std::pair<AssetsManager::ResourceKey, std::optional<Resource>>> resources = AM->pullReads();
+        std::vector<Hash_t> needRequest;
 
+        for(auto& [key, res] : resources) {
+            if(!res) {
+                // Проверить не был ли уже отправлен запрос на получение этого хеша
+                auto iter = std::lower_bound(AsyncContext.AlreadyLoading.begin(), AsyncContext.AlreadyLoading.end(), res->hash());
+                if(iter == AsyncContext.AlreadyLoading.end()) {
+                    AsyncContext.AlreadyLoading.insert(iter, res->hash());
+                    needRequest.push_back(res->hash());
+                }
+            } else {
+                AsyncContext.LoadedResources.emplace_back(key, *res);
+            }
+        }
+
+        if(!needRequest.empty()) {
+            assert(needRequest.size() < (1 << 16));
+
+            Net::Packet p;
+            p << (uint8_t) ToServer::L1::System << (uint8_t) ToServer::L2System::ResourceRequest;
+            p << (uint16_t) needRequest.size();
+            for(const Hash_t& hash : needRequest)
+                p.write((const std::byte*) hash.data(), 32);
+
+            Socket->pushPacket(std::move(p));
+        }
+    }
 
     // Разбираемся с полученными меж тактами привязками ресурсов
     if(!AsyncContext.AssetsBinds.get_read().empty()) {
@@ -436,8 +394,6 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                 }
             }
 
-            // Assets.ExistBinds[(int) bind.Type].insert(bind.Id);
-
             // Под рукой нет ресурса, отправим на проверку в AssetsManager
             if(needQuery) {
                 AsyncContext.ResourceWait[(int) bind.Type][bind.Domain].emplace_back(bind.Key, bind.Hash);
@@ -448,6 +404,8 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
         // Отправляем запрос на получение ресурсов
         if(!needToLoad.empty())
             AM->pushReads(std::move(needToLoad));
+
+        AsyncContext.Binds.push_back(std::move(abc));
     }
 
     if(!AsyncContext.TickSequence.get_read().empty()) {
@@ -456,11 +414,274 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
         if(RS)
             RS->prepareTickSync();
 
+        std::vector<TickData> ticks = std::move(*AsyncContext.TickSequence.lock());
+
         IRenderSession::TickSyncData result;
         // Перевариваем данные по тактам
 
+        // Профили
+        std::unordered_map<DefVoxelId, void*> profile_Voxel_AddOrChange;
+        std::vector<DefVoxelId> profile_Voxel_Lost;
+        std::unordered_map<DefNodeId, void*> profile_Node_AddOrChange;
+        std::vector<DefNodeId> profile_Node_Lost;
+        std::unordered_map<DefWorldId, void*> profile_World_AddOrChange;
+        std::vector<DefWorldId> profile_World_Lost;
+        std::unordered_map<DefPortalId, void*> profile_Portal_AddOrChange;
+        std::vector<DefPortalId> profile_Portal_Lost;
+        std::unordered_map<DefEntityId, void*> profile_Entity_AddOrChange;
+        std::vector<DefEntityId> profile_Entity_Lost;
+        std::unordered_map<DefItemId, void*> profile_Item_AddOrChange;
+        std::vector<DefItemId> profile_Item_Lost;
+
+        {
+            for(TickData& data : ticks) {
+                {
+                    for(auto& [id, profile] : data.Profile_Voxel_AddOrChange) {
+                        auto iter = std::lower_bound(profile_Voxel_Lost.begin(), profile_Voxel_Lost.end(), id);
+                        if(iter != profile_Voxel_Lost.end())
+                            profile_Voxel_Lost.erase(iter);
+
+                        profile_Voxel_AddOrChange[id] = profile;
+                    }
+
+                    for(DefVoxelId id : data.Profile_Voxel_Lost) {
+                        profile_Voxel_AddOrChange.erase(id);
+                    }
+
+                    profile_Voxel_Lost.insert(profile_Voxel_Lost.end(), data.Profile_Voxel_Lost.begin(), data.Profile_Voxel_Lost.end());
+                    std::sort(profile_Voxel_Lost.begin(), profile_Voxel_Lost.end());
+                    auto eraseIter = std::unique(profile_Voxel_Lost.begin(), profile_Voxel_Lost.end());
+                    profile_Voxel_Lost.erase(eraseIter, profile_Voxel_Lost.end());
+                }
+
+                {
+                    for(auto& [id, profile] : data.Profile_Node_AddOrChange) {
+                        auto iter = std::lower_bound(profile_Node_Lost.begin(), profile_Node_Lost.end(), id);
+                        if(iter != profile_Node_Lost.end())
+                            profile_Node_Lost.erase(iter);
+
+                        profile_Node_AddOrChange[id] = profile;
+                    }
+
+                    for(DefNodeId id : data.Profile_Node_Lost) {
+                        profile_Node_AddOrChange.erase(id);
+                    }
+
+                    profile_Node_Lost.insert(profile_Node_Lost.end(), data.Profile_Node_Lost.begin(), data.Profile_Node_Lost.end());
+                    std::sort(profile_Node_Lost.begin(), profile_Node_Lost.end());
+                    auto eraseIter = std::unique(profile_Node_Lost.begin(), profile_Node_Lost.end());
+                    profile_Node_Lost.erase(eraseIter, profile_Node_Lost.end());
+                }
+
+                {
+                    for(auto& [id, profile] : data.Profile_World_AddOrChange) {
+                        auto iter = std::lower_bound(profile_World_Lost.begin(), profile_World_Lost.end(), id);
+                        if(iter != profile_World_Lost.end())
+                            profile_World_Lost.erase(iter);
+
+                        profile_World_AddOrChange[id] = profile;
+                    }
+
+                    for(DefWorldId id : data.Profile_World_Lost) {
+                        profile_World_AddOrChange.erase(id);
+                    }
+
+                    profile_World_Lost.insert(profile_World_Lost.end(), data.Profile_World_Lost.begin(), data.Profile_World_Lost.end());
+                    std::sort(profile_World_Lost.begin(), profile_World_Lost.end());
+                    auto eraseIter = std::unique(profile_World_Lost.begin(), profile_World_Lost.end());
+                    profile_World_Lost.erase(eraseIter, profile_World_Lost.end());
+                }
+
+                {
+                    for(auto& [id, profile] : data.Profile_Portal_AddOrChange) {
+                        auto iter = std::lower_bound(profile_Portal_Lost.begin(), profile_Portal_Lost.end(), id);
+                        if(iter != profile_Portal_Lost.end())
+                            profile_Portal_Lost.erase(iter);
+
+                        profile_Portal_AddOrChange[id] = profile;
+                    }
+
+                    for(DefPortalId id : data.Profile_Portal_Lost) {
+                        profile_Portal_AddOrChange.erase(id);
+                    }
+
+                    profile_Portal_Lost.insert(profile_Portal_Lost.end(), data.Profile_Portal_Lost.begin(), data.Profile_Portal_Lost.end());
+                    std::sort(profile_Portal_Lost.begin(), profile_Portal_Lost.end());
+                    auto eraseIter = std::unique(profile_Portal_Lost.begin(), profile_Portal_Lost.end());
+                    profile_Portal_Lost.erase(eraseIter, profile_Portal_Lost.end());
+                }
+
+                {
+                    for(auto& [id, profile] : data.Profile_Entity_AddOrChange) {
+                        auto iter = std::lower_bound(profile_Entity_Lost.begin(), profile_Entity_Lost.end(), id);
+                        if(iter != profile_Entity_Lost.end())
+                            profile_Entity_Lost.erase(iter);
+
+                        profile_Entity_AddOrChange[id] = profile;
+                    }
+
+                    for(DefEntityId id : data.Profile_Entity_Lost) {
+                        profile_Entity_AddOrChange.erase(id);
+                    }
+
+                    profile_Entity_Lost.insert(profile_Entity_Lost.end(), data.Profile_Entity_Lost.begin(), data.Profile_Entity_Lost.end());
+                    std::sort(profile_Entity_Lost.begin(), profile_Entity_Lost.end());
+                    auto eraseIter = std::unique(profile_Entity_Lost.begin(), profile_Entity_Lost.end());
+                    profile_Entity_Lost.erase(eraseIter, profile_Entity_Lost.end());
+                }
+
+                {
+                    for(auto& [id, profile] : data.Profile_Item_AddOrChange) {
+                        auto iter = std::lower_bound(profile_Item_Lost.begin(), profile_Item_Lost.end(), id);
+                        if(iter != profile_Item_Lost.end())
+                            profile_Item_Lost.erase(iter);
+
+                        profile_Item_AddOrChange[id] = profile;
+                    }
+
+                    for(DefItemId id : data.Profile_Item_Lost) {
+                        profile_Item_AddOrChange.erase(id);
+                    }
+
+                    profile_Item_Lost.insert(profile_Item_Lost.end(), data.Profile_Item_Lost.begin(), data.Profile_Item_Lost.end());
+                    std::sort(profile_Item_Lost.begin(), profile_Item_Lost.end());
+                    auto eraseIter = std::unique(profile_Item_Lost.begin(), profile_Item_Lost.end());
+                    profile_Item_Lost.erase(eraseIter, profile_Item_Lost.end());
+                }
+            }
+
+            for(auto& [id, _] : profile_Voxel_AddOrChange)
+                result.Profiles_ChangeOrAdd[EnumDefContent::Voxel].push_back(id);
+            result.Profiles_Lost[EnumDefContent::Voxel] = profile_Voxel_Lost;
+
+            for(auto& [id, _] : profile_Node_AddOrChange)
+                result.Profiles_ChangeOrAdd[EnumDefContent::Node].push_back(id);
+            result.Profiles_Lost[EnumDefContent::Node] = profile_Node_Lost;
+
+            for(auto& [id, _] : profile_World_AddOrChange)
+                result.Profiles_ChangeOrAdd[EnumDefContent::World].push_back(id);
+            result.Profiles_Lost[EnumDefContent::World] = profile_World_Lost;
+
+            for(auto& [id, _] : profile_Portal_AddOrChange)
+                result.Profiles_ChangeOrAdd[EnumDefContent::Portal].push_back(id);
+            result.Profiles_Lost[EnumDefContent::Portal] = profile_Portal_Lost;
+
+            for(auto& [id, _] : profile_Entity_AddOrChange)
+                result.Profiles_ChangeOrAdd[EnumDefContent::Entity].push_back(id);
+            result.Profiles_Lost[EnumDefContent::Entity] = profile_Entity_Lost;
+
+            for(auto& [id, _] : profile_Item_AddOrChange)
+                result.Profiles_ChangeOrAdd[EnumDefContent::Item].push_back(id);
+            result.Profiles_Lost[EnumDefContent::Item] = profile_Item_Lost;
+        }
+
+        // Чанки
+        std::unordered_map<WorldId_t, std::unordered_map<Pos::GlobalChunk, std::vector<VoxelCube>>> chunks_AddOrChange_Voxel_Result;
+        std::unordered_map<WorldId_t, std::unordered_map<Pos::GlobalChunk, std::array<Node, 16*16*16>>> chunks_AddOrChange_Node_Result;
+        std::unordered_map<WorldId_t, std::vector<Pos::GlobalChunk>> chunks_Changed;
+        std::unordered_map<WorldId_t, std::unordered_set<Pos::GlobalRegion>> regions_Lost_Result;
+
+        {
+            std::unordered_map<WorldId_t, std::unordered_map<Pos::GlobalChunk, std::u8string>> chunks_AddOrChange_Voxel;
+            std::unordered_map<WorldId_t, std::unordered_map<Pos::GlobalChunk, std::u8string>> chunks_AddOrChange_Node;
+            std::unordered_map<WorldId_t, std::unordered_set<Pos::GlobalRegion>> regions_Lost;
+
+            for(TickData& data : ticks) {
+                for(auto& [wId, chunks] : data.Chunks_AddOrChange_Voxel) {
+                    if(auto iter = regions_Lost.find(wId); iter != regions_Lost.end()) {
+                        for(const auto& [pos, value] : chunks) {
+                            iter->second.erase(Pos::GlobalRegion(pos >> 2));
+                        }
+                    }
+
+                    chunks_AddOrChange_Voxel[wId].merge(chunks);
+                }
+
+                data.Chunks_AddOrChange_Voxel.clear();
+
+                for(auto& [wId, chunks] : data.Chunks_AddOrChange_Node) {
+                    if(auto iter = regions_Lost.find(wId); iter != regions_Lost.end()) {
+                        for(const auto& [pos, value] : chunks) {
+                            iter->second.erase(Pos::GlobalRegion(pos >> 2));
+                        }
+                    }
+
+                    chunks_AddOrChange_Node[wId].merge(chunks);
+                }
+
+                data.Chunks_AddOrChange_Node.clear();
+
+                for(auto& [wId, regions] : data.Regions_Lost) {
+                    std::sort(regions.begin(), regions.end());
+
+                    if(auto iter = chunks_AddOrChange_Voxel.find(wId); iter != chunks_AddOrChange_Voxel.end())
+                    {
+                        std::vector<Pos::GlobalChunk> toDelete;
+                        for(auto& [pos, value] : iter->second) {
+                            if(std::binary_search(regions.begin(), regions.end(), Pos::GlobalRegion(pos >> 2))) {
+                                toDelete.push_back(pos);
+                            }
+                        }
+
+                        for(Pos::GlobalChunk pos : toDelete)
+                            iter->second.erase(iter->second.find(pos));
+                    }
+
+                    if(auto iter = chunks_AddOrChange_Node.find(wId); iter != chunks_AddOrChange_Node.end())
+                    {
+                        std::vector<Pos::GlobalChunk> toDelete;
+                        for(auto& [pos, value] : iter->second) {
+                            if(std::binary_search(regions.begin(), regions.end(), Pos::GlobalRegion(pos >> 2))) {
+                                toDelete.push_back(pos);
+                            }
+                        }
+
+                        for(Pos::GlobalChunk pos : toDelete)
+                            iter->second.erase(iter->second.find(pos));
+                    }
+                
+                    regions_Lost[wId].insert_range(regions);
+                }
+
+                data.Regions_Lost.clear();
+            }
+
+            for(auto& [wId, list] : chunks_AddOrChange_Voxel) {
+                auto& caocvr = chunks_AddOrChange_Voxel_Result[wId];
+                auto& c = chunks_Changed[wId];
+
+                for(auto& [pos, val] : list) {
+                    caocvr[pos] = unCompressVoxels(val);
+                    c.push_back(pos);
+                }
+            }
+
+            for(auto& [wId, list] : chunks_AddOrChange_Node) {
+                auto& caocvr = chunks_AddOrChange_Node_Result[wId];
+                auto& c = chunks_Changed[wId];
+
+                for(auto& [pos, val] : list) {
+                    unCompressNodes(val, caocvr[pos].data());
+                    c.push_back(pos);
+                }
+            }
+
+            regions_Lost_Result = std::move(regions_Lost);
+
+            for(auto& [wId, list] : chunks_Changed) {
+                std::sort(list.begin(), list.end());
+                auto eraseIter = std::unique(list.begin(), list.end());
+                list.erase(eraseIter, list.end());
+            }
+        }
+
+        result.Chunks_ChangeOrAdd = std::move(chunks_Changed);
 
 
+        {
+            for(TickData& data : ticks) {
+            }
+        }
 
         if(RS)
             RS->pushStageTickSync();
@@ -484,57 +705,8 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
     std::unordered_map<EnumAssets, std::unordered_set<ResourceId>> lostResources;
 
     // Обработка полученных ресурсов
-    
-
-    // Обработка полученных тактов
-    while(!AsyncContext.TickSequence.get_read().empty()) {
-        TickData tick;
-        
-        {
-            auto lock = AsyncContext.TickSequence.lock();
-            tick = lock->front();
-            lock->pop();
-        }
-
-        // Потерянные привязки ресурсов
-        for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++) {
-            for(ResourceId id : tick.AssetsLost[type]) {
-                Assets.ExistBinds[type].erase(id);
-                changedResources[(EnumAssets) type].erase(id);
-            }
-            // Assets.ExistBinds[type].erase(tick.AssetsLost[type].begin(), tick.AssetsLost[type].end());    
-            lostResources[(EnumAssets) type].insert_range(tick.AssetsLost[type]);
-        }
-
-    }
 
     // Получаем ресурсы, загруженные с дискового кеша
-
-    if(RS) {
-        // Уведомляем рендер опотерянных и изменённых ресурсах
-        if(!lostResources.empty()) {
-            std::unordered_map<EnumAssets, std::vector<ResourceId>> lostResources2;
-
-            for(auto& [type, list] : lostResources)
-                lostResources2[type].append_range(list);
-            
-            lostResources.clear();
-            RS->onAssetsLost(std::move(lostResources2));
-        }
-
-        if(!changedResources.empty()) {
-            std::unordered_map<EnumAssets, std::vector<AssetEntry>> changedResources2;
-
-            for(auto& [type, list] : changedResources) {
-                auto& a = changedResources2[type];
-                for(auto& [key, val] : list)
-                    a.push_back(val);
-            }
-
-            changedResources.clear();
-            RS->onAssetsChanges(std::move(changedResources2));
-        }
-    }
 
     GTime = gTime;
 
@@ -556,105 +728,13 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
     Speed += glm::vec3(0, -1, 0)*float(Keys.SHIFT)*mltpl;
     Speed += glm::vec3(0, 1, 0)*float(Keys.SPACE)*mltpl;
 
-    {
-        std::unordered_map<WorldId_t, std::tuple<std::unordered_set<Pos::GlobalChunk>, std::unordered_set<Pos::GlobalRegion>>> changeOrAddList_removeList;
-        std::unordered_map<EnumDefContent, std::vector<ResourceId>> onContentDefinesAdd;
-        std::unordered_map<EnumDefContent, std::vector<ResourceId>> onContentDefinesLost;
-
-        // Пакеты
-        ParsedPacket *pack;
-        while(NetInputPackets.pop(pack)) {
-            if(pack->Level1 == ToClient::L1::Definition) {
-                ToClient::L2Definition l2 = ToClient::L2Definition(pack->Level2);
-
-                if(l2 == ToClient::L2Definition::Voxel) {
-                    PP_Definition_Voxel &p = *dynamic_cast<PP_Definition_Voxel*>(pack);
-                    Registry.DefVoxel[p.Id] = p.Def;
-                    onContentDefinesAdd[EnumDefContent::Voxel].push_back(p.Id);
-                } else if(l2 == ToClient::L2Definition::FreeVoxel) {
-                    PP_Definition_FreeVoxel &p = *dynamic_cast<PP_Definition_FreeVoxel*>(pack);
-                    {
-                        auto iter = Registry.DefVoxel.find(p.Id);
-                        if(iter != Registry.DefVoxel.end())
-                            Registry.DefVoxel.erase(iter);
-                    }
-                    onContentDefinesLost[EnumDefContent::Voxel].push_back(p.Id);
-                } else if(l2 == ToClient::L2Definition::Node) {
-                    PP_Definition_Node &p = *dynamic_cast<PP_Definition_Node*>(pack);
-                    Registry.DefNode[p.Id] = p.Def;
-                    onContentDefinesAdd[EnumDefContent::Node].push_back(p.Id);
-                } else if(l2 == ToClient::L2Definition::FreeNode) {
-                    PP_Definition_FreeNode &p = *dynamic_cast<PP_Definition_FreeNode*>(pack);
-                    {
-                        auto iter = Registry.DefNode.find(p.Id);
-                        if(iter != Registry.DefNode.end())
-                            Registry.DefNode.erase(iter);
-                    }
-                    onContentDefinesLost[EnumDefContent::Node].push_back(p.Id);
-                }
-
-            } else if(pack->Level1 == ToClient::L1::Content) {
-                ToClient::L2Content l2 = ToClient::L2Content(pack->Level2);
-                if(l2 == ToClient::L2Content::ChunkVoxels) {
-                    PP_Content_ChunkVoxels &p = *dynamic_cast<PP_Content_ChunkVoxels*>(pack);
-                    Pos::GlobalRegion rPos = p.Pos >> 2;
-                    Pos::bvec4u cPos = p.Pos & 0x3;
-
-                    Data.Worlds[p.Id].Regions[rPos].Chunks[cPos.pack()].Voxels = std::move(p.Cubes);
-
-                    auto &pair = changeOrAddList_removeList[p.Id];
-                    std::get<0>(pair).insert(p.Pos);
-                } else if(l2 == ToClient::L2Content::ChunkNodes) {
-                    PP_Content_ChunkNodes &p = *dynamic_cast<PP_Content_ChunkNodes*>(pack);
-                    Pos::GlobalRegion rPos = p.Pos >> 2;
-                    Pos::bvec4u cPos = p.Pos & 0x3;
-
-                    Node *nodes = (Node*) Data.Worlds[p.Id].Regions[rPos].Chunks[cPos.pack()].Nodes.data();
-                    std::copy(p.Nodes.begin(), p.Nodes.end(), nodes);
-                    
-                    auto &pair = changeOrAddList_removeList[p.Id];
-                    std::get<0>(pair).insert(p.Pos);
-                } else if(l2 == ToClient::L2Content::RemoveRegion) {
-                    PP_Content_RegionRemove &p = *dynamic_cast<PP_Content_RegionRemove*>(pack);
-
-                    auto &regions = Data.Worlds[p.Id].Regions;
-                    auto obj = regions.find(p.Pos);
-                    if(obj != regions.end()) {
-                        regions.erase(obj);
-
-                        auto &pair = changeOrAddList_removeList[p.Id];
-                        std::get<1>(pair).insert(p.Pos);
-                    }
-                }
-            }
-
-            delete pack;
-        }
-
-        if(RS && !changeOrAddList_removeList.empty()) {
-            for(auto &pair : changeOrAddList_removeList) {
-                // Если случится что чанк был изменён и удалён, то исключаем его обновления
-                for(Pos::GlobalRegion removed : std::get<1>(pair.second)) {
-                    Pos::GlobalChunk pos = Pos::GlobalChunk(removed) << 2;
-                    for(int z = 0; z < 4; z++)
-                        for(int y = 0; y < 4; y++)
-                            for(int x = 0; x < 4; x++) {
-                                std::get<0>(pair.second).erase(pos+Pos::GlobalChunk(x, y, z));
-                            }
-                }
-
-                RS->onChunksChange(pair.first, std::get<0>(pair.second), std::get<1>(pair.second));
-            }
-
-            if(!onContentDefinesAdd.empty()) {
-                RS->onContentDefinesAdd(std::move(onContentDefinesAdd));
-            }
-
-            if(!onContentDefinesLost.empty()) {
-                RS->onContentDefinesLost(std::move(onContentDefinesLost));
-            }
-        }
-    }
+    // {
+    //     // Пакеты
+    //     ParsedPacket *pack;
+    //     while(NetInputPackets.pop(pack)) {
+    //         delete pack;
+    //     }
+    // }
 
     // Расчёт камеры
     {
@@ -756,7 +836,7 @@ coro<> ServerSession::rP_System(Net::AsyncSocket &sock) {
 
         co_return;
     case ToClient::L2System::SyncTick:
-        AsyncContext.TickSequence.lock()->push(std::move(AsyncContext.ThisTickEntry));
+        AsyncContext.TickSequence.lock()->push_back(std::move(AsyncContext.ThisTickEntry));
         co_return;
     default:
         protocolError();
@@ -770,7 +850,8 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
     case ToClient::L2Resource::Bind:
     {
         uint32_t count = co_await sock.read<uint32_t>();
-        AsyncContext.ThisTickEntry.AssetsBinds.reserve(AsyncContext.ThisTickEntry.AssetsBinds.size()+count);
+        std::vector<AssetBindEntry> binds;
+        binds.reserve(count);
 
         for(size_t iter = 0; iter < count; iter++) {
             uint8_t type = co_await sock.read<uint8_t>();
@@ -781,22 +862,27 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
             Hash_t hash;
             co_await sock.read((std::byte*) hash.data(), hash.size());
 
-            AsyncContext.ThisTickEntry.AssetsBinds.emplace_back(
+            binds.emplace_back(
                 (EnumAssets) type, (ResourceId) id, std::move(domain),
                 std::move(key), hash
             );
         }
+
+        AsyncContext.AssetsBinds.lock()->push_back(AssetsBindsChange(binds, {}));
     }
     case ToClient::L2Resource::Lost:
     {
         uint32_t count = co_await sock.read<uint32_t>();
+        AssetsBindsChange abc;
 
         for(size_t iter = 0; iter < count; iter++) {
             uint8_t type = co_await sock.read<uint8_t>();
             uint32_t id = co_await sock.read<uint32_t>();
 
-            AsyncContext.ThisTickEntry.AssetsLost[(int) type].push_back(id);
+            abc.Lost[(int) type].push_back(id);
         }
+
+        AsyncContext.AssetsBinds.lock()->emplace_back(std::move(abc));
     }
     case ToClient::L2Resource::InitResSend:
     {
@@ -892,11 +978,6 @@ coro<> ServerSession::rP_Definition(Net::AsyncSocket &sock) {
     {
         DefNodeId id = co_await sock.read<DefNodeId>();
     
-        PP_Definition_FreeNode *packet = new PP_Definition_FreeNode(
-            id
-        );
-
-        while(!NetInputPackets.push(packet));
 
         co_return;
     }
@@ -921,12 +1002,16 @@ coro<> ServerSession::rP_Content(Net::AsyncSocket &sock) {
     uint8_t second = co_await sock.read<uint8_t>();
 
     switch((ToClient::L2Content) second) {
-    case ToClient::L2Content::World:
-
+    case ToClient::L2Content::World: {
+        WorldId_t wId = co_await sock.read<uint32_t>();
+        AsyncContext.ThisTickEntry.Worlds_AddOrChange.emplace_back(wId, nullptr);
         co_return;
-    case ToClient::L2Content::RemoveWorld:
-
+    }
+    case ToClient::L2Content::RemoveWorld: {
+        WorldId_t wId = co_await sock.read<uint32_t>();
+        AsyncContext.ThisTickEntry.Worlds_Lost.push_back(wId);
         co_return;
+    }
     case ToClient::L2Content::Portal:
 
         co_return;
@@ -950,13 +1035,7 @@ coro<> ServerSession::rP_Content(Net::AsyncSocket &sock) {
         std::u8string compressed(compressedSize, '\0');
         co_await sock.read((std::byte*) compressed.data(), compressedSize);
 
-        PP_Content_ChunkVoxels *packet = new PP_Content_ChunkVoxels(
-            wcId,
-            pos,
-            unCompressVoxels(compressed) // TODO: вынести в отдельный поток
-        );
-
-        while(!NetInputPackets.push(packet));
+        AsyncContext.ThisTickEntry.Chunks_AddOrChange_Node[wcId].insert({pos, std::move(compressed)});
 
         co_return;
     }
@@ -972,14 +1051,7 @@ coro<> ServerSession::rP_Content(Net::AsyncSocket &sock) {
         std::u8string compressed(compressedSize, '\0');
         co_await sock.read((std::byte*) compressed.data(), compressedSize);
 
-        PP_Content_ChunkNodes *packet = new PP_Content_ChunkNodes(
-            wcId,
-            pos
-        );
-
-        unCompressNodes(compressed, (Node*) packet->Nodes.data()); // TODO: вынести в отдельный поток
-        
-        while(!NetInputPackets.push(packet));
+        AsyncContext.ThisTickEntry.Chunks_AddOrChange_Node[wcId].insert({pos, std::move(compressed)});
 
         co_return;
     }
@@ -991,12 +1063,7 @@ coro<> ServerSession::rP_Content(Net::AsyncSocket &sock) {
         Pos::GlobalRegion pos;
         pos.unpack(co_await sock.read<Pos::GlobalRegion::Pack>());
 
-        PP_Content_RegionRemove *packet = new PP_Content_RegionRemove(
-            wcId,
-            pos
-        );
-
-        while(!NetInputPackets.push(packet));
+        AsyncContext.ThisTickEntry.Regions_Lost[wcId].push_back(pos);
 
         co_return;
     }

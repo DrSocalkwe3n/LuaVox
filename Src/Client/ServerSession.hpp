@@ -19,16 +19,6 @@
 
 namespace LV::Client {
 
-struct ParsedPacket {
-    ToClient::L1 Level1;
-    uint8_t Level2;
-
-    ParsedPacket(ToClient::L1 l1, uint8_t l2)
-        : Level1(l1), Level2(l2)
-    {}
-    virtual ~ParsedPacket();
-};
-
 class ServerSession : public IAsyncDestructible, public IServerSession, public ISurfaceEventListener {
 public:
     using Ptr = std::shared_ptr<ServerSession>;
@@ -102,9 +92,25 @@ private:
     };
 
     struct TickData {
-        std::vector<WorldId_t> LostWorld;
-        // std::vector<std::pair<WorldId_t, DefWorld>>
+        std::vector<std::pair<DefVoxelId, void*>> Profile_Voxel_AddOrChange;
+        std::vector<DefVoxelId> Profile_Voxel_Lost;
+        std::vector<std::pair<DefNodeId, void*>> Profile_Node_AddOrChange;
+        std::vector<DefNodeId> Profile_Node_Lost;
+        std::vector<std::pair<DefWorldId, void*>> Profile_World_AddOrChange;
+        std::vector<DefWorldId> Profile_World_Lost;
+        std::vector<std::pair<DefPortalId, void*>> Profile_Portal_AddOrChange;
+        std::vector<DefPortalId> Profile_Portal_Lost;
+        std::vector<std::pair<DefEntityId, void*>> Profile_Entity_AddOrChange;
+        std::vector<DefEntityId> Profile_Entity_Lost;
+        std::vector<std::pair<DefItemId, void*>> Profile_Item_AddOrChange;
+        std::vector<DefItemId> Profile_Item_Lost;
 
+        std::vector<std::pair<WorldId_t, void*>> Worlds_AddOrChange;
+        std::vector<WorldId_t> Worlds_Lost;
+
+        std::unordered_map<WorldId_t, std::unordered_map<Pos::GlobalChunk, std::u8string>> Chunks_AddOrChange_Voxel;
+        std::unordered_map<WorldId_t, std::unordered_map<Pos::GlobalChunk, std::u8string>> Chunks_AddOrChange_Node;
+        std::unordered_map<WorldId_t, std::vector<Pos::GlobalRegion>> Regions_Lost;
     };
 
     struct AssetsBindsChange {
@@ -121,13 +127,15 @@ private:
         // Накопление данных за такт сервера
         TickData ThisTickEntry;
 
-    // Сбда обращается ветка обновления IServerSession, накапливая данные до SyncTick
+    // Сюда обращается ветка обновления IServerSession, накапливая данные до SyncTick
         // Ресурсы, ожидающие ответа от менеджера кеша
         std::unordered_map<std::string, std::vector<std::pair<std::string, Hash_t>>> ResourceWait[(int) EnumAssets::MAX_ENUM];
         // Полученные ресурсы в ожидании стадии синхронизации такта
         std::unordered_map<EnumAssets, std::vector<AssetEntry>> ReceivedResources;
         // Полученные изменения связок в ожидании стадии синхронизации такта
-        AssetsBindsChange Binds;
+        std::vector<AssetsBindsChange> Binds;
+        // Подгруженные меж тактами ресурсы
+        std::vector<std::pair<AssetsManager::ResourceKey, Resource>> LoadedResources;
         // Список ресурсов на которые уже был отправлен запрос на загрузку ресурса
         std::vector<Hash_t> AlreadyLoading;
 
@@ -138,14 +146,12 @@ private:
         // Изменения в наблюдаемых ресурсах
         TOS::SpinlockObject<std::vector<AssetsBindsChange>> AssetsBinds;
         // Пакеты обновлений игрового мира
-        TOS::SpinlockObject<std::queue<TickData>> TickSequence;
+        TOS::SpinlockObject<std::vector<TickData>> TickSequence;
     } AsyncContext;
 
 
 
     bool IsConnected = true, IsGoingShutdown = false;
-
-    boost::lockfree::spsc_queue<ParsedPacket*> NetInputPackets;
 
     // PYR - поворот камеры по осям xyz в радианах, PYR_Offset для сглаживание поворота
     glm::vec3 PYR = glm::vec3(0), PYR_Offset = glm::vec3(0);

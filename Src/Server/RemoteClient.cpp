@@ -734,7 +734,7 @@ coro<> RemoteClient::rP_System(Net::AsyncSocket &sock) {
     }
     case ToServer::L2System::ResourceRequest:
     {
-        uint16_t count = co_await sock.read<uint32_t>();
+        uint16_t count = co_await sock.read<uint16_t>();
         std::vector<Hash_t> hashes;
         hashes.reserve(count);
 

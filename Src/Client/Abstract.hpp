@@ -76,9 +76,9 @@ public:
         std::unordered_map<EnumDefContent, std::vector<ResourceId>> Profiles_Lost;
 
         // Новые или изменённые чанки
-        std::unordered_map<WorldId_t, std::unordered_set<Pos::GlobalChunk>> Chunks_ChangeOrAdd;
+        std::unordered_map<WorldId_t, std::vector<Pos::GlobalChunk>> Chunks_ChangeOrAdd;
         // Более не отслеживаемые регионы
-        std::unordered_map<WorldId_t, std::unordered_set<Pos::GlobalRegion>> Chunks_Lost;
+        std::unordered_map<WorldId_t, std::vector<Pos::GlobalRegion>> Chunks_Lost;
     };
 
 public:

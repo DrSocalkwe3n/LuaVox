@@ -60,26 +60,35 @@ public:
     // states
 };
 
-struct AssetEntry {
-    EnumAssets Type;
-    ResourceId Id;
-    std::string Domain, Key;
-    Resource Res;
-};
-
 /* Интерфейс рендера текущего подключения к серверу */
 class IRenderSession {
 public:
-    // Изменённые ресурсы (кроме звуков)
-    virtual void onAssetsChanges(std::unordered_map<EnumAssets, std::vector<AssetEntry>> resources) = 0;
-    // Потерянные ресурсы
-    virtual void onAssetsLost(std::unordered_map<EnumAssets, std::vector<ResourceId>> resources) = 0;
+    // Объект уведомления об изменениях
+    struct TickSyncData {
+        // Новые или изменённые используемые теперь двоичные ресурсы
+        std::unordered_map<EnumAssets, std::vector<ResourceId>> Assets_ChangeOrAdd;
+        // Более не используемые ресурсы
+        std::unordered_map<EnumAssets, std::vector<ResourceId>> Assets_Lost;
 
-    virtual void onContentDefinesAdd(std::unordered_map<EnumDefContent, std::vector<ResourceId>>) = 0;
-    virtual void onContentDefinesLost(std::unordered_map<EnumDefContent, std::vector<ResourceId>>) = 0;
+        // Новые или изменённые профили контента 
+        std::unordered_map<EnumDefContent, std::vector<ResourceId>> Profiles_ChangeOrAdd;
+        // Более не используемые профили
+        std::unordered_map<EnumDefContent, std::vector<ResourceId>> Profiles_Lost;
 
-    // Сообщаем об изменившихся чанках
-    virtual void onChunksChange(WorldId_t worldId, const std::unordered_set<Pos::GlobalChunk> &changeOrAddList, const std::unordered_set<Pos::GlobalRegion> &remove) = 0;
+        // Новые или изменённые чанки
+        std::unordered_map<WorldId_t, std::unordered_set<Pos::GlobalChunk>> Chunks_ChangeOrAdd;
+        // Более не отслеживаемые регионы
+        std::unordered_map<WorldId_t, std::unordered_set<Pos::GlobalRegion>> Chunks_Lost;
+    };
+
+public:
+    // Серверная сессия собирается обработать данные такток сервера (изменение профилей, ресурсов, прочих игровых данных)
+    virtual void prepareTickSync() = 0;
+    // Началась стадия изменения данных IServerSession, все должны приостановить работу
+    virtual void pushStageTickSync() = 0;
+    // После изменения внутренних данных IServerSession, IRenderSession уведомляется об изменениях
+    virtual void tickSync(TickSyncData& data) = 0;
+
     // Установить позицию для камеры
     virtual void setCameraPos(WorldId_t worldId, Pos::Object pos, glm::quat quat) = 0;
 
@@ -143,19 +152,27 @@ struct DefItemInfo {
 struct DefVoxel_t {};
 struct DefNode_t {};
 
-/* Интерфейс обработчика сессии с сервером */
-class IServerSession {
-    // struct ArrayHasher {
-    //     std::size_t operator()(const Hash_t& a) const {
-    //         std::size_t h = 0;
-    //         for (auto e : a)
-    //             h ^= std::hash<int>{}(e)  + 0x9e3779b9 + (h << 6) + (h >> 2);
-            
-    //         return h;
-    //     }
-    // };
+struct AssetEntry {
+    EnumAssets Type;
+    ResourceId Id;
+    std::string Domain, Key;
+    Resource Res;
+};
 
+/* 
+    Интерфейс обработчика сессии с сервером.
+
+    Данный здесь меняются только меж вызовами 
+    IRenderSession::pushStageTickSync
+    и
+    IRenderSession::tickSync
+*/
+class IServerSession {
 public:
+    // Используемые двоичные ресурсы
+    std::unordered_map<EnumAssets, std::unordered_map<ResourceId, AssetEntry>> Assets;
+
+    // Используемые профили контента
     struct {
         std::unordered_map<DefVoxelId, DefVoxel_t>                DefVoxel;
         std::unordered_map<DefNodeId, DefNode_t>                  DefNode;
@@ -163,17 +180,19 @@ public:
         std::unordered_map<DefPortalId, DefPortalInfo>            DefPortal;
         std::unordered_map<DefEntityId, DefEntityInfo>            DefEntity;
         std::unordered_map<DefItemId, DefItemInfo>                DefItem;
-    } Registry;
+    } Profiles;
 
+    // Видимый контент
     struct {
         std::unordered_map<WorldId_t, WorldInfo>                    Worlds;
         // std::unordered_map<PortalId_t, PortalInfo>                  Portals;
         std::unordered_map<EntityId_t, EntityInfo>                  Entityes;
-    } Data;
+    } Content;
 
     virtual ~IServerSession();
 
-    virtual void atFreeDrawTime(GlobalTime gTime, float dTime) = 0;
+    // Обновление сессии с сервером, может начатся стадия IRenderSession::tickSync
+    virtual void update(GlobalTime gTime, float dTime) = 0;
 };
 
 

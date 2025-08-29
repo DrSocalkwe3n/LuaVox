@@ -64,7 +64,7 @@ public:
 
     // IServerSession
 
-    virtual void atFreeDrawTime(GlobalTime gTime, float dTime) override;
+    virtual void update(GlobalTime gTime, float dTime) override;
     void setRenderSession(IRenderSession* session);
 
 private:
@@ -105,24 +105,38 @@ private:
         std::vector<WorldId_t> LostWorld;
         // std::vector<std::pair<WorldId_t, DefWorld>>
 
+    };
+
+    struct AssetsBindsChange {
         // Новые привязки ресурсов
-        std::vector<AssetBindEntry> AssetsBinds;
+        std::vector<AssetBindEntry> Binds;
         // Потерянные из видимости ресурсы
-        std::vector<ResourceId> AssetsLost[(int) EnumAssets::MAX_ENUM];
+        std::vector<ResourceId> Lost[(int) EnumAssets::MAX_ENUM];
     };
 
     struct {
     // Сюда обращается ветка, обрабатывающая сокет; run()
         // Получение ресурсов с сервера
         std::unordered_map<Hash_t, AssetLoading> AssetsLoading;
-        // Получение привязок
-        
         // Накопление данных за такт сервера
         TickData ThisTickEntry;
+
+    // Сбда обращается ветка обновления IServerSession, накапливая данные до SyncTick
+        // Ресурсы, ожидающие ответа от менеджера кеша
+        std::unordered_map<std::string, std::vector<std::pair<std::string, Hash_t>>> ResourceWait[(int) EnumAssets::MAX_ENUM];
+        // Полученные ресурсы в ожидании стадии синхронизации такта
+        std::unordered_map<EnumAssets, std::vector<AssetEntry>> ReceivedResources;
+        // Полученные изменения связок в ожидании стадии синхронизации такта
+        AssetsBindsChange Binds;
+        // Список ресурсов на которые уже был отправлен запрос на загрузку ресурса
+        std::vector<Hash_t> AlreadyLoading;
+
 
     // Обменный пункт
         // Полученные ресурсы с сервера
         TOS::SpinlockObject<std::vector<AssetEntry>> LoadedAssets;
+        // Изменения в наблюдаемых ресурсах
+        TOS::SpinlockObject<std::vector<AssetsBindsChange>> AssetsBinds;
         // Пакеты обновлений игрового мира
         TOS::SpinlockObject<std::queue<TickData>> TickSequence;
     } AsyncContext;

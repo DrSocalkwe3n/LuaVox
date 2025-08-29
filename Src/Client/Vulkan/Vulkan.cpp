@@ -611,7 +611,7 @@ void Vulkan::run()
 			if(Game.RSession)
 				Game.RSession->pushStage(EnumRenderStage::WorldUpdate);
 
-			Game.Session->atFreeDrawTime(gTime, dTime);
+			Game.Session->update(gTime, dTime);
 		}
 		Screen.State = DrawState::End;
 	}

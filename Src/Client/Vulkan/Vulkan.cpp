@@ -2247,11 +2247,9 @@ void Vulkan::gui_MainMenu() {
 
 	if(ConnectionProgress.Socket) {
 		std::unique_ptr<Net::AsyncSocket> sock = std::move(ConnectionProgress.Socket);
-		Game.RSession = std::make_unique<VulkanRenderSession>();
-		*this << Game.RSession;
 		Game.Session = ServerSession::Create(IOC, std::move(sock));
+		Game.RSession = std::make_unique<VulkanRenderSession>(this, Game.Session.get());
 		Game.Session->setRenderSession(Game.RSession.get());
-		Game.RSession->setServerSession(Game.Session.get());
 		Game.ImGuiInterfaces.push_back(&Vulkan::gui_ConnectedToServer);
 	}
 

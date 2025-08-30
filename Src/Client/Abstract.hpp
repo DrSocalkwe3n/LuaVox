@@ -87,7 +87,7 @@ public:
     // Началась стадия изменения данных IServerSession, все должны приостановить работу
     virtual void pushStageTickSync() = 0;
     // После изменения внутренних данных IServerSession, IRenderSession уведомляется об изменениях
-    virtual void tickSync(TickSyncData& data) = 0;
+    virtual void tickSync(const TickSyncData& data) = 0;
 
     // Установить позицию для камеры
     virtual void setCameraPos(WorldId_t worldId, Pos::Object pos, glm::quat quat) = 0;
@@ -150,7 +150,10 @@ struct DefItemInfo {
 };
 
 struct DefVoxel_t {};
-struct DefNode_t {};
+struct DefNode_t {
+    AssetsTexture TexId = 0;
+
+};
 
 struct AssetEntry {
     EnumAssets Type;

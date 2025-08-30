@@ -10,415 +10,633 @@
 #include "glm/matrix.hpp"
 #include "glm/trigonometric.hpp"
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <memory>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 #include <vulkan/vulkan_core.h>
 #include <fstream>
 
+
 namespace LV::Client::VK {
 
-void VulkanRenderSession::ThreadVertexObj_t::run() {
-    Logger LOG = "ThreadVertex";
-    LOG.debug() << "Старт потока подготовки чанков к рендеру";
+void ChunkMeshGenerator::run(uint8_t id) {
+    Logger LOG = "ChunkMeshGenerator<"+std::to_string(id)+'>';
 
-    // Контейнеры событий
-    std::vector<DefVoxelId> changedDefines_Voxel;
-    std::vector<DefNodeId> changedDefines_Node;
-    std::unordered_map<WorldId_t, std::vector<Pos::GlobalChunk>> changedContent_Chunk;
-    std::unordered_map<WorldId_t, std::vector<Pos::GlobalRegion>> changedContent_RegionRemove;
-
-    // Контейнер новых мешей
-    std::unordered_map<WorldId_t, std::unordered_map<Pos::GlobalRegion, std::unordered_map<Pos::bvec4u, ChunkObj_t>>> chunksUpdate;
-
-    // std::vector<VertexPool<VoxelVertexPoint>::Pointer> ToDelete_Voxels;
-    // std::vector<VertexPool<VoxelVertexPoint>::Pointer> ToDelete_Nodes;
-
-
-    try {
-        while(State.get_read().Stage != EnumRenderStage::Shutdown) {
-            bool hasWork = false, hasVertexChanges = false;
-            auto lock = State.lock();
-
-            // uint64_t now = 0;
-
-            if((!changedContent_RegionRemove.empty() || !chunksUpdate.empty())
-                && (lock->Stage == EnumRenderStage::Render || lock->Stage == EnumRenderStage::WorldUpdate))
-            {
-                // Здесь можно выгрузить готовые данные в ChunkMesh
-                lock->ChunkMesh_IsUse = true;
-                lock.unlock();
-                hasWork = true;
-                // now = Time::nowSystem();
-
-                // Удаляем регионы
-                std::vector<WorldId_t> toRemove;
-                for(auto& [worldId, regions] : changedContent_RegionRemove) {
-                    auto iterWorld = ChunkMesh.find(worldId);
-                    if(iterWorld == ChunkMesh.end())
-                        continue;
-
-                    for(Pos::GlobalRegion regionPos : regions) {
-                        auto iterRegion = iterWorld->second.find(regionPos);
-                        if(iterRegion == iterWorld->second.end())
-                            continue;
-
-                        for(size_t index = 0; index < iterRegion->second.size(); index++) {
-                            auto &chunk = iterRegion->second[index];
-                            chunk.NodeDefines.clear();
-                            chunk.VoxelDefines.clear();
-
-                            VertexPool_Voxels.dropVertexs(chunk.VoxelPointer);
-                            VertexPool_Nodes.dropVertexs(chunk.NodePointer);
-                        }
-
-                        iterWorld->second.erase(iterRegion);
-                    }
-
-                    if(iterWorld->second.empty())
-                        toRemove.push_back(worldId);
-                }
-
-
-                for(WorldId_t worldId : toRemove)
-                    ChunkMesh.erase(ChunkMesh.find(worldId));
-
-                // Добавляем обновлённые меши
-                for(auto& [worldId, regions] : chunksUpdate) {
-                    auto &world = ChunkMesh[worldId];
-
-                    for(auto& [regionPos, chunks] : regions) {
-                        auto &region = world[regionPos];
-                        
-                        for(auto& [chunkPos, chunk] : chunks) {
-                            auto &drawChunk = region[chunkPos.pack()];
-                            VertexPool_Voxels.dropVertexs(drawChunk.VoxelPointer);
-                            VertexPool_Nodes.dropVertexs(drawChunk.NodePointer);
-                            drawChunk = std::move(chunk);
-                        }
-                    }
-                }
-
-
-                State.lock()->ChunkMesh_IsUse = false;
-                changedContent_RegionRemove.clear();
-                chunksUpdate.clear();
-
-                // LOG.debug() << "ChunkMesh_IsUse: " << Time::nowSystem() - now;
-
-                lock = State.lock();
-            }
-
-            if((!changedContent_Chunk.empty())
-                && (lock->Stage == EnumRenderStage::ComposingCommandBuffer || lock->Stage == EnumRenderStage::Render))
-            {
-                // Здесь можно обработать события, и подготовить меши по данным с мира
-                lock->ServerSession_InUse = true;
-                lock.unlock();
-                // now = Time::nowSystem();
-                hasWork = true;
-                // changedContent_Chunk
-
-                std::vector<WorldId_t> toRemove;
-                for(auto& [worldId, chunks] : changedContent_Chunk) {
-                    while(!chunks.empty() && (State.get_read().Stage == EnumRenderStage::ComposingCommandBuffer || State.get_read().Stage == EnumRenderStage::Render)) {
-                        auto& chunkPos = chunks.back();
-                        Pos::GlobalRegion regionPos = chunkPos >> 2;
-                        Pos::bvec4u localPos = chunkPos & 0x3;
-                        
-                        auto& drawChunk = chunksUpdate[worldId][regionPos][localPos];
-                        {
-                            auto iterWorld = SSession->Data.Worlds.find(worldId);
-                            if(iterWorld == SSession->Data.Worlds.end())
-                                goto skip;
-
-                            auto iterRegion = iterWorld->second.Regions.find(regionPos);
-                            if(iterRegion == iterWorld->second.Regions.end())
-                                goto skip;
-
-                            auto& chunk = iterRegion->second.Chunks[localPos.pack()];
-
-                            {
-                                drawChunk.VoxelDefines.resize(chunk.Voxels.size());
-                                for(size_t index = 0; index < chunk.Voxels.size(); index++)
-                                    drawChunk.VoxelDefines[index] = chunk.Voxels[index].VoxelId;
-                                std::sort(drawChunk.VoxelDefines.begin(), drawChunk.VoxelDefines.end());
-                                auto last = std::unique(drawChunk.VoxelDefines.begin(), drawChunk.VoxelDefines.end());
-                                drawChunk.VoxelDefines.erase(last, drawChunk.VoxelDefines.end());
-                                drawChunk.VoxelDefines.shrink_to_fit();
-                            }
-
-                            {
-                                drawChunk.NodeDefines.resize(chunk.Nodes.size());
-                                for(size_t index = 0; index < chunk.Nodes.size(); index++)
-                                    drawChunk.NodeDefines[index] = chunk.Nodes[index].NodeId;
-                                std::sort(drawChunk.NodeDefines.begin(), drawChunk.NodeDefines.end());
-                                auto last = std::unique(drawChunk.NodeDefines.begin(), drawChunk.NodeDefines.end());
-                                drawChunk.NodeDefines.erase(last, drawChunk.NodeDefines.end());
-                                drawChunk.NodeDefines.shrink_to_fit();
-                            }
-
-                            {
-                                std::vector<VoxelVertexPoint> voxels = generateMeshForVoxelChunks(chunk.Voxels);
-                                if(!voxels.empty()) {
-                                    drawChunk.VoxelPointer = VertexPool_Voxels.pushVertexs(std::move(voxels));
-                                    hasVertexChanges = true;
-                                }
-                            }
-
-                            {
-                                std::vector<NodeVertexStatic> nodes = generateMeshForNodeChunks(chunk.Nodes.data());
-
-                                if(!nodes.empty()) {
-                                    drawChunk.NodePointer = VertexPool_Nodes.pushVertexs(std::move(nodes));
-                                    hasVertexChanges = true;
-                                }
-                            }
-                        }
-
-                        skip:
-
-                        chunks.pop_back();
-                    }
-
-                    if(chunks.empty())
-                        toRemove.push_back(worldId);
-                }
-
-                State.lock()->ServerSession_InUse = false;
-
-                for(WorldId_t worldId : toRemove)
-                    changedContent_Chunk.erase(changedContent_Chunk.find(worldId));
-
-                // LOG.debug() << "ServerSession_InUse: " << Time::nowSystem() - now;
-                lock = State.lock();
-            }
-
-            if((!ChangedContent_Chunk.empty() || !ChangedContent_RegionRemove.empty()
-                || !ChangedDefines_Voxel.empty() || !ChangedDefines_Node.empty())
-                    && (lock->Stage != EnumRenderStage::WorldUpdate))
-            {
-                // Переносим все события в локальные хранилища
-                lock->ServerSession_InUse = true;
-                lock.unlock();
-                // now = Time::nowSystem();
-                hasWork = true;
-
-                if(!ChangedContent_Chunk.empty()) {
-                    for(auto& [worldId, chunks] : ChangedContent_Chunk) {
-                        auto &list = changedContent_Chunk[worldId];
-                        list.insert(list.end(), chunks.begin(), chunks.end());
-                    }
-
-                    ChangedContent_Chunk.clear();
-                }
-
-                if(!ChangedContent_RegionRemove.empty()) {
-                    for(auto& [worldId, chunks] : ChangedContent_RegionRemove) {
-                        auto &list = changedContent_RegionRemove[worldId];
-                        list.insert(list.end(), chunks.begin(), chunks.end());
-                    }
-
-                    ChangedContent_RegionRemove.clear();
-                }
-
-                if(!ChangedDefines_Voxel.empty()) {
-                    changedDefines_Voxel.insert(changedDefines_Voxel.end(), ChangedDefines_Voxel.begin(), ChangedDefines_Voxel.end());
-                    ChangedDefines_Voxel.clear();
-
-                    std::sort(changedDefines_Voxel.begin(), changedDefines_Voxel.end());
-                    auto last = std::unique(changedDefines_Voxel.begin(), changedDefines_Voxel.end());
-                    changedDefines_Voxel.erase(last, changedDefines_Voxel.end());
-                }
-
-                if(!ChangedDefines_Node.empty()) {
-                    changedDefines_Node.insert(changedDefines_Node.end(), ChangedDefines_Node.begin(), ChangedDefines_Voxel.end());
-                    ChangedDefines_Node.clear();
-
-                    std::sort(changedDefines_Node.begin(), changedDefines_Node.end());
-                    auto last = std::unique(changedDefines_Node.begin(), changedDefines_Node.end());
-                    changedDefines_Node.erase(last, changedDefines_Node.end());
-                }
-
-                State.lock()->ServerSession_InUse = false;
-
-                // Ищем чанки, которые нужно перерисовать
-                if(!changedDefines_Voxel.empty() || !changedDefines_Node.empty()) {
-                    for(auto& [worldId, regions] : ChunkMesh) {
-                        for(auto& [regionPos, chunks] : regions) {
-                            for(size_t index = 0; index < chunks.size(); index++) {
-                                if(!changedDefines_Voxel.empty() && !chunks[index].VoxelDefines.empty()) {
-                                    bool hasIntersection = false;
-                                    {
-                                        size_t i = 0, j = 0;
-                                        while(i < changedDefines_Voxel.size() && j < chunks[index].VoxelDefines.size()) {
-                                            if (changedDefines_Voxel[i] == chunks[index].VoxelDefines[j]) {
-                                                hasIntersection = true;
-                                                break;
-                                            } else if (changedDefines_Voxel[i] < chunks[index].VoxelDefines[j])
-                                                ++i;
-                                            else
-                                                ++j;
-                                        }
-                                    }
-
-                                    if(hasIntersection) {
-                                        changedContent_Chunk[worldId].push_back((Pos::GlobalChunk(regionPos) << 2) + Pos::GlobalChunk(Pos::bvec4u().unpack(index)));
-                                    }
-                                }
-                                    
-                                if(!changedDefines_Node.empty() && !chunks[index].NodeDefines.empty()) {
-                                    bool hasIntersection = false;
-                                    {
-                                        size_t i = 0, j = 0;
-                                        while(i < changedDefines_Node.size() && j < chunks[index].NodeDefines.size()) {
-                                            if (changedDefines_Node[i] == chunks[index].NodeDefines[j]) {
-                                                hasIntersection = true;
-                                                break;
-                                            } else if (changedDefines_Node[i] < chunks[index].NodeDefines[j])
-                                                ++i;
-                                            else
-                                                ++j;
-                                        }
-                                    }
-
-                                    if(hasIntersection) {
-                                        changedContent_Chunk[worldId].push_back((Pos::GlobalChunk(regionPos) << 2) + Pos::GlobalChunk(Pos::bvec4u().unpack(index)));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                changedDefines_Voxel.clear();
-                changedDefines_Node.clear();
-
-                // Уникализируем
-                for(auto& [worldId, chunks] : changedContent_Chunk) {
-                    std::sort(chunks.begin(), chunks.end());
-                    auto last = std::unique(chunks.begin(), chunks.end());
-                    chunks.erase(last, chunks.end());
-                }
-
-                for(auto& [worldId, regions] : changedContent_RegionRemove) {
-                    std::sort(regions.begin(), regions.end());
-                    auto last = std::unique(regions.begin(), regions.end());
-                    regions.erase(last, regions.end());
-                }
-
-                // LOG.debug() << "WorldUpdate: " << Time::nowSystem() - now;
-                lock = State.lock();
-            }
-
-            lock.unlock();
-
-            if(hasVertexChanges) {
-                VertexPool_Voxels.update(CMDPool);
-                VertexPool_Nodes.update(CMDPool);
-            }
-
-            if(!hasWork)
-                Time::sleep3(3);
-        }
-    } catch(const std::exception &exc) {
-        LOG.error() << exc.what();
+    {
+        std::unique_lock lock(Sync.Mutex);
+        Sync.CountInRun += 1;
+        Sync.CV_CountInRun.notify_all();
     }
 
-    auto lock = State.lock();
-    lock->Stage = EnumRenderStage::Shutdown;
-    lock->ChunkMesh_IsUse = false;
-    lock->ServerSession_InUse = false;
+    LOG.debug() << "Старт потока подготовки чанков к рендеру";
+    int timeWait = 1;
+
+    try {
+        while(!Sync.NeedShutdown) {
+            if(Sync.Stop) {
+                // Мир клиента начинает обрабатывать такты
+                std::unique_lock lock(Sync.Mutex);
+                if(Sync.Stop) {
+                    Sync.CountInRun -= 1;
+                    Sync.CV_CountInRun.notify_all();
+                    Sync.CV_CountInRun.wait(lock, [&](){ return !Sync.Stop; });
+                    Sync.CountInRun += 1;
+                }
+            }
+
+            // Если нет входных запросов - ожидаем
+            if(Input.get_read().empty()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(timeWait));
+                if(++timeWait > 20)
+                    timeWait = 20;
+
+                continue;
+            }
+
+            timeWait = 0;
+
+            WorldId_t wId;
+            Pos::GlobalChunk pos;
+            uint32_t requestId;
+
+            {
+                auto lock = Input.lock();
+                if(lock->empty())
+                    continue;
+
+                std::tuple<WorldId_t, Pos::GlobalChunk, uint32_t> v = lock->front();
+                wId = std::get<0>(v);
+                pos = std::get<1>(v);
+                requestId = std::get<2>(v);
+                lock->pop();
+            }
+
+            ChunkObj_t result;
+            result.RequestId = requestId;
+            result.WId = wId;
+            result.Pos = pos;
+
+            const std::array<Node, 16*16*16>* chunk;
+            const std::vector<VoxelCube>* voxels;
+            // Если на позиции полная нода, то она перекрывает стороны соседей
+            uint8_t fullNodes[18][18][18];
+
+            // Профиль, который используется если на стороне клиента отсутствует нужных профиль
+            DefNode_t defaultProfileNode;
+            // Кеш запросов профилей нод
+            std::unordered_map<DefNodeId, const DefNode_t*> profilesNodeCache;
+            auto getNodeProfile = [&](DefNodeId id) -> const DefNode_t* {
+                auto iterCache = profilesNodeCache.find(id);
+                if(iterCache == profilesNodeCache.end()) {
+                    // Промах кеша
+                    auto iterSS = SS->Profiles.DefNode.find(id);
+                    if(iterSS != SS->Profiles.DefNode.end()) {
+                        return (profilesNodeCache[id] = &iterSS->second);
+                    } else {
+                        // Профиль отсутствует на клиенте
+                        return (profilesNodeCache[id] = &defaultProfileNode);
+                    }
+                } else {
+                    return iterCache->second;
+                }
+            };
+
+            // Воксели пока не рендерим
+            if(auto iterWorld = SS->Content.Worlds.find(wId); iterWorld != SS->Content.Worlds.end()) {
+                Pos::GlobalRegion rPos = pos >> 2;
+                if(auto iterRegion = iterWorld->second.Regions.find(rPos); iterRegion != iterWorld->second.Regions.end()) {
+                    auto& chunkPtr = iterRegion->second.Chunks[Pos::bvec4u(pos & 0x3).pack()];
+                    chunk = &chunkPtr.Nodes;
+                    voxels = &chunkPtr.Voxels;
+                } else
+                    goto end;
+
+                // Собрать чанки с каждой стороны для face culling
+                const std::array<Node, 16*16*16>* chunks[6] = {0};
+
+                for(int var = 0; var < 6; var++) {
+                    Pos::GlobalChunk chunkPos = pos;
+
+                    if(var == 0)
+                        chunkPos += Pos::GlobalChunk(1, 0, 0);
+                    else if(var == 1)
+                        chunkPos += Pos::GlobalChunk(-1, 0, 0);
+                    else if(var == 2)
+                        chunkPos += Pos::GlobalChunk(0, 1, 0);
+                    else if(var == 3)
+                        chunkPos += Pos::GlobalChunk(0, -1, 0);
+                    else if(var == 4)
+                        chunkPos += Pos::GlobalChunk(0, 0, 1);
+                    else if(var == 5)
+                        chunkPos += Pos::GlobalChunk(0, 0, -1);
+
+                    rPos = chunkPos >> 2;
+
+                    if(auto iterRegion = iterWorld->second.Regions.find(rPos); iterRegion != iterWorld->second.Regions.end()) {
+                        auto& chunkPtr = iterRegion->second.Chunks[Pos::bvec4u(chunkPos & 0x3).pack()];
+                        chunks[var] = &chunkPtr.Nodes;
+                    }
+                }
+
+                std::fill(((uint8_t*) fullNodes), ((uint8_t*) fullNodes)+18*18*18, 0);
+
+                std::unordered_map<DefNodeId, bool> nodeFullCuboidCache;
+                auto nodeIsFull = [&](Node node) -> bool {
+                    auto iterCache = nodeFullCuboidCache.find(node.Data);
+                    if(iterCache == nodeFullCuboidCache.end()) {
+                        const DefNode_t* profile = getNodeProfile(node.NodeId);
+                        if(profile->TexId != 0) {
+                            return (nodeFullCuboidCache[node.Data] = true);
+                        }
+
+                        return (nodeFullCuboidCache[node.Data] = false);
+                    } else {
+                        return iterCache->second;
+                    }
+                };
+
+                {
+                    const Node* n = chunk->data();
+                    for(int z = 0; z < 16; z++)
+                        for(int y = 0; y < 16; y++)
+                            for(int x = 0; x < 16; x++) {
+                                fullNodes[x+1][y+1][z+1] = (uint8_t) nodeIsFull(n[x+y*16+z*16*16]);
+                        
+                            }
+                }
+
+                if(chunks[0]) {
+                    const Node* n = chunks[0]->data();
+                    for(int z = 0; z < 16; z++)
+                        for(int y = 0; y < 16; y++) {
+                            fullNodes[17][y+1][z+1] = (uint8_t) nodeIsFull(n[y*16+z*16*16]);
+                        }
+                } else {
+                    for(int z = 0; z < 16; z++)
+                        for(int y = 0; y < 16; y++)
+                            fullNodes[17][y+1][z+1] = 1;
+                }
+
+                if(chunks[1]) {
+                    const Node* n = chunks[1]->data();
+                    for(int z = 0; z < 16; z++)
+                        for(int y = 0; y < 16; y++) {
+                            fullNodes[0][y+1][z+1] = (uint8_t) nodeIsFull(n[15+y*16+z*16*16]);
+                        }
+                } else {
+                    for(int z = 0; z < 16; z++)
+                        for(int y = 0; y < 16; y++)
+                            fullNodes[0][y+1][z+1] = 1;
+                }
+
+                if(chunks[2]) {
+                    const Node* n = chunks[2]->data();
+                    for(int z = 0; z < 16; z++)
+                        for(int x = 0; x < 16; x++) {
+                            fullNodes[x+1][17][z+1] = (uint8_t) nodeIsFull(n[x+0+z*16*16]);
+                        }
+                } else {
+                    for(int z = 0; z < 16; z++)
+                        for(int x = 0; x < 16; x++)
+                            fullNodes[x+1][17][z+1] = 1;
+                }
+
+                if(chunks[3]) {
+                    const Node* n = chunks[3]->data();
+                    for(int z = 0; z < 16; z++)
+                        for(int x = 0; x < 16; x++) {
+                            fullNodes[x+1][0][z+1] = (uint8_t) nodeIsFull(n[x+15*16+z*16*16]);
+                        }
+                } else {
+                    for(int z = 0; z < 16; z++)
+                        for(int x = 0; x < 16; x++)
+                            fullNodes[x+1][0][z+1] = 1;
+                }
+
+                if(chunks[4]) {
+                    const Node* n = chunks[4]->data();
+                    for(int y = 0; y < 16; y++)
+                        for(int x = 0; x < 16; x++) {
+                            fullNodes[x+1][y+1][17] = (uint8_t) nodeIsFull(n[x+y*16+0]);
+                        }
+                } else {
+                    for(int y = 0; y < 16; y++)
+                        for(int x = 0; x < 16; x++)
+                            fullNodes[x+1][y+1][17] = 1;
+                }
+
+                if(chunks[5]) {
+                    const Node* n = chunks[5]->data();
+                    for(int y = 0; y < 16; y++)
+                        for(int x = 0; x < 16; x++) {
+                            fullNodes[x+1][y+1][0] = (uint8_t) nodeIsFull(n[x+y*16+15*16*16]);
+                        }
+                } else {
+                    for(int y = 0; y < 16; y++)
+                        for(int x = 0; x < 16; x++)
+                            fullNodes[x+0][y+1][0] = 1;
+                }
+            }
+
+            {
+                result.NodeDefines.reserve(16*16*16);
+                for(int iter = 0; iter < 16*16*16; iter++)
+                    result.NodeDefines.push_back((*chunk)[iter].NodeId);
+                std::sort(result.NodeDefines.begin(), result.NodeDefines.end());
+                auto eraseIter = std::unique(result.NodeDefines.begin(), result.NodeDefines.end());
+                result.NodeDefines.erase(eraseIter, result.NodeDefines.end());
+                result.NodeDefines.shrink_to_fit();
+            }
+
+            {
+                result.VoxelDefines.reserve(voxels->size());
+                for(const VoxelCube& cube : *voxels)
+                    result.VoxelDefines.push_back(cube.VoxelId);
+
+                std::sort(result.VoxelDefines.begin(), result.VoxelDefines.end());
+                auto eraseIter = std::unique(result.VoxelDefines.begin(), result.VoxelDefines.end());
+                result.VoxelDefines.erase(eraseIter, result.VoxelDefines.end());
+                result.VoxelDefines.shrink_to_fit();
+            }
+
+            // Генерация вершин вокселей
+            {
+
+            }
+
+            // Генерация вершин нод
+            {
+                NodeVertexStatic v;
+
+                // Сбор вершин
+                for(int z = 0; z < 16; z++)
+                for(int y = 0; y < 16; y++)
+                for(int x = 0; x < 16; x++) {
+                    int fullCovered = 0;
+
+                    fullCovered |= fullNodes[x+1][y][z];
+                    fullCovered |= fullNodes[x-1][y][z] << 1;
+                    fullCovered |= fullNodes[x][y+1][z] << 2;
+                    fullCovered |= fullNodes[x][y-1][z] << 3;
+                    fullCovered |= fullNodes[x][y][z+1] << 4;
+                    fullCovered |= fullNodes[x][y][z-1] << 5;
+
+                    if(fullCovered == 0b111111)
+                        continue;
+
+                    const DefNode_t* node = getNodeProfile((*chunk)[x+y*16+z*16*16].NodeId);
+
+                    v.Tex = node->TexId;
+
+                    if(v.Tex == 0)
+                        continue;
+
+                    // Рендерим обычный кубоид
+                    if(!(fullCovered & 0b000100)) {
+                        v.FX = 135+x*16;
+                        v.FY = 135+y*16+16;
+                        v.FZ = 135+z*16+16;
+                        v.TU = 0;
+                        v.TV = 0;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FX += 16;
+                        v.TU = 65535;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FZ -= 16;
+                        v.TV = 65535;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FX = 135+x*16;
+                        v.FZ = 135+z*16+16;
+                        v.TU = 0;
+                        v.TV = 0;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FX += 16;
+                        v.FZ -= 16;
+                        v.TV = 65535;
+                        v.TU = 65535;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FX -= 16;
+                        v.TU = 0;
+                        result.NodeVertexs.push_back(v);
+                    }
+
+                    if(!(fullCovered & 0b001000)) {
+                        v.FX = 135+x*16;
+                        v.FY = 135+y*16;
+                        v.FZ = 135+z*16+16;
+                        v.TU = 0;
+                        v.TV = 0;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FZ -= 16;
+                        v.TV = 65535;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FX += 16;
+                        v.TU = 65535;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FX = 135+x*16;
+                        v.FZ = 135+z*16+16;
+                        v.TU = 0;
+                        v.TV = 0;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FX += 16;
+                        v.FZ -= 16;
+                        v.TV = 65535;
+                        v.TU = 65535;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FZ += 16;
+                        v.TV = 0;
+                        result.NodeVertexs.push_back(v);
+                    }
+
+                    if(!(fullCovered & 0b000001)) {
+                        v.FX = 135+x*16+16;
+                        v.FY = 135+y*16;
+                        v.FZ = 135+z*16+16;
+                        v.TU = 0;
+                        v.TV = 0;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FZ -= 16;
+                        v.TV = 65535;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FY += 16;
+                        v.TU = 65535;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FY = 135+y*16;
+                        v.FZ = 135+z*16+16;
+                        v.TU = 0;
+                        v.TV = 0;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FY += 16;
+                        v.FZ -= 16;
+                        v.TV = 65535;
+                        v.TU = 65535;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FZ += 16;
+                        v.TV = 0;
+                        result.NodeVertexs.push_back(v);
+                    }
+
+                    if(!(fullCovered & 0b000001)) {
+                        v.FX = 135+x*16;
+                        v.FY = 135+y*16;
+                        v.FZ = 135+z*16+16;
+                        v.TU = 0;
+                        v.TV = 0;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FY += 16;
+                        v.TU = 65535;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FZ -= 16;
+                        v.TV = 65535;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FY = 135+y*16;
+                        v.FZ = 135+z*16+16;
+                        v.TU = 0;
+                        v.TV = 0;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FY += 16;
+                        v.FZ -= 16;
+                        v.TV = 65535;
+                        v.TU = 65535;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FY -= 16;
+                        v.TU = 0;
+                        result.NodeVertexs.push_back(v);
+                    }
+
+                    if(!(fullCovered & 0b010000)) {
+                        v.FX = 135+x*16;
+                        v.FY = 135+y*16;
+                        v.FZ = 135+z*16+16;
+                        v.TU = 0;
+                        v.TV = 0;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FX += 16;
+                        v.TU = 65535;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FY += 16;
+                        v.TV = 65535;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FX = 135+x*16;
+                        v.FY = 135+y*16;
+                        v.TU = 0;
+                        v.TV = 0;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FX += 16;
+                        v.FY += 16;
+                        v.TV = 65535;
+                        v.TU = 65535;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FX -= 16;
+                        v.TU = 0;
+                        result.NodeVertexs.push_back(v);
+                    }
+
+                    if(!(fullCovered & 0b100000)) {
+                        v.FX = 135+x*16;
+                        v.FY = 135+y*16;
+                        v.FZ = 135+z*16;
+                        v.TU = 0;
+                        v.TV = 0;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FY += 16;
+                        v.TV = 65535;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FX += 16;
+                        v.TU = 65535;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FX = 135+x*16;
+                        v.FY = 135+y*16;
+                        v.TU = 0;
+                        v.TV = 0;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FX += 16;
+                        v.FY += 16;
+                        v.TV = 65535;
+                        v.TU = 65535;
+                        result.NodeVertexs.push_back(v);
+
+                        v.FY -= 16;
+                        v.TV = 0;
+                        result.NodeVertexs.push_back(v);
+                    }
+                }
+
+                // Вычислить индексы и сократить вершины
+                {
+
+                }
+            }
+
+            end:
+            Output.lock()->emplace_back(std::move(result));
+
+        }
+    } catch(const std::exception& exc) {
+        LOG.debug() << "Ошибка в работе потока:\n" << exc.what();
+        Sync.NeedShutdown = true;
+    }
+
+    {
+        std::unique_lock lock(Sync.Mutex);
+        Sync.CountInRun -= 1;
+        Sync.CV_CountInRun.notify_all();
+    }
 
     LOG.debug() << "Завершение потока подготовки чанков к рендеру";
 }
 
-void VulkanRenderSession::VulkanContext::onUpdate() {
-    // {
-    // Сделать отдельный пул комманд?
-    //     auto lock = ThreadVertexObj.lock();
-    //     lock->VertexPool_Voxels.update(VkInst->Graphics.Pool);
-    //     lock->VertexPool_Nodes.update(VkInst->Graphics.Pool);
-    // }
+std::pair<
+    std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>>,
+    std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>>
+> ModuleChunkPreparator::getChunksForRender(
+    WorldId_t worldId, Pos::Object pos, uint8_t distance, glm::mat4 projView, Pos::GlobalRegion x64offset
+) {
+    Pos::GlobalChunk playerChunk = pos >> Pos::Object_t::BS_Bit >> 4;
+    Pos::GlobalRegion center = playerChunk >> 2;
 
-    MainTest.atlasUpdateDynamicData();
-    LightDummy.atlasUpdateDynamicData();
-}
+    std::vector<std::tuple<float, Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>> vertexVoxels;
+    std::vector<std::tuple<float, Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>> vertexNodes;
 
-VulkanRenderSession::VulkanRenderSession()
-{
-}
+    auto iterWorld = ChunksMesh.find(worldId);
+    if(iterWorld == ChunksMesh.end())
+        return {};
 
-VulkanRenderSession::~VulkanRenderSession() {
-}
+    Frustum fr(projView);
 
-void VulkanRenderSession::free(Vulkan *instance) {
-	if(instance && instance->Graphics.Device)
-	{
-		if(VoxelOpaquePipeline)
-			vkDestroyPipeline(instance->Graphics.Device, VoxelOpaquePipeline, nullptr);
-		if(VoxelTransparentPipeline)
-			vkDestroyPipeline(instance->Graphics.Device, VoxelTransparentPipeline, nullptr);
-		if(NodeStaticOpaquePipeline)
-			vkDestroyPipeline(instance->Graphics.Device, NodeStaticOpaquePipeline, nullptr);
-		if(NodeStaticTransparentPipeline)
-			vkDestroyPipeline(instance->Graphics.Device, NodeStaticTransparentPipeline, nullptr);
+    for(int z = -distance; z <= distance; z++) {
+        for(int y = -distance; y <= distance; y++) {
+            for(int x = -distance; x <= distance; x++) {
+                Pos::GlobalRegion region = center + Pos::GlobalRegion(x, y, z);
+                glm::vec3 begin = glm::vec3(region - x64offset) * 64.f;
+                glm::vec3 end = begin + glm::vec3(64.f);
 
-		if(MainAtlas_LightMap_PipelineLayout)
-			vkDestroyPipelineLayout(instance->Graphics.Device, MainAtlas_LightMap_PipelineLayout, nullptr);
-            
-		if(MainAtlasDescLayout)
-			vkDestroyDescriptorSetLayout(instance->Graphics.Device, MainAtlasDescLayout, nullptr);
-		if(VoxelLightMapDescLayout)
-			vkDestroyDescriptorSetLayout(instance->Graphics.Device, VoxelLightMapDescLayout, nullptr);
+                if(!fr.IsBoxVisible(begin, end))
+                    continue;
+
+                auto iterRegion = iterWorld->second.find(region);
+                if(iterRegion == iterWorld->second.end()) 
+                    continue;
+
+                Pos::GlobalChunk local = Pos::GlobalChunk(region) << 2;
+
+                for(size_t index = 0; index < iterRegion->second.size(); index++) {
+                    Pos::bvec4u localPos;
+                    localPos.unpack(index);
+
+                    glm::vec3 chunkPos = begin+glm::vec3(localPos)*16.f;
+                    if(!fr.IsBoxVisible(chunkPos, chunkPos+glm::vec3(16)))
+                        continue;
+
+                    auto &chunk = iterRegion->second[index];
+                    
+                    float distance;
+
+                    if(chunk.VoxelPointer || chunk.NodePointer) {
+                        Pos::GlobalChunk cp = local+Pos::GlobalChunk(localPos)-playerChunk;
+                        distance = cp.x*cp.x+cp.y*cp.y+cp.z*cp.z;
+                    }
+
+                    if(chunk.VoxelPointer) {
+                        vertexVoxels.emplace_back(distance, local+Pos::GlobalChunk(localPos), VertexPool_Voxels.map(chunk.VoxelPointer), chunk.VoxelPointer.VertexCount);
+                    }
+
+                    if(chunk.NodePointer) {
+                        vertexNodes.emplace_back(distance, local+Pos::GlobalChunk(localPos), VertexPool_Nodes.map(chunk.NodePointer), chunk.NodePointer.VertexCount);
+                    }
+                }
+            }
+        }
+    }
+
+    auto sortByDistance = []
+    (
+        const std::tuple<float, Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>& a, 
+        const std::tuple<float, Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>& b
+    ) {
+        return std::get<0>(a) < std::get<0>(b);
+    };
     
-        if(DescriptorPool)
-            vkDestroyDescriptorPool(instance->Graphics.Device, DescriptorPool, nullptr);
-    }
+    std::sort(vertexVoxels.begin(), vertexVoxels.end(), sortByDistance);
+    std::sort(vertexNodes.begin(), vertexNodes.end(), sortByDistance);
 
-    VoxelOpaquePipeline = VK_NULL_HANDLE;
-    VoxelTransparentPipeline = VK_NULL_HANDLE;
-    NodeStaticOpaquePipeline = VK_NULL_HANDLE;
-    NodeStaticTransparentPipeline = VK_NULL_HANDLE;
+    std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>> resVertexVoxels;
+    std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>> resVertexNodes;
 
-    MainAtlas_LightMap_PipelineLayout = VK_NULL_HANDLE;
+    resVertexVoxels.reserve(vertexVoxels.size());
+    resVertexNodes.reserve(vertexNodes.size());
 
-    MainAtlasDescLayout = VK_NULL_HANDLE;
-    VoxelLightMapDescLayout = VK_NULL_HANDLE;
+    for(const auto& [d, pos, ptr, count] : vertexVoxels)
+        resVertexVoxels.emplace_back(pos, ptr, count);
 
-    DescriptorPool = VK_NULL_HANDLE;
-    MainAtlasDescriptor = VK_NULL_HANDLE;
-    VoxelLightMapDescriptor = VK_NULL_HANDLE;
+    for(const auto& [d, pos, ptr, count] : vertexNodes)
+        resVertexNodes.emplace_back(pos, ptr, count);
 
-    VKCTX = nullptr;
+    return std::pair{resVertexVoxels, resVertexNodes};
 }
 
-void VulkanRenderSession::init(Vulkan *instance) {
-    if(VkInst != instance) {
-        VkInst = instance;
-    }
+VulkanRenderSession::VulkanRenderSession(Vulkan *vkInst, IServerSession *serverSession)
+    :   VkInst(vkInst),
+        ServerSession(serverSession),
+        MCP(vkInst, serverSession),
+        MainTest(vkInst), LightDummy(vkInst),
+        TestQuad(vkInst, sizeof(NodeVertexStatic)*6*3*2)
+{
+    assert(vkInst);
+    assert(serverSession);
 
-    // Разметка дескрипторов
-    if(!DescriptorPool) {
-        std::vector<VkDescriptorPoolSize> pool_sizes = {
-          {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
-          {VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 3},
-          {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3}
+    {
+        std::vector<VkDescriptorPoolSize> poolSizes {
+            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
+            {VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 3},
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3}
         };
 
-        VkDescriptorPoolCreateInfo descriptor_pool = {};
-        descriptor_pool.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        descriptor_pool.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-        descriptor_pool.maxSets = 8;
-        descriptor_pool.poolSizeCount = (uint32_t) pool_sizes.size();
-        descriptor_pool.pPoolSizes = pool_sizes.data();
+        VkDescriptorPoolCreateInfo descriptorPool = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+            .maxSets = 8,
+            .poolSizeCount = (uint32_t) poolSizes.size(),
+            .pPoolSizes = poolSizes.data()
+        };
 
-        vkAssert(!vkCreateDescriptorPool(VkInst->Graphics.Device, &descriptor_pool, nullptr,
-                                     &DescriptorPool));
+        vkAssert(!vkCreateDescriptorPool(VkInst->Graphics.Device, &descriptorPool, nullptr,
+                                        &DescriptorPool));
     }
 
-    if(!MainAtlasDescLayout) {
+    {
 	    std::vector<VkDescriptorSetLayoutBinding> shaderLayoutBindings =
         {
             {
@@ -446,10 +664,10 @@ void VulkanRenderSession::init(Vulkan *instance) {
 		};
 
         vkAssert(!vkCreateDescriptorSetLayout(
-            instance->Graphics.Device, &descriptorLayout, nullptr, &MainAtlasDescLayout));
+            VkInst->Graphics.Device, &descriptorLayout, nullptr, &MainAtlasDescLayout));
     }
 
-    if(!MainAtlasDescriptor) {
+    {
         VkDescriptorSetAllocateInfo ciAllocInfo =
         {
                 .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -459,10 +677,10 @@ void VulkanRenderSession::init(Vulkan *instance) {
                 .pSetLayouts = &MainAtlasDescLayout
         };
 
-        vkAssert(!vkAllocateDescriptorSets(instance->Graphics.Device, &ciAllocInfo, &MainAtlasDescriptor));
+        vkAssert(!vkAllocateDescriptorSets(VkInst->Graphics.Device, &ciAllocInfo, &MainAtlasDescriptor));
     }
 
-    if(!VoxelLightMapDescLayout) {
+    {
 	    std::vector<VkDescriptorSetLayoutBinding> shaderLayoutBindings =
         {
             {
@@ -489,10 +707,10 @@ void VulkanRenderSession::init(Vulkan *instance) {
 			.pBindings = shaderLayoutBindings.data()
 		};
 
-        vkAssert(!vkCreateDescriptorSetLayout( instance->Graphics.Device, &descriptorLayout, nullptr, &VoxelLightMapDescLayout));
+        vkAssert(!vkCreateDescriptorSetLayout(VkInst->Graphics.Device, &descriptorLayout, nullptr, &VoxelLightMapDescLayout));
     }
 
-    if(!VoxelLightMapDescriptor) {
+    {
         VkDescriptorSetAllocateInfo ciAllocInfo =
         {
                 .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -502,37 +720,27 @@ void VulkanRenderSession::init(Vulkan *instance) {
                 .pSetLayouts = &VoxelLightMapDescLayout
         };
 
-        vkAssert(!vkAllocateDescriptorSets(instance->Graphics.Device, &ciAllocInfo, &VoxelLightMapDescriptor));
+        vkAssert(!vkAllocateDescriptorSets(VkInst->Graphics.Device, &ciAllocInfo, &VoxelLightMapDescriptor));
     }
 
-    std::vector<VkPushConstantRange> worldWideShaderPushConstants =
+    
+    MainTest.atlasAddCallbackOnUniformChange([this]() -> bool {
+        updateDescriptor_MainAtlas();
+        return true;
+    });
+
+    LightDummy.atlasAddCallbackOnUniformChange([this]() -> bool {
+        updateDescriptor_VoxelsLight();
+        return true;
+    });
+
     {
-        {
-            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT,
-            .offset = 0,
-            .size = uint32_t(sizeof(WorldPCO))
-        }
-    };
+        uint16_t texId = MainTest.atlasAddTexture(2, 2);
+        uint32_t colors[4] = {0xfffffffful, 0x00fffffful, 0xffffff00ul, 0xff00fffful};
+        MainTest.atlasChangeTextureData(texId, (const uint32_t*) colors);
+    }
 
-    if(!VKCTX) {
-        VKCTX = std::make_shared<VulkanContext>(VkInst);
-        
-        VKCTX->MainTest.atlasAddCallbackOnUniformChange([this]() -> bool {
-            updateDescriptor_MainAtlas();
-            return true;
-        });
-
-        VKCTX->LightDummy.atlasAddCallbackOnUniformChange([this]() -> bool {
-            updateDescriptor_VoxelsLight();
-            return true;
-        });
-
-        {
-            uint16_t texId = VKCTX->MainTest.atlasAddTexture(2, 2);
-            uint32_t colors[4] = {0xfffffffful, 0x00fffffful, 0xffffff00ul, 0xff00fffful};
-            VKCTX->MainTest.atlasChangeTextureData(texId, (const uint32_t*) colors);
-        }
-
+    {
         int width, height;
         bool hasAlpha;
         for(const char *path : {
@@ -544,116 +752,123 @@ void VulkanRenderSession::init(Vulkan *instance) {
                 "frame.png"
         }) {
             ByteBuffer image = VK::loadPNG(getResource(std::string("textures/") + path)->makeStream().Stream, width, height, hasAlpha);
-            uint16_t texId = VKCTX->MainTest.atlasAddTexture(width, height);
-            VKCTX->MainTest.atlasChangeTextureData(texId, (const uint32_t*) image.data());
-        }
-
-        /*
-        x left -1 ~ right 1
-        y up 1 ~ down -1
-        z near 0 ~ far -1
-
-        glm
-
-        */
-
-        {
-            NodeVertexStatic *array = (NodeVertexStatic*) VKCTX->TestQuad.mapMemory();
-            array[0] = {135,    135,    135, 0, 0, 0, 0, 65535,      0};
-            array[1] = {135,    135+16,   135, 0, 0, 0, 0, 0,  65535};
-            array[2] = {135+16, 135+16, 135, 0, 0, 0, 0, 0,  65535};
-            array[3] = {135,    135,    135, 0, 0, 0, 0, 65535,      0};
-            array[4] = {135+16, 135+16, 135, 0, 0, 0, 0, 0,  65535};
-            array[5] = {135+16, 135, 135, 0, 0, 0, 0, 0,      0};
-
-            array[6] = {135,    135,    135+16, 0, 0, 0, 0, 0,      0};
-            array[7] = {135+16,    135,   135+16, 0, 0, 0, 0, 65535,  0};
-            array[8] = {135+16, 135+16, 135+16, 0, 0, 0, 0, 65535,  65535};
-            array[9] = {135,    135,    135+16, 0, 0, 0, 0, 0,      0};
-            array[10] = {135+16, 135+16, 135+16, 0, 0, 0, 0, 65535,  65535};
-            array[11] = {135, 135+16, 135+16, 0, 0, 0, 0, 0,      65535};
-
-            array[12] = {135,    135,    135, 0, 0, 0, 0, 0,      0};
-            array[13] = {135,    135,   135+16, 0, 0, 0, 0, 65535,  0};
-            array[14] = {135, 135+16, 135+16, 0, 0, 0, 0, 65535,  65535};
-            array[15] = {135,    135,    135, 0, 0, 0, 0, 0,      0};
-            array[16] = {135, 135+16, 135+16, 0, 0, 0, 0, 65535,  65535};
-            array[17] = {135, 135+16, 135, 0, 0, 0, 0, 0,      65535};
-
-            array[18] = {135+16,    135,    135+16, 0, 0, 0, 0, 0,      0};
-            array[19] = {135+16,    135,   135, 0, 0, 0, 0, 65535,  0};
-            array[20] = {135+16, 135+16, 135, 0, 0, 0, 0, 65535,  65535};
-            array[21] = {135+16,    135,    135+16, 0, 0, 0, 0, 0,      0};
-            array[22] = {135+16, 135+16, 135, 0, 0, 0, 0, 65535,  65535};
-            array[23] = {135+16, 135+16, 135+16, 0, 0, 0, 0, 0,      65535};
-
-            array[24] = {135,    135,    135, 0, 0, 0, 0, 0,      0};
-            array[25] = {135+16,    135,   135, 0, 0, 0, 0, 65535,  0};
-            array[26] = {135+16, 135, 135+16, 0, 0, 0, 0, 65535,  65535};
-            array[27] = {135,    135,    135, 0, 0, 0, 0, 0,      0};
-            array[28] = {135+16, 135, 135+16, 0, 0, 0, 0, 65535,  65535};
-            array[29] = {135, 135, 135+16, 0, 0, 0, 0, 0,      65535};
-
-            array[30] = {135,    135+16,    135+16, 0, 0, 0, 0, 0,      0};
-            array[31] = {135+16,    135+16,   135+16, 0, 0, 0, 0, 65535,  0};
-            array[32] = {135+16, 135+16, 135, 0, 0, 0, 0, 65535,  65535};
-            array[33] = {135,    135+16,    135+16, 0, 0, 0, 0, 0,      0};
-            array[34] = {135+16, 135+16, 135, 0, 0, 0, 0, 65535,  65535};
-            array[35] = {135, 135+16, 135, 0, 0, 0, 0, 0,      65535};
-
-            for(int iter = 0; iter < 36; iter++) {
-                array[iter].Tex = 6;
-                if(array[iter].FX == 135)
-                    array[iter].FX--;
-                else
-                    array[iter].FX++;
-
-                if(array[iter].FY == 135)
-                    array[iter].FY--;
-                else
-                    array[iter].FY++;
-
-                if(array[iter].FZ == 135)
-                    array[iter].FZ--;
-                else
-                    array[iter].FZ++;
-            }
-
-            VKCTX->TestQuad.unMapMemory();
-        }
-
-        {
-            std::vector<VoxelCube> cubes;
-
-            cubes.push_back({0, 0, Pos::bvec256u{0, 0, 0}, Pos::bvec256u{0, 0, 0}});
-            cubes.push_back({1, 0, Pos::bvec256u{255, 0, 0}, Pos::bvec256u{0, 0, 0}});
-            cubes.push_back({1, 0, Pos::bvec256u{0, 255, 0}, Pos::bvec256u{0, 0, 0}});
-            cubes.push_back({1, 0, Pos::bvec256u{0, 0, 255}, Pos::bvec256u{0, 0, 0}});
-            cubes.push_back({2, 0, Pos::bvec256u{255, 255, 0}, Pos::bvec256u{0, 0, 0}});
-            cubes.push_back({2, 0, Pos::bvec256u{0, 255, 255}, Pos::bvec256u{0, 0, 0}});
-            cubes.push_back({2, 0, Pos::bvec256u{255, 0, 255}, Pos::bvec256u{0, 0, 0}});
-            cubes.push_back({3, 0, Pos::bvec256u{255, 255, 255}, Pos::bvec256u{0, 0, 0}});
-
-            cubes.push_back({4, 0, Pos::bvec256u{64, 64, 64}, Pos::bvec256u{127, 127, 127}});
-
-            std::vector<VoxelVertexPoint> vertexs = generateMeshForVoxelChunks(cubes);
-
-            if(!vertexs.empty()) {
-                VKCTX->TestVoxel.emplace(VkInst, vertexs.size()*sizeof(VoxelVertexPoint));
-                std::copy(vertexs.data(), vertexs.data()+vertexs.size(), (VoxelVertexPoint*) VKCTX->TestVoxel->mapMemory());
-                VKCTX->TestVoxel->unMapMemory();
-            }
+            uint16_t texId = MainTest.atlasAddTexture(width, height);
+            MainTest.atlasChangeTextureData(texId, (const uint32_t*) image.data());
         }
     }
 
-    VKCTX->setServerSession(ServerSession);
+    /*
+    x left -1 ~ right 1
+    y up 1 ~ down -1
+    z near 0 ~ far -1
+
+    glm
+
+    */
+
+    {
+        NodeVertexStatic *array = (NodeVertexStatic*) TestQuad.mapMemory();
+        array[0] = {135,    135,    135, 0, 0, 0, 0, 65535,      0};
+        array[1] = {135,    135+16,   135, 0, 0, 0, 0, 0,  65535};
+        array[2] = {135+16, 135+16, 135, 0, 0, 0, 0, 0,  65535};
+        array[3] = {135,    135,    135, 0, 0, 0, 0, 65535,      0};
+        array[4] = {135+16, 135+16, 135, 0, 0, 0, 0, 0,  65535};
+        array[5] = {135+16, 135, 135, 0, 0, 0, 0, 0,      0};
+
+        array[6] = {135,    135,    135+16, 0, 0, 0, 0, 0,      0};
+        array[7] = {135+16,    135,   135+16, 0, 0, 0, 0, 65535,  0};
+        array[8] = {135+16, 135+16, 135+16, 0, 0, 0, 0, 65535,  65535};
+        array[9] = {135,    135,    135+16, 0, 0, 0, 0, 0,      0};
+        array[10] = {135+16, 135+16, 135+16, 0, 0, 0, 0, 65535,  65535};
+        array[11] = {135, 135+16, 135+16, 0, 0, 0, 0, 0,      65535};
+
+        array[12] = {135,    135,    135, 0, 0, 0, 0, 0,      0};
+        array[13] = {135,    135,   135+16, 0, 0, 0, 0, 65535,  0};
+        array[14] = {135, 135+16, 135+16, 0, 0, 0, 0, 65535,  65535};
+        array[15] = {135,    135,    135, 0, 0, 0, 0, 0,      0};
+        array[16] = {135, 135+16, 135+16, 0, 0, 0, 0, 65535,  65535};
+        array[17] = {135, 135+16, 135, 0, 0, 0, 0, 0,      65535};
+
+        array[18] = {135+16,    135,    135+16, 0, 0, 0, 0, 0,      0};
+        array[19] = {135+16,    135,   135, 0, 0, 0, 0, 65535,  0};
+        array[20] = {135+16, 135+16, 135, 0, 0, 0, 0, 65535,  65535};
+        array[21] = {135+16,    135,    135+16, 0, 0, 0, 0, 0,      0};
+        array[22] = {135+16, 135+16, 135, 0, 0, 0, 0, 65535,  65535};
+        array[23] = {135+16, 135+16, 135+16, 0, 0, 0, 0, 0,      65535};
+
+        array[24] = {135,    135,    135, 0, 0, 0, 0, 0,      0};
+        array[25] = {135+16,    135,   135, 0, 0, 0, 0, 65535,  0};
+        array[26] = {135+16, 135, 135+16, 0, 0, 0, 0, 65535,  65535};
+        array[27] = {135,    135,    135, 0, 0, 0, 0, 0,      0};
+        array[28] = {135+16, 135, 135+16, 0, 0, 0, 0, 65535,  65535};
+        array[29] = {135, 135, 135+16, 0, 0, 0, 0, 0,      65535};
+
+        array[30] = {135,    135+16,    135+16, 0, 0, 0, 0, 0,      0};
+        array[31] = {135+16,    135+16,   135+16, 0, 0, 0, 0, 65535,  0};
+        array[32] = {135+16, 135+16, 135, 0, 0, 0, 0, 65535,  65535};
+        array[33] = {135,    135+16,    135+16, 0, 0, 0, 0, 0,      0};
+        array[34] = {135+16, 135+16, 135, 0, 0, 0, 0, 65535,  65535};
+        array[35] = {135, 135+16, 135, 0, 0, 0, 0, 0,      65535};
+
+        for(int iter = 0; iter < 36; iter++) {
+            array[iter].Tex = 6;
+            if(array[iter].FX == 135)
+                array[iter].FX--;
+            else
+                array[iter].FX++;
+
+            if(array[iter].FY == 135)
+                array[iter].FY--;
+            else
+                array[iter].FY++;
+
+            if(array[iter].FZ == 135)
+                array[iter].FZ--;
+            else
+                array[iter].FZ++;
+        }
+
+        TestQuad.unMapMemory();
+    }
+
+    {
+        std::vector<VoxelCube> cubes;
+
+        cubes.push_back({0, 0, Pos::bvec256u{0, 0, 0}, Pos::bvec256u{0, 0, 0}});
+        cubes.push_back({1, 0, Pos::bvec256u{255, 0, 0}, Pos::bvec256u{0, 0, 0}});
+        cubes.push_back({1, 0, Pos::bvec256u{0, 255, 0}, Pos::bvec256u{0, 0, 0}});
+        cubes.push_back({1, 0, Pos::bvec256u{0, 0, 255}, Pos::bvec256u{0, 0, 0}});
+        cubes.push_back({2, 0, Pos::bvec256u{255, 255, 0}, Pos::bvec256u{0, 0, 0}});
+        cubes.push_back({2, 0, Pos::bvec256u{0, 255, 255}, Pos::bvec256u{0, 0, 0}});
+        cubes.push_back({2, 0, Pos::bvec256u{255, 0, 255}, Pos::bvec256u{0, 0, 0}});
+        cubes.push_back({3, 0, Pos::bvec256u{255, 255, 255}, Pos::bvec256u{0, 0, 0}});
+
+        cubes.push_back({4, 0, Pos::bvec256u{64, 64, 64}, Pos::bvec256u{127, 127, 127}});
+
+        std::vector<VoxelVertexPoint> vertexs = generateMeshForVoxelChunks(cubes);
+
+        if(!vertexs.empty()) {
+            TestVoxel.emplace(VkInst, vertexs.size()*sizeof(VoxelVertexPoint));
+            std::copy(vertexs.data(), vertexs.data()+vertexs.size(), (VoxelVertexPoint*) TestVoxel->mapMemory());
+            TestVoxel->unMapMemory();
+        }
+    }
 
     updateDescriptor_MainAtlas();
     updateDescriptor_VoxelsLight();
     updateDescriptor_ChunksLight();
 
     // Разметка графических конвейеров
-    if(!MainAtlas_LightMap_PipelineLayout) {
+    {
+        std::vector<VkPushConstantRange> worldWideShaderPushConstants =
+        {
+            {
+                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT,
+                .offset = 0,
+                .size = uint32_t(sizeof(WorldPCO))
+            }
+        };
+
         std::vector<VkDescriptorSetLayout> layouts =
         {
             MainAtlasDescLayout,
@@ -671,7 +886,7 @@ void VulkanRenderSession::init(Vulkan *instance) {
 			.pPushConstantRanges = worldWideShaderPushConstants.data()
 		};
         
-		vkAssert(!vkCreatePipelineLayout(instance->Graphics.Device, &pPipelineLayoutCreateInfo, nullptr, &MainAtlas_LightMap_PipelineLayout));
+		vkAssert(!vkCreatePipelineLayout(VkInst->Graphics.Device, &pPipelineLayoutCreateInfo, nullptr, &MainAtlas_LightMap_PipelineLayout));
     }
 
     // Настройка мультисемплинга
@@ -689,14 +904,17 @@ void VulkanRenderSession::init(Vulkan *instance) {
         .alphaToOneEnable = false
     };
 
-    VkPipelineCacheCreateInfo infoPipelineCache;
-    memset(&infoPipelineCache, 0, sizeof(infoPipelineCache));
-    infoPipelineCache.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
 
-    // Конвейеры для вокселей
-    if(!VoxelOpaquePipeline || !VoxelTransparentPipeline
-            || !NodeStaticOpaquePipeline || !NodeStaticTransparentPipeline)
+    // Конвейеры для вокселей и нод
     {
+        VkPipelineCacheCreateInfo infoPipelineCache {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .initialDataSize = 0,
+            .pInitialData = nullptr
+        };
+        
         // Для статичных непрозрачных и полупрозрачных вокселей
         if(!VoxelShaderVertex)
             VoxelShaderVertex = VkInst->createShader(getResource("shaders/chunk/voxel.vert.bin")->makeView());
@@ -906,14 +1124,14 @@ void VulkanRenderSession::init(Vulkan *instance) {
             .pColorBlendState = &cb,
             .pDynamicState = &dynamicState,
             .layout = MainAtlas_LightMap_PipelineLayout,
-            .renderPass = instance->Graphics.RenderPass,
+            .renderPass = VkInst->Graphics.RenderPass,
             .subpass = 0,
             .basePipelineHandle = nullptr,
             .basePipelineIndex = 0
         };
 
         if(!VoxelOpaquePipeline)
-            vkAssert(!vkCreateGraphicsPipelines(instance->Graphics.Device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &VoxelOpaquePipeline));
+            vkAssert(!vkCreateGraphicsPipelines(VkInst->Graphics.Device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &VoxelOpaquePipeline));
 
         if(!VoxelTransparentPipeline) {
             shaderStages[2].module = *VoxelShaderFragmentTransparent,
@@ -930,7 +1148,7 @@ void VulkanRenderSession::init(Vulkan *instance) {
                 .colorWriteMask = 0xf
             };
 
-           vkAssert(!vkCreateGraphicsPipelines(instance->Graphics.Device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &VoxelTransparentPipeline));
+           vkAssert(!vkCreateGraphicsPipelines(VkInst->Graphics.Device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &VoxelTransparentPipeline));
         }
 
         // Для статичных непрозрачных и полупрозрачных нод
@@ -965,7 +1183,7 @@ void VulkanRenderSession::init(Vulkan *instance) {
         };
 
         if(!NodeStaticOpaquePipeline) {
-            vkAssert(!vkCreateGraphicsPipelines(instance->Graphics.Device, VK_NULL_HANDLE,
+            vkAssert(!vkCreateGraphicsPipelines(VkInst->Graphics.Device, VK_NULL_HANDLE,
                  1, &pipeline, nullptr, &NodeStaticOpaquePipeline));
         }
 
@@ -984,63 +1202,50 @@ void VulkanRenderSession::init(Vulkan *instance) {
                 .colorWriteMask = 0xf
             };
 
-            vkAssert(!vkCreateGraphicsPipelines(instance->Graphics.Device, VK_NULL_HANDLE, 
+            vkAssert(!vkCreateGraphicsPipelines(VkInst->Graphics.Device, VK_NULL_HANDLE, 
                 1, &pipeline, nullptr, &NodeStaticTransparentPipeline));
         }
     }
 }
 
-void VulkanRenderSession::onAssetsChanges(std::unordered_map<EnumAssets, std::vector<AssetEntry>> resources) {
+VulkanRenderSession::~VulkanRenderSession() {
+    if(VoxelOpaquePipeline)
+        vkDestroyPipeline(VkInst->Graphics.Device, VoxelOpaquePipeline, nullptr);
+    if(VoxelTransparentPipeline)
+        vkDestroyPipeline(VkInst->Graphics.Device, VoxelTransparentPipeline, nullptr);
+    if(NodeStaticOpaquePipeline)
+        vkDestroyPipeline(VkInst->Graphics.Device, NodeStaticOpaquePipeline, nullptr);
+    if(NodeStaticTransparentPipeline)
+        vkDestroyPipeline(VkInst->Graphics.Device, NodeStaticTransparentPipeline, nullptr);
 
-}
-
-void VulkanRenderSession::onAssetsLost(std::unordered_map<EnumAssets, std::vector<ResourceId>> resources) {
-
-}
-
-void VulkanRenderSession::onContentDefinesAdd(std::unordered_map<EnumDefContent, std::vector<ResourceId>>) {
-
-}
-
-void VulkanRenderSession::onContentDefinesLost(std::unordered_map<EnumDefContent, std::vector<ResourceId>>) {
-
-}
-
-void VulkanRenderSession::onChunksChange(WorldId_t worldId, const std::unordered_set<Pos::GlobalChunk>& changeOrAddList, const std::unordered_set<Pos::GlobalRegion>& remove) {
-    std::unordered_map<WorldId_t, std::vector<Pos::GlobalChunk>> chunkChanges;
-    if(!changeOrAddList.empty())
-        chunkChanges[worldId] = std::vector<Pos::GlobalChunk>(changeOrAddList.begin(), changeOrAddList.end());
-    
-    std::unordered_map<WorldId_t, std::vector<Pos::GlobalRegion>> regionRemove;
-    if(!remove.empty())
-        regionRemove[worldId] = std::vector<Pos::GlobalRegion>(remove.begin(), remove.end());
-    
-    VKCTX->ThreadVertexObj.onContentChunkChange(chunkChanges, regionRemove);
-    
-        // if(chunk.Voxels.empty()) {
-        //     VKCTX->VertexPool_Voxels.dropVertexs(std::get<0>(buffers));
-        // } else {
-        //     std::vector<VoxelVertexPoint> vertexs = generateMeshForVoxelChunks(chunk.Voxels);
-        //     auto &voxels = std::get<0>(buffers);
-        //     VKCTX->VertexPool_Voxels.relocate(voxels, std::move(vertexs));
-        // }
-
-        // std::vector<NodeVertexStatic> vertexs2 = generateMeshForNodeChunks(chunk.Nodes.data());
-
-        // if(vertexs2.empty()) {
-        //     VKCTX->VertexPool_Nodes.dropVertexs(std::get<1>(buffers));
-        // } else {
-        //     auto &nodes = std::get<1>(buffers);
-        //     VKCTX->VertexPool_Nodes.relocate(nodes, std::move(vertexs2));
-        // }
+    if(MainAtlas_LightMap_PipelineLayout)
+        vkDestroyPipelineLayout(VkInst->Graphics.Device, MainAtlas_LightMap_PipelineLayout, nullptr);
         
-        // if(!std::get<0>(buffers) && !std::get<1>(buffers)) {
-        //     auto iter = table.find(pos);
-        //     if(iter != table.end())
-        //         table.erase(iter);
-        // }
+    if(MainAtlasDescLayout)
+        vkDestroyDescriptorSetLayout(VkInst->Graphics.Device, MainAtlasDescLayout, nullptr);
+    if(VoxelLightMapDescLayout)
+        vkDestroyDescriptorSetLayout(VkInst->Graphics.Device, VoxelLightMapDescLayout, nullptr);
+
+    if(DescriptorPool)
+        vkDestroyDescriptorPool(VkInst->Graphics.Device, DescriptorPool, nullptr);
 }
 
+void VulkanRenderSession::prepareTickSync() {
+    MCP.prepareTickSync();
+}
+
+void VulkanRenderSession::pushStageTickSync() {
+    MCP.pushStageTickSync();
+}
+
+void VulkanRenderSession::tickSync(const TickSyncData& data) {
+    // Изменение ассетов
+    // Профили
+    // Чанки
+
+    ModuleChunkPreparator::TickSyncData mcpData;
+    MCP.tickSync(mcpData);
+}
 
 void VulkanRenderSession::setCameraPos(WorldId_t worldId, Pos::Object pos, glm::quat quat) {
     WorldId = worldId;
@@ -1053,9 +1258,8 @@ void VulkanRenderSession::setCameraPos(WorldId_t worldId, Pos::Object pos, glm::
 }
 
 void VulkanRenderSession::beforeDraw() {
-    if(VKCTX) {
-        VKCTX->onUpdate();
-    }
+    MainTest.atlasUpdateDynamicData();
+    LightDummy.atlasUpdateDynamicData();
 }
 
 void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuffer drawCmd) {
@@ -1065,12 +1269,6 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
         X64Delta = glm::vec3(Pos-X64Offset) / float(Pos::Object_t::BS);
     }
 
-    // Сместить в координаты игрока, повернуть относительно взгляда проецировать на экран
-    // Изначально взгляд в z-1
-    // PCO.ProjView = glm::mat4(1);
-    // PCO.ProjView = glm::translate(PCO.ProjView, -glm::vec3(Pos.x, Pos.y, Pos.z)/float(Pos::Object_t::BS));
-    // PCO.ProjView = proj*glm::mat4(Quat)*PCO.ProjView;
-    // PCO.Model = glm::mat4(1);
 
     // vkCmdBindPipeline(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, NodeStaticOpaquePipeline);
 	// vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
@@ -1208,7 +1406,7 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
         // PCO.Model = glm::translate(glm::mat4(1), glm::vec3(offset));
         PCO.Model = glm::mat4(1);
     }
-    VkBuffer vkBuffer = VKCTX->TestQuad;
+    VkBuffer vkBuffer = TestQuad;
     VkDeviceSize vkOffsets = 0;
 
     vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
@@ -1218,7 +1416,7 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
         Pos::GlobalChunk x64offset = X64Offset >> Pos::Object_t::BS_Bit >> 4;
         Pos::GlobalRegion x64offset_region = x64offset >> 2;
 
-        auto [voxelVertexs, nodeVertexs] = VKCTX->ThreadVertexObj.getChunksForRender(WorldId, Pos, 1, PCO.ProjView, x64offset_region);
+        auto [voxelVertexs, nodeVertexs] = MCP.getChunksForRender(WorldId, Pos, 1, PCO.ProjView, x64offset_region);
 
         {
             static uint32_t l = TOS::Time::getSeconds();
@@ -1229,7 +1427,6 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
         }
 
         size_t count = 0;
-
 
         glm::mat4 orig = PCO.Model;
         for(auto& [chunkPos, vertexs, vertexCount] : nodeVertexs) {
@@ -1250,41 +1447,11 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
             vkCmdDraw(drawCmd, vertexCount, 1, offset, 0);
         }
 
-        // TOS::Logger LOG = "VRS";
-        // LOG.debug() << "Node: drawCals: " << nodeVertexs.size() << " vertexs: " << count;
-
         PCO.Model = orig;
-
-        // auto iterWorld = External.ChunkVoxelMesh.find(WorldId);
-        // if(iterWorld != External.ChunkVoxelMesh.end()) {
-        //     glm::mat4 orig = PCO.Model;
-
-        //     for(auto &pair : iterWorld->second) {
-        //         if(auto& nodes = std::get<1>(pair.second)) {
-        //             glm::vec3 cpos(pair.first-x64offset);
-        //             PCO.Model = glm::translate(orig, cpos*16.f);
-        //             auto [vkBuffer, offset] = VKCTX->VertexPool_Nodes.map(nodes);
-
-        //             vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
-        //                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, offsetof(WorldPCO, Model), sizeof(WorldPCO::Model), &PCO.Model);
-        //             vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
-        //             vkCmdDraw(drawCmd, nodes.VertexCount, 1, offset, 0);
-        //         }
-        //     }
-
-        //     PCO.Model = orig;
-        // }
     }
 }
 
 void VulkanRenderSession::pushStage(EnumRenderStage stage) {
-    if(!VKCTX)
-        return;
-
-    VKCTX->ThreadVertexObj.pushStage(stage);
-
-    if(stage == EnumRenderStage::Shutdown)
-        VKCTX->ThreadVertexObj.join();
 }
 
 std::vector<VoxelVertexPoint> VulkanRenderSession::generateMeshForVoxelChunks(const std::vector<VoxelCube>& cubes) {
@@ -1374,225 +1541,9 @@ std::vector<VoxelVertexPoint> VulkanRenderSession::generateMeshForVoxelChunks(co
     return out;
 }
 
-std::vector<NodeVertexStatic> VulkanRenderSession::generateMeshForNodeChunks(const Node* nodes) {
-    std::vector<NodeVertexStatic> out;
-    NodeVertexStatic v;
-
-    for(int z = 0; z < 16; z++)
-        for(int y = 0; y < 16; y++)
-            for(int x = 0; x < 16; x++)
-        {
-            size_t index = Pos::bvec16u(x, y, z).pack();
-            if(nodes[index].Data == 0)
-                continue;
-
-            v.Tex = nodes[index].NodeId;
-
-            if((y+1) >= 16 || nodes[Pos::bvec16u(x, y+1, z).pack()].NodeId == 0) {
-                v.FX = 135+x*16;
-                v.FY = 135+y*16+16;
-                v.FZ = 135+z*16+16;
-                v.TU = 0;
-                v.TV = 0;
-                out.push_back(v);
-
-                v.FX += 16;
-                v.TU = 65535;
-                out.push_back(v);
-
-                v.FZ -= 16;
-                v.TV = 65535;
-                out.push_back(v);
-
-                v.FX = 135+x*16;
-                v.FZ = 135+z*16+16;
-                v.TU = 0;
-                v.TV = 0;
-                out.push_back(v);
-
-                v.FX += 16;
-                v.FZ -= 16;
-                v.TV = 65535;
-                v.TU = 65535;
-                out.push_back(v);
-
-                v.FX -= 16;
-                v.TU = 0;
-                out.push_back(v);
-            }
-
-            if((y-1) < 0 || nodes[Pos::bvec16u(x, y-1, z).pack()].NodeId == 0) {
-                v.FX = 135+x*16;
-                v.FY = 135+y*16;
-                v.FZ = 135+z*16+16;
-                v.TU = 0;
-                v.TV = 0;
-                out.push_back(v);
-
-                v.FZ -= 16;
-                v.TV = 65535;
-                out.push_back(v);
-
-                v.FX += 16;
-                v.TU = 65535;
-                out.push_back(v);
-
-                v.FX = 135+x*16;
-                v.FZ = 135+z*16+16;
-                v.TU = 0;
-                v.TV = 0;
-                out.push_back(v);
-
-                v.FX += 16;
-                v.FZ -= 16;
-                v.TV = 65535;
-                v.TU = 65535;
-                out.push_back(v);
-
-                v.FZ += 16;
-                v.TV = 0;
-                out.push_back(v);
-            }
-
-            if((x+1) >= 16 || nodes[Pos::bvec16u(x+1, y, z).pack()].NodeId == 0) {
-                v.FX = 135+x*16+16;
-                v.FY = 135+y*16;
-                v.FZ = 135+z*16+16;
-                v.TU = 0;
-                v.TV = 0;
-                out.push_back(v);
-
-                v.FZ -= 16;
-                v.TV = 65535;
-                out.push_back(v);
-
-                v.FY += 16;
-                v.TU = 65535;
-                out.push_back(v);
-
-                v.FY = 135+y*16;
-                v.FZ = 135+z*16+16;
-                v.TU = 0;
-                v.TV = 0;
-                out.push_back(v);
-
-                v.FY += 16;
-                v.FZ -= 16;
-                v.TV = 65535;
-                v.TU = 65535;
-                out.push_back(v);
-
-                v.FZ += 16;
-                v.TV = 0;
-                out.push_back(v);
-            }
-
-            if((x-1) < 0 || nodes[Pos::bvec16u(x-1, y, z).pack()].NodeId == 0) {
-                v.FX = 135+x*16;
-                v.FY = 135+y*16;
-                v.FZ = 135+z*16+16;
-                v.TU = 0;
-                v.TV = 0;
-                out.push_back(v);
-
-                v.FY += 16;
-                v.TU = 65535;
-                out.push_back(v);
-
-                v.FZ -= 16;
-                v.TV = 65535;
-                out.push_back(v);
-
-                v.FY = 135+y*16;
-                v.FZ = 135+z*16+16;
-                v.TU = 0;
-                v.TV = 0;
-                out.push_back(v);
-
-                v.FY += 16;
-                v.FZ -= 16;
-                v.TV = 65535;
-                v.TU = 65535;
-                out.push_back(v);
-
-                v.FY -= 16;
-                v.TU = 0;
-                out.push_back(v);
-            }
-
-            if((z+1) >= 16 || nodes[Pos::bvec16u(x, y, z+1).pack()].NodeId == 0) {
-                v.FX = 135+x*16;
-                v.FY = 135+y*16;
-                v.FZ = 135+z*16+16;
-                v.TU = 0;
-                v.TV = 0;
-                out.push_back(v);
-
-                v.FX += 16;
-                v.TU = 65535;
-                out.push_back(v);
-
-                v.FY += 16;
-                v.TV = 65535;
-                out.push_back(v);
-
-                v.FX = 135+x*16;
-                v.FY = 135+y*16;
-                v.TU = 0;
-                v.TV = 0;
-                out.push_back(v);
-
-                v.FX += 16;
-                v.FY += 16;
-                v.TV = 65535;
-                v.TU = 65535;
-                out.push_back(v);
-
-                v.FX -= 16;
-                v.TU = 0;
-                out.push_back(v);
-            }
-
-            if((z-1) < 0 || nodes[Pos::bvec16u(x, y, z-1).pack()].NodeId == 0) {
-                v.FX = 135+x*16;
-                v.FY = 135+y*16;
-                v.FZ = 135+z*16;
-                v.TU = 0;
-                v.TV = 0;
-                out.push_back(v);
-
-                v.FY += 16;
-                v.TV = 65535;
-                out.push_back(v);
-
-                v.FX += 16;
-                v.TU = 65535;
-                out.push_back(v);
-
-                v.FX = 135+x*16;
-                v.FY = 135+y*16;
-                v.TU = 0;
-                v.TV = 0;
-                out.push_back(v);
-
-                v.FX += 16;
-                v.FY += 16;
-                v.TV = 65535;
-                v.TU = 65535;
-                out.push_back(v);
-
-                v.FY -= 16;
-                v.TV = 0;
-                out.push_back(v);
-            }
-        }
-
-    return out;
-}
-
 void VulkanRenderSession::updateDescriptor_MainAtlas() {
-    VkDescriptorBufferInfo bufferInfo = VKCTX->MainTest;
-    VkDescriptorImageInfo imageInfo = VKCTX->MainTest;
+    VkDescriptorBufferInfo bufferInfo = MainTest;
+    VkDescriptorImageInfo imageInfo = MainTest;
 
     std::vector<VkWriteDescriptorSet> ciDescriptorSet =
     {
@@ -1621,8 +1572,8 @@ void VulkanRenderSession::updateDescriptor_MainAtlas() {
 }
 
 void VulkanRenderSession::updateDescriptor_VoxelsLight() {
-    VkDescriptorBufferInfo bufferInfo = VKCTX->LightDummy;
-    VkDescriptorImageInfo imageInfo = VKCTX->LightDummy;
+    VkDescriptorBufferInfo bufferInfo = LightDummy;
+    VkDescriptorImageInfo imageInfo = LightDummy;
 
     std::vector<VkWriteDescriptorSet> ciDescriptorSet =
     {

@@ -4,7 +4,9 @@
 #include "Common/Abstract.hpp"
 #include <Client/Vulkan/Vulkan.hpp>
 #include <algorithm>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <queue>
 #include <thread>
@@ -38,7 +40,6 @@
 */
 
 
-
 namespace LV::Client::VK {
 
 struct WorldPCO {
@@ -48,9 +49,215 @@ struct WorldPCO {
 static_assert(sizeof(WorldPCO) == 128);
 
 /*
+    Объект, занимающийся генерацией меша на основе нод и вокселей
+    Требует доступ к профилям в ServerSession (ServerSession должен быть заблокирован только на чтение)
+    Также доступ к идентификаторам текстур в VulkanRenderSession и моделей по состояниям
+    Очередь чанков, ожидающих перерисовку. Возвращает готовые вершинные данные.
+*/
+struct ChunkMeshGenerator {
+    // Данные рендера чанка
+    struct ChunkObj_t {
+        // Идентификатор запроса (на случай если запрос просрочился и чанк уже был удалён)
+        uint32_t RequestId = 0;
+        // Мир
+        WorldId_t WId;
+        // Позиция чанка в мире
+        Pos::GlobalChunk Pos;
+        // Сортированный список уникальных значений
+        std::vector<DefVoxelId> VoxelDefines;
+        // Вершины
+        std::vector<VoxelVertexPoint> VoxelVertexs;
+        // Ноды
+        std::vector<DefNodeId> NodeDefines;
+        // Вершины нод
+        std::vector<NodeVertexStatic> NodeVertexs;
+        // Индексы
+        std::variant<std::vector<uint16_t>, std::vector<uint32_t>> NodeIndicies;
+    };
+
+    // Очередь чанков на перерисовку
+    TOS::SpinlockObject<std::queue<std::tuple<WorldId_t, Pos::GlobalChunk, uint32_t>>> Input;
+    // Выход
+    TOS::SpinlockObject<std::vector<ChunkObj_t>> Output;
+
+
+public:
+    ChunkMeshGenerator(IServerSession* serverSession)
+        :   SS(serverSession) 
+    {
+        assert(serverSession);
+    }
+
+    ~ChunkMeshGenerator() {
+        assert(Threads.empty());
+    }
+
+    // Меняет количество обрабатывающих потоков
+    void changeThreadsCount(uint8_t threads) {
+        Sync.NeedShutdown = true;
+        std::unique_lock lock(Sync.Mutex);
+        Sync.CV_CountInRun.wait(lock, [&]() { return Sync.CountInRun == 0; });
+
+        for(std::thread& thr : Threads)
+            thr.join();
+
+        Sync.NeedShutdown = false;
+
+        Threads.resize(threads);
+        for(int iter = 0; iter < threads; iter++)
+            Threads[iter] = std::thread(&ChunkMeshGenerator::run, this, iter);
+
+        Sync.CV_CountInRun.wait(lock, [&]() { return Sync.CountInRun == Threads.size() || Sync.NeedShutdown; });
+        
+        if(Sync.NeedShutdown)
+            MAKE_ERROR("Ошибка обработчика вершин чанков");
+    }
+
+    void prepareTickSync() {
+        Sync.Stop = true;
+    }
+
+    void pushStageTickSync() {
+        std::unique_lock lock(Sync.Mutex);
+        Sync.CV_CountInRun.wait(lock, [&]() { return Sync.CountInRun == 0; });
+    }
+
+    void endTickSync() {
+        Sync.Stop = false;
+        Sync.CV_CountInRun.notify_all();
+    }
+
+
+private:
+    struct {
+        std::mutex Mutex;
+        // Если нужно остановить пул потоков, вызывается NeedShutdown
+        volatile bool NeedShutdown = false, Stop = false;
+        volatile uint8_t CountInRun = 0;
+        std::condition_variable CV_CountInRun;
+    } Sync;
+
+    IServerSession *SS;
+
+    // Потоки
+    std::vector<std::thread> Threads;
+
+    void run(uint8_t id);
+};
+
+/*
+    Модуль обрабатывает рендер чанков
+*/
+class ModuleChunkPreparator {
+public:
+    struct TickSyncData {
+        // Профили на которые повлияли изменения, по ним нужно пересчитать чанки
+        std::vector<DefVoxelId> ChangedVoxels;
+        std::vector<DefNodeId> ChangedNodes;
+
+        std::unordered_map<WorldId_t, std::vector<Pos::GlobalChunk>> ChangedChunks;
+        std::unordered_map<WorldId_t, std::vector<Pos::GlobalRegion>> LostRegions;
+    };
+
+public:
+    ModuleChunkPreparator(Vulkan* vkInst, IServerSession* serverSession) 
+        :   VkInst(vkInst),
+            CMG(serverSession),
+            VertexPool_Voxels(vkInst),
+            VertexPool_Nodes(vkInst)
+    {
+        assert(vkInst);
+        assert(serverSession);
+
+        CMG.changeThreadsCount(2);
+
+        const VkCommandPoolCreateInfo infoCmdPool =
+        {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+            .queueFamilyIndex = VkInst->getSettings().QueueGraphics
+        };
+
+        vkAssert(!vkCreateCommandPool(VkInst->Graphics.Device, &infoCmdPool, nullptr, &CMDPool));
+    }
+
+    ~ModuleChunkPreparator() {
+        CMG.changeThreadsCount(0);
+
+        if(CMDPool)
+            vkDestroyCommandPool(VkInst->Graphics.Device, CMDPool, nullptr);
+    }
+
+
+    void prepareTickSync() {
+        CMG.prepareTickSync();
+    }
+
+    void pushStageTickSync() {
+        CMG.pushStageTickSync();
+    }
+
+    void tickSync(const TickSyncData& data) {
+        // Обработать изменения в чанках
+        // Пересчёт соседних чанков
+        // Проверить необходимость пересчёта чанков при изменении профилей
+
+        CMG.endTickSync();
+    }
+
+    // Готовность кадров определяет когда можно удалять ненужные ресурсы, которые ещё используются в рендере
+    void pushFrame() {
+
+    }
+
+    // Выдаёт буферы для рендера в порядке от ближнего к дальнему. distance - радиус в регионах
+    std::pair<
+        std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>>,
+        std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>>
+    > getChunksForRender(WorldId_t worldId, Pos::Object pos, uint8_t distance, glm::mat4 projView, Pos::GlobalRegion x64offset);
+
+private:
+    static constexpr uint8_t FRAME_COUNT_RESOURCE_LATENCY = 6;
+
+    Vulkan* VkInst;
+    VkCommandPool CMDPool = nullptr;
+
+    // Генератор вершин чанков
+    ChunkMeshGenerator CMG;
+
+    // Буферы для хранения вершин
+    VertexPool<VoxelVertexPoint> VertexPool_Voxels;
+    VertexPool<NodeVertexStatic> VertexPool_Nodes;
+
+    struct ChunkObj_t {
+        std::vector<DefVoxelId> Voxels;
+        VertexPool<VoxelVertexPoint>::Pointer VoxelPointer;
+        std::vector<DefNodeId> Nodes;
+        VertexPool<NodeVertexStatic>::Pointer NodePointer;
+    };
+
+    // Склад указателей на вершины чанков
+    std::unordered_map<WorldId_t,
+        std::unordered_map<Pos::GlobalRegion, std::array<ChunkObj_t, 4*4*4>>
+    > ChunksMesh;
+
+    uint8_t FrameRoulette = 0;
+    // Вершины, ожидающие удаления по прошествию какого-то количества кадров
+    std::vector<VertexPool<VoxelVertexPoint>::Pointer> VPV_ToFree[FRAME_COUNT_RESOURCE_LATENCY];
+    std::vector<VertexPool<NodeVertexStatic>::Pointer> VPN_ToFree[FRAME_COUNT_RESOURCE_LATENCY];
+
+    // Следующий идентификатор запроса
+    uint32_t NextRequest = 0;
+    // Список ожидаемых чанков. Если регион был потерян, следующая его запись получит
+    // новый идентификатор (при отсутствии записи готовые чанки с MCMG будут проигнорированы)
+    std::unordered_map<WorldId_t, std::unordered_map<Pos::GlobalRegion, uint32_t>> Requests;
+};
+
+/*
     Модуль, рисующий то, что предоставляет IServerSession
 */
-class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
+class VulkanRenderSession : public IRenderSession {
     VK::Vulkan *VkInst = nullptr;
     // Доступ к миру на стороне клиента
     IServerSession *ServerSession = nullptr;
@@ -73,252 +280,11 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
     glm::vec3 X64Offset_f, X64Delta;        // Смещение мира относительно игрока в матрице вида (0 -> 64)
     glm::quat Quat;
 
-    /*
-        Поток, занимающийся генерацией меша на основе нод и вокселей
-        Требует доступ к профилям в ServerSession (ServerSession должен быть заблокирован только на чтение)
-        Также доступ к идентификаторам текстур в VulkanRenderSession (только на чтение)
-        Должен оповещаться об изменениях профилей и событий чанков
-        Удалённые мешы хранятся в памяти N количество кадров
-    */
-    struct ThreadVertexObj_t {
-        // Сессия будет выдана позже
-        // Предполагается что события будут только после того как сессия будет установлена,
-        // соответственно никто не попытаеся сюда обратится без событий
-        IServerSession *SSession = nullptr;
-        Vulkan *VkInst;
-        VkCommandPool CMDPool = nullptr;
+    ModuleChunkPreparator MCP;
 
-        // Здесь не хватает стадии работы с текстурами
-        struct StateObj_t {
-            EnumRenderStage Stage = EnumRenderStage::Render;
-            volatile bool ChunkMesh_IsUse = false, ServerSession_InUse = false;
-        };
-
-        SpinlockObject<StateObj_t> State;
-
-        struct ChunkObj_t {
-            // Сортированный список уникальных значений
-            std::vector<DefVoxelId> VoxelDefines;
-            VertexPool<VoxelVertexPoint>::Pointer VoxelPointer;
-            std::vector<DefNodeId> NodeDefines;
-            VertexPool<NodeVertexStatic>::Pointer NodePointer;
-        };
-
-        ThreadVertexObj_t(Vulkan* vkInst)
-            :   VkInst(vkInst),
-                VertexPool_Voxels(vkInst),
-                VertexPool_Nodes(vkInst),
-                Thread(&ThreadVertexObj_t::run, this)
-        {
-            const VkCommandPoolCreateInfo infoCmdPool =
-            {
-                .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-                .pNext = nullptr,
-                .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-                .queueFamilyIndex = VkInst->getSettings().QueueGraphics
-            };
-
-            vkAssert(!vkCreateCommandPool(VkInst->Graphics.Device, &infoCmdPool, nullptr, &CMDPool));
-        }
-
-        ~ThreadVertexObj_t() {
-            assert(!Thread.joinable());
-
-            if(CMDPool)
-                vkDestroyCommandPool(VkInst->Graphics.Device, CMDPool, nullptr);
-        }
-
-        // Сюда входят добавленные/изменённые/удалённые определения нод и вокселей
-        // Чтобы перерисовать чанки, связанные с ними
-        void onContentDefinesChange(const std::vector<DefVoxelId>& voxels, const std::vector<DefNodeId>& nodes) {
-            ChangedDefines_Voxel.insert(ChangedDefines_Voxel.end(), voxels.begin(), voxels.end());
-            ChangedDefines_Node.insert(ChangedDefines_Node.end(), nodes.begin(), nodes.end());
-        }
-
-        // Изменение/удаление чанков
-        void onContentChunkChange(const std::unordered_map<WorldId_t, std::vector<Pos::GlobalChunk>>& chunkChanges, const std::unordered_map<WorldId_t, std::vector<Pos::GlobalRegion>>& regionRemove) {
-            for(auto& [worldId, chunks] : chunkChanges) {
-                auto &list = ChangedContent_Chunk[worldId];
-                list.insert(list.end(), chunks.begin(), chunks.end());
-            }
-
-            for(auto& [worldId, regions] : regionRemove) {
-                auto &list = ChangedContent_RegionRemove[worldId];
-                list.insert(list.end(), regions.begin(), regions.end());
-            }
-        }
-
-        // Синхронизация потока рендера мира
-        void pushStage(EnumRenderStage stage) {
-            auto lock = State.lock();
-
-            if(lock->Stage == EnumRenderStage::Shutdown)
-                MAKE_ERROR("Остановка из-за ошибки ThreadVertex");
-
-            assert(lock->Stage != stage);
-
-            lock->Stage = stage;
-
-            if(stage == EnumRenderStage::ComposingCommandBuffer) {
-                if(lock->ChunkMesh_IsUse) {
-                    lock.unlock();
-                    while(State.get_read().ChunkMesh_IsUse);
-                } else
-                    lock.unlock();
-            } else if(stage == EnumRenderStage::WorldUpdate) {
-                if(lock->ServerSession_InUse) {
-                    lock.unlock();
-                    while(State.get_read().ServerSession_InUse);
-                } else
-                    lock.unlock();
-            } else if(stage == EnumRenderStage::Shutdown) {
-                if(lock->ServerSession_InUse || lock->ChunkMesh_IsUse) {
-                    lock.unlock();
-                    while(State.get_read().ServerSession_InUse);
-                    while(State.get_read().ChunkMesh_IsUse);
-                } else
-                    lock.unlock();
-            }
-
-        }
-
-        std::pair<
-            std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>>,
-            std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>>
-        > getChunksForRender(WorldId_t worldId, Pos::Object pos, uint8_t distance, glm::mat4 projView, Pos::GlobalRegion x64offset) {
-            Pos::GlobalChunk playerChunk = pos >> Pos::Object_t::BS_Bit >> 4;
-            Pos::GlobalRegion center = playerChunk >> 2;
-
-            std::vector<std::tuple<float, Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>> vertexVoxels;
-            std::vector<std::tuple<float, Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>> vertexNodes;
-
-            auto iterWorld = ChunkMesh.find(worldId);
-            if(iterWorld == ChunkMesh.end())
-                return {};
-
-            Frustum fr(projView);
-
-            for(int z = -distance; z <= distance; z++) {
-                for(int y = -distance; y <= distance; y++) {
-                    for(int x = -distance; x <= distance; x++) {
-                        Pos::GlobalRegion region = center + Pos::GlobalRegion(x, y, z);
-                        glm::vec3 begin = glm::vec3(region - x64offset) * 64.f;
-                        glm::vec3 end = begin + glm::vec3(64.f);
-
-                        if(!fr.IsBoxVisible(begin, end))
-                            continue;
-
-                        auto iterRegion = iterWorld->second.find(region);
-                        if(iterRegion == iterWorld->second.end()) 
-                            continue;
-
-                        Pos::GlobalChunk local = Pos::GlobalChunk(region) << 2;
-
-                        for(size_t index = 0; index < iterRegion->second.size(); index++) {
-                            Pos::bvec4u localPos;
-                            localPos.unpack(index);
-
-                            glm::vec3 chunkPos = begin+glm::vec3(localPos)*16.f;
-                            if(!fr.IsBoxVisible(chunkPos, chunkPos+glm::vec3(16)))
-                                continue;
-
-                            auto &chunk = iterRegion->second[index];
-                            
-                            float distance;
-
-                            if(chunk.VoxelPointer || chunk.NodePointer) {
-                                Pos::GlobalChunk cp = local+Pos::GlobalChunk(localPos)-playerChunk;
-                                distance = cp.x*cp.x+cp.y*cp.y+cp.z*cp.z;
-                            }
-
-                            if(chunk.VoxelPointer) {
-                                vertexVoxels.emplace_back(distance, local+Pos::GlobalChunk(localPos), VertexPool_Voxels.map(chunk.VoxelPointer), chunk.VoxelPointer.VertexCount);
-                            }
-
-                            if(chunk.NodePointer) {
-                                vertexNodes.emplace_back(distance, local+Pos::GlobalChunk(localPos), VertexPool_Nodes.map(chunk.NodePointer), chunk.NodePointer.VertexCount);
-                            }
-                        }
-                    }
-                }
-            }
-
-            auto sortByDistance = []
-            (
-                const std::tuple<float, Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>& a, 
-                const std::tuple<float, Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>& b
-            ) {
-                return std::get<0>(a) < std::get<0>(b);
-            };
-            
-            std::sort(vertexVoxels.begin(), vertexVoxels.end(), sortByDistance);
-            std::sort(vertexNodes.begin(), vertexNodes.end(), sortByDistance);
-
-            std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>> resVertexVoxels;
-            std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>> resVertexNodes;
-
-            resVertexVoxels.reserve(vertexVoxels.size());
-            resVertexNodes.reserve(vertexNodes.size());
-
-            for(const auto& [d, pos, ptr, count] : vertexVoxels)
-                resVertexVoxels.emplace_back(pos, ptr, count);
-
-            for(const auto& [d, pos, ptr, count] : vertexNodes)
-                resVertexNodes.emplace_back(pos, ptr, count);
-
-            return std::pair{resVertexVoxels, resVertexNodes};
-        }
-
-        void join() {
-            Thread.join();
-        }
-
-    private:
-        // Буферы для хранения вершин
-        VertexPool<VoxelVertexPoint> VertexPool_Voxels;
-        VertexPool<NodeVertexStatic> VertexPool_Nodes;
-        // Списки изменённых определений
-        std::vector<DefVoxelId> ChangedDefines_Voxel;
-        std::vector<DefNodeId> ChangedDefines_Node;
-        // Список чанков на перерисовку
-        std::unordered_map<WorldId_t, std::vector<Pos::GlobalChunk>> ChangedContent_Chunk; 
-        std::unordered_map<WorldId_t, std::vector<Pos::GlobalRegion>> ChangedContent_RegionRemove;
-        // Меши
-        std::unordered_map<WorldId_t,
-            std::unordered_map<Pos::GlobalRegion, std::array<ChunkObj_t, 4*4*4>>
-        > ChunkMesh;
-        // Внешний поток
-        std::thread Thread;
-
-        void run();
-    };
-
-    struct VulkanContext {
-        VK::Vulkan *VkInst;
-        AtlasImage MainTest, LightDummy;
-        Buffer TestQuad;
-        std::optional<Buffer> TestVoxel;
-
-        ThreadVertexObj_t ThreadVertexObj;
-
-        VulkanContext(Vulkan* vkInst)
-            :   VkInst(vkInst),
-                MainTest(vkInst), LightDummy(vkInst),
-                TestQuad(vkInst, sizeof(NodeVertexStatic)*6*3*2),
-                ThreadVertexObj(vkInst)
-        {}
-
-        ~VulkanContext() {
-        }
-
-        void onUpdate();
-
-        void setServerSession(IServerSession* ssession) {
-            ThreadVertexObj.SSession = ssession;
-        }
-    };
-
-    std::shared_ptr<VulkanContext> VKCTX;
+    AtlasImage MainTest, LightDummy;
+    Buffer TestQuad;
+    std::optional<Buffer> TestVoxel;
 
     VkDescriptorPool DescriptorPool = VK_NULL_HANDLE;
 
@@ -356,33 +322,19 @@ class VulkanRenderSession : public IRenderSession, public IVulkanDependent {
 
     std::map<AssetsTexture, uint16_t> ServerToAtlas;
 
-    struct {
-    } External;
-
-    virtual void free(Vulkan *instance) override;
-    virtual void init(Vulkan *instance) override;
-
 public:
     WorldPCO PCO;
     WorldId_t WI = 0;
     glm::vec3 PlayerPos = glm::vec3(0);
 
 public:
-    VulkanRenderSession();
+    VulkanRenderSession(Vulkan *vkInst, IServerSession *serverSession);
     virtual ~VulkanRenderSession();
 
-    void setServerSession(IServerSession *serverSession) {
-        ServerSession = serverSession;
-        if(VKCTX)
-            VKCTX->setServerSession(serverSession);
-        assert(serverSession);
-    }
+    virtual void prepareTickSync() override;
+    virtual void pushStageTickSync() override;
+    virtual void tickSync(const TickSyncData& data) override;
 
-    virtual void onAssetsChanges(std::unordered_map<EnumAssets, std::vector<AssetEntry>> resources) override;
-    virtual void onAssetsLost(std::unordered_map<EnumAssets, std::vector<ResourceId>> resources) override;
-    virtual void onContentDefinesAdd(std::unordered_map<EnumDefContent, std::vector<ResourceId>>) override;
-    virtual void onContentDefinesLost(std::unordered_map<EnumDefContent, std::vector<ResourceId>>) override;
-    virtual void onChunksChange(WorldId_t worldId, const std::unordered_set<Pos::GlobalChunk>& changeOrAddList, const std::unordered_set<Pos::GlobalRegion>& remove) override;
     virtual void setCameraPos(WorldId_t worldId, Pos::Object pos, glm::quat quat) override;
 
     glm::mat4 calcViewMatrix(glm::quat quat, glm::vec3 camOffset = glm::vec3(0)) {
@@ -393,8 +345,7 @@ public:
     void drawWorld(GlobalTime gTime, float dTime, VkCommandBuffer drawCmd);
     void pushStage(EnumRenderStage stage);
 
-    static std::vector<VoxelVertexPoint> generateMeshForVoxelChunks(const std::vector<VoxelCube>& cubes); 
-    static std::vector<NodeVertexStatic> generateMeshForNodeChunks(const Node* nodes); 
+    static std::vector<VoxelVertexPoint> generateMeshForVoxelChunks(const std::vector<VoxelCube>& cubes);
 
 private:
     void updateDescriptor_MainAtlas();

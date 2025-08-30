@@ -192,9 +192,8 @@ void Vulkan::run()
 		prevTime += dTime;
 
 		Screen.State = DrawState::Begin;
-		if(Game.RSession)
-			Game.RSession->pushStage(EnumRenderStage::ComposingCommandBuffer);
-		
+
+		/// TODO: Нужно синхронизировать с vkQueue
 		{
 			std::lock_guard lock(Screen.BeforeDrawMtx);
 			while(!Screen.BeforeDraw.empty())
@@ -204,12 +203,44 @@ void Vulkan::run()
 			}
 		}
 
+		if(Game.Выйти) {
+			Game.Выйти = false;
+
+			try {
+				if(Game.Session)
+					Game.Session->setRenderSession(nullptr);
+
+				if(Game.RSession)
+					Game.RSession = nullptr;
+			} catch(const std::exception &exc) {
+				LOG.error() << "Game.RSession->shutdown: " << exc.what();
+			}
+
+			try {
+				if(Game.Session)
+					Game.Session->shutdown(EnumDisconnect::ByInterface);
+			} catch(const std::exception &exc) {
+				LOG.error() << "Game.Session->shutdown: " << exc.what();
+			}
+		}
+
 		if(!NeedShutdown && glfwWindowShouldClose(Graphics.Window)) {
 			NeedShutdown = true;
 
 			try {
 				if(Game.Session)
+					Game.Session->setRenderSession(nullptr);
+
+				if(Game.RSession)
+					Game.RSession = nullptr;
+			} catch(const std::exception &exc) {
+				LOG.error() << "Game.RSession->shutdown: " << exc.what();
+			}
+
+			try {
+				if(Game.Session)
 					Game.Session->shutdown(EnumDisconnect::ByInterface);
+				Game.Session = nullptr;
 			} catch(const std::exception &exc) {
 				LOG.error() << "Game.Session->shutdown: " << exc.what();
 			}
@@ -220,6 +251,8 @@ void Vulkan::run()
 			} catch(const std::exception &exc) {
 				LOG.error() << "Game.Server->GS.shutdown: " << exc.what();
 			}
+
+			continue;
 		}
 
 		if(Game.Session) {
@@ -2258,7 +2291,7 @@ void Vulkan::gui_MainMenu() {
 }
 
 void Vulkan::gui_ConnectedToServer() {
-	if(Game.Session) {
+	if(Game.Session && Game.RSession) {
 		if(ImGui::Begin("MainMenu", nullptr, ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove))
 		{
 			ImGui::Text("fps: %2.2f World: %u Pos: %i %i %i Region: %i %i %i", 
@@ -2271,25 +2304,13 @@ void Vulkan::gui_ConnectedToServer() {
 				LOG.debug();
 
 			if(ImGui::Button("Выйти")) {
-				try {
-					if(Game.Session)
-						Game.Session->shutdown(EnumDisconnect::ByInterface);
-				} catch(const std::exception &exc) {
-					LOG.error() << "Game.Session->shutdown: " << exc.what();
-				}
-
-				Game.RSession->pushStage(EnumRenderStage::Shutdown);
-				Game.RSession = nullptr;
-				Game.Session = nullptr;
+				Game.Выйти = true;
 				Game.ImGuiInterfaces.pop_back();
-				int mode = glfwGetInputMode(Graphics.Window, GLFW_CURSOR);
-				if(mode != GLFW_CURSOR_NORMAL)
-					glfwSetInputMode(Graphics.Window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 			}
 
 			ImGui::End();
 
-			if(!Game.RSession)
+			if(Game.Выйти)
 				return;
 		}
 

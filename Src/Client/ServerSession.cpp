@@ -26,6 +26,12 @@ ServerSession::ServerSession(asio::io_context &ioc, std::unique_ptr<Net::AsyncSo
 {
     assert(Socket.get());
 
+    Profiles.DefNode[0] = {0};
+    Profiles.DefNode[1] = {1};
+    Profiles.DefNode[2] = {2};
+    Profiles.DefNode[3] = {3};
+    Profiles.DefNode[4] = {4};
+
     try {
         AM = AssetsManager::Create(ioc, "Cache");
         asio::co_spawn(ioc, run(AUC.use()), asio::detached);
@@ -803,6 +809,38 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                 for(std::string& key : toDelete)
                     Assets.NotInUse[type].erase(Assets.NotInUse[type].find(key));
             }
+        }
+
+        // Чанки
+        {
+            for(auto& [wId, lost] : regions_Lost_Result) {
+                auto iterWorld = Content.Worlds.find(wId);
+                if(iterWorld == Content.Worlds.end())
+                    continue;
+
+                for(const Pos::GlobalRegion& rPos : lost) {
+                    auto iterRegion = iterWorld->second.Regions.find(rPos);
+                    if(iterRegion != iterWorld->second.Regions.end())
+                        iterWorld->second.Regions.erase(iterRegion);
+                }
+            }
+
+            for(auto& [wId, voxels] : chunks_AddOrChange_Voxel_Result) {
+                auto& regions = Content.Worlds[wId].Regions;
+
+                for(auto& [pos, data] : voxels) {
+                    regions[pos >> 2].Chunks[Pos::bvec4u(pos & 0x3).pack()].Voxels = std::move(data);
+                }
+            }
+
+            for(auto& [wId, nodes] : chunks_AddOrChange_Node_Result) {
+                auto& regions = Content.Worlds[wId].Regions;
+
+                for(auto& [pos, data] : nodes) {
+                    regions[pos >> 2].Chunks[Pos::bvec4u(pos & 0x3).pack()].Nodes = std::move(data);
+                }
+            }
+
         }
 
         if(RS)

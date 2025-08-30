@@ -31,7 +31,7 @@ void ChunkMeshGenerator::run(uint8_t id) {
         Sync.CV_CountInRun.notify_all();
     }
 
-    LOG.debug() << "Старт потока подготовки чанков к рендеру";
+    LOG.debug() << "Старт потока верширования чанков";
     int timeWait = 1;
 
     try {
@@ -239,17 +239,8 @@ void ChunkMeshGenerator::run(uint8_t id) {
                         for(int x = 0; x < 16; x++)
                             fullNodes[x+0][y+1][0] = 1;
                 }
-            }
-
-            {
-                result.NodeDefines.reserve(16*16*16);
-                for(int iter = 0; iter < 16*16*16; iter++)
-                    result.NodeDefines.push_back((*chunk)[iter].NodeId);
-                std::sort(result.NodeDefines.begin(), result.NodeDefines.end());
-                auto eraseIter = std::unique(result.NodeDefines.begin(), result.NodeDefines.end());
-                result.NodeDefines.erase(eraseIter, result.NodeDefines.end());
-                result.NodeDefines.shrink_to_fit();
-            }
+            } else 
+                goto end;
 
             {
                 result.VoxelDefines.reserve(voxels->size());
@@ -260,6 +251,16 @@ void ChunkMeshGenerator::run(uint8_t id) {
                 auto eraseIter = std::unique(result.VoxelDefines.begin(), result.VoxelDefines.end());
                 result.VoxelDefines.erase(eraseIter, result.VoxelDefines.end());
                 result.VoxelDefines.shrink_to_fit();
+            }
+
+            {
+                result.NodeDefines.reserve(16*16*16);
+                for(int iter = 0; iter < 16*16*16; iter++)
+                    result.NodeDefines.push_back((*chunk)[iter].NodeId);
+                std::sort(result.NodeDefines.begin(), result.NodeDefines.end());
+                auto eraseIter = std::unique(result.NodeDefines.begin(), result.NodeDefines.end());
+                result.NodeDefines.erase(eraseIter, result.NodeDefines.end());
+                result.NodeDefines.shrink_to_fit();
             }
 
             // Генерация вершин вокселей
@@ -277,12 +278,12 @@ void ChunkMeshGenerator::run(uint8_t id) {
                 for(int x = 0; x < 16; x++) {
                     int fullCovered = 0;
 
-                    fullCovered |= fullNodes[x+1][y][z];
-                    fullCovered |= fullNodes[x-1][y][z] << 1;
-                    fullCovered |= fullNodes[x][y+1][z] << 2;
-                    fullCovered |= fullNodes[x][y-1][z] << 3;
-                    fullCovered |= fullNodes[x][y][z+1] << 4;
-                    fullCovered |= fullNodes[x][y][z-1] << 5;
+                    fullCovered |= fullNodes[x+1+1][y+1][z+1];
+                    fullCovered |= fullNodes[x+1-1][y+1][z+1] << 1;
+                    fullCovered |= fullNodes[x+1][y+1+1][z+1] << 2;
+                    fullCovered |= fullNodes[x+1][y+1-1][z+1] << 3;
+                    fullCovered |= fullNodes[x+1][y+1][z+1+1] << 4;
+                    fullCovered |= fullNodes[x+1][y+1][z+1-1] << 5;
 
                     if(fullCovered == 0b111111)
                         continue;
@@ -394,7 +395,7 @@ void ChunkMeshGenerator::run(uint8_t id) {
                         result.NodeVertexs.push_back(v);
                     }
 
-                    if(!(fullCovered & 0b000001)) {
+                    if(!(fullCovered & 0b000010)) {
                         v.FX = 135+x*16;
                         v.FY = 135+y*16;
                         v.FZ = 135+z*16+16;
@@ -515,13 +516,13 @@ void ChunkMeshGenerator::run(uint8_t id) {
         Sync.CV_CountInRun.notify_all();
     }
 
-    LOG.debug() << "Завершение потока подготовки чанков к рендеру";
+    LOG.debug() << "Завершение потока верширования чанков";
 }
 
 std::pair<
     std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>>,
     std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>>
-> ModuleChunkPreparator::getChunksForRender(
+> ChunkPreparator::getChunksForRender(
     WorldId_t worldId, Pos::Object pos, uint8_t distance, glm::mat4 projView, Pos::GlobalRegion x64offset
 ) {
     Pos::GlobalChunk playerChunk = pos >> Pos::Object_t::BS_Bit >> 4;
@@ -610,7 +611,7 @@ std::pair<
 VulkanRenderSession::VulkanRenderSession(Vulkan *vkInst, IServerSession *serverSession)
     :   VkInst(vkInst),
         ServerSession(serverSession),
-        MCP(vkInst, serverSession),
+        CP(vkInst, serverSession),
         MainTest(vkInst), LightDummy(vkInst),
         TestQuad(vkInst, sizeof(NodeVertexStatic)*6*3*2)
 {
@@ -1231,11 +1232,11 @@ VulkanRenderSession::~VulkanRenderSession() {
 }
 
 void VulkanRenderSession::prepareTickSync() {
-    MCP.prepareTickSync();
+    CP.prepareTickSync();
 }
 
 void VulkanRenderSession::pushStageTickSync() {
-    MCP.pushStageTickSync();
+    CP.pushStageTickSync();
 }
 
 void VulkanRenderSession::tickSync(const TickSyncData& data) {
@@ -1243,8 +1244,10 @@ void VulkanRenderSession::tickSync(const TickSyncData& data) {
     // Профили
     // Чанки
 
-    ModuleChunkPreparator::TickSyncData mcpData;
-    MCP.tickSync(mcpData);
+    ChunkPreparator::TickSyncData mcpData;
+    mcpData.ChangedChunks = data.Chunks_ChangeOrAdd;
+    mcpData.LostRegions = data.Chunks_Lost;
+    CP.tickSync(mcpData);
 }
 
 void VulkanRenderSession::setCameraPos(WorldId_t worldId, Pos::Object pos, glm::quat quat) {
@@ -1416,7 +1419,7 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
         Pos::GlobalChunk x64offset = X64Offset >> Pos::Object_t::BS_Bit >> 4;
         Pos::GlobalRegion x64offset_region = x64offset >> 2;
 
-        auto [voxelVertexs, nodeVertexs] = MCP.getChunksForRender(WorldId, Pos, 1, PCO.ProjView, x64offset_region);
+        auto [voxelVertexs, nodeVertexs] = CP.getChunksForRender(WorldId, Pos, 1, PCO.ProjView, x64offset_region);
 
         {
             static uint32_t l = TOS::Time::getSeconds();

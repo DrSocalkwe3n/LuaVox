@@ -148,7 +148,7 @@ private:
 /*
     Модуль обрабатывает рендер чанков
 */
-class ModuleChunkPreparator {
+class ChunkPreparator {
 public:
     struct TickSyncData {
         // Профили на которые повлияли изменения, по ним нужно пересчитать чанки
@@ -160,7 +160,7 @@ public:
     };
 
 public:
-    ModuleChunkPreparator(Vulkan* vkInst, IServerSession* serverSession) 
+    ChunkPreparator(Vulkan* vkInst, IServerSession* serverSession) 
         :   VkInst(vkInst),
             CMG(serverSession),
             VertexPool_Voxels(vkInst),
@@ -182,7 +182,7 @@ public:
         vkAssert(!vkCreateCommandPool(VkInst->Graphics.Device, &infoCmdPool, nullptr, &CMDPool));
     }
 
-    ~ModuleChunkPreparator() {
+    ~ChunkPreparator() {
         CMG.changeThreadsCount(0);
 
         if(CMDPool)
@@ -202,6 +202,95 @@ public:
         // Обработать изменения в чанках
         // Пересчёт соседних чанков
         // Проверить необходимость пересчёта чанков при изменении профилей
+
+        // Добавляем к изменёным чанкам пересчёт соседей
+        {
+            std::vector<std::tuple<WorldId_t, Pos::GlobalChunk, uint32_t>> toBuild;
+            for(auto& [wId, chunks] : data.ChangedChunks) {
+                std::vector<Pos::GlobalChunk> list;
+                for(const Pos::GlobalChunk& pos : chunks) {
+                    list.push_back(pos);
+                    list.push_back(pos+Pos::GlobalChunk(1, 0, 0));
+                    list.push_back(pos+Pos::GlobalChunk(-1, 0, 0));
+                    list.push_back(pos+Pos::GlobalChunk(0, 1, 0));
+                    list.push_back(pos+Pos::GlobalChunk(0, -1, 0));
+                    list.push_back(pos+Pos::GlobalChunk(0, 0, 1));
+                    list.push_back(pos+Pos::GlobalChunk(0, 0, -1));
+                }
+
+                std::sort(list.begin(), list.end());
+                auto eraseIter = std::unique(list.begin(), list.end());
+                list.erase(eraseIter, list.end());
+
+
+                for(Pos::GlobalChunk& pos : list) {
+                    Pos::GlobalRegion rPos = pos >> 2;
+                    auto iterRegion = Requests[wId].find(rPos);
+                    if(iterRegion != Requests[wId].end())
+                        toBuild.emplace_back(wId, pos, iterRegion->second);
+                    else
+                        toBuild.emplace_back(wId, pos, Requests[wId][rPos] = NextRequest++);
+                }
+            }
+
+            CMG.Input.lock()->push_range(toBuild);
+        }
+
+        // Чистим запросы и чанки
+        {
+            uint8_t frameRetirement = (FrameRoulette+FRAME_COUNT_RESOURCE_LATENCY) % FRAME_COUNT_RESOURCE_LATENCY;
+            for(auto& [wId, regions] : data.LostRegions) {
+                if(auto iterWorld = Requests.find(wId); iterWorld != Requests.end()) {
+                    for(const Pos::GlobalRegion& rPos : regions)
+                        if(auto iterRegion = iterWorld->second.find(rPos); iterRegion != iterWorld->second.end())
+                            iterWorld->second.erase(iterRegion);
+                }
+
+                if(auto iterWorld = ChunksMesh.find(wId); iterWorld != ChunksMesh.end()) {
+                    for(const Pos::GlobalRegion& rPos : regions)
+                        if(auto iterRegion = iterWorld->second.find(rPos); iterRegion != iterWorld->second.end()) {
+                            for(int iter = 0; iter < 4*4*4; iter++) {
+                                auto& chunk = iterRegion->second[iter];
+                                if(chunk.VoxelPointer)
+                                    VPV_ToFree[frameRetirement].emplace_back(std::move(chunk.VoxelPointer));
+                                if(chunk.NodePointer)
+                                    VPN_ToFree[frameRetirement].emplace_back(std::move(chunk.NodePointer));
+                            }
+                            
+                            iterWorld->second.erase(iterRegion);
+                        }
+                }
+            }
+        }
+
+        // Получаем готовые чанки
+        {
+            std::vector<ChunkMeshGenerator::ChunkObj_t> chunks = std::move(*CMG.Output.lock());
+            for(auto& chunk : chunks) {
+                auto iterWorld = Requests.find(chunk.WId);
+                if(iterWorld == Requests.end())
+                    continue;
+
+                auto iterRegion = iterWorld->second.find(chunk.Pos >> 2);
+                if(iterRegion == iterWorld->second.end())
+                    continue;
+
+                if(iterRegion->second != chunk.RequestId)
+                    continue;
+
+                // Чанк ожидаем
+                auto& rChunk = ChunksMesh[chunk.WId][chunk.Pos >> 2][Pos::bvec4u(chunk.Pos & 0x3).pack()];
+                rChunk.Voxels = std::move(chunk.VoxelDefines);
+                if(!chunk.VoxelVertexs.empty())
+                    rChunk.VoxelPointer = VertexPool_Voxels.pushVertexs(std::move(chunk.VoxelVertexs));
+                rChunk.Nodes = std::move(chunk.NodeDefines);
+                if(!chunk.NodeVertexs.empty())
+                    rChunk.NodePointer = VertexPool_Nodes.pushVertexs(std::move(chunk.NodeVertexs)); 
+            }
+        }
+
+        VertexPool_Voxels.update(CMDPool);
+        VertexPool_Nodes.update(CMDPool);
 
         CMG.endTickSync();
     }
@@ -280,7 +369,7 @@ class VulkanRenderSession : public IRenderSession {
     glm::vec3 X64Offset_f, X64Delta;        // Смещение мира относительно игрока в матрице вида (0 -> 64)
     glm::quat Quat;
 
-    ModuleChunkPreparator MCP;
+    ChunkPreparator CP;
 
     AtlasImage MainTest, LightDummy;
     Buffer TestQuad;

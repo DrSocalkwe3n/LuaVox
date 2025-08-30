@@ -251,6 +251,7 @@ public:
 		std::thread MainThread;
 		std::shared_ptr<VulkanRenderSession> RSession;
 		ServerSession::Ptr Session;
+		bool Выйти = false;
 
 		std::list<void (Vulkan::*)()> ImGuiInterfaces;
 		std::unique_ptr<ServerObj> Server;

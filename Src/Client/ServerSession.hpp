@@ -130,12 +130,10 @@ private:
     // Сюда обращается ветка обновления IServerSession, накапливая данные до SyncTick
         // Ресурсы, ожидающие ответа от менеджера кеша
         std::unordered_map<std::string, std::vector<std::pair<std::string, Hash_t>>> ResourceWait[(int) EnumAssets::MAX_ENUM];
-        // Полученные ресурсы в ожидании стадии синхронизации такта
-        std::unordered_map<EnumAssets, std::vector<AssetEntry>> ReceivedResources;
         // Полученные изменения связок в ожидании стадии синхронизации такта
         std::vector<AssetsBindsChange> Binds;
-        // Подгруженные меж тактами ресурсы
-        std::vector<std::pair<AssetsManager::ResourceKey, Resource>> LoadedResources;
+        // Подгруженные или принятые меж тактами ресурсы
+        std::vector<AssetEntry> LoadedResources;
         // Список ресурсов на которые уже был отправлен запрос на загрузку ресурса
         std::vector<Hash_t> AlreadyLoading;
 

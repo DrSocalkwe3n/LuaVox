@@ -259,7 +259,7 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
 
         for(AssetEntry& entry : assets) {
             resources.push_back(entry.Res);
-            AsyncContext.ReceivedResources[entry.Type].push_back(entry);
+            AsyncContext.LoadedResources.emplace_back(std::move(entry));
             
             // // Проверяем используется ли сейчас ресурс
             // auto iter = Assets.ExistBinds[(int) entry.Type].find(entry.Id);
@@ -290,7 +290,15 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                     needRequest.push_back(res->hash());
                 }
             } else {
-                AsyncContext.LoadedResources.emplace_back(key, *res);
+                AssetEntry entry {
+                    .Type = key.Type,
+                    .Id = key.Id,
+                    .Domain = key.Domain,
+                    .Key = key.Key,
+                    .Res = *res
+                };
+
+                AsyncContext.LoadedResources.emplace_back(std::move(entry));
             }
         }
 
@@ -687,6 +695,115 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
             RS->pushStageTickSync();
 
         // Применяем изменения по ресурсам, профилям и контенту
+        // Разбираемся с изменениями в привязках ресурсов
+        {
+            AssetsBindsChange abc;
+
+            for(AssetsBindsChange entry : AsyncContext.Binds) {
+                for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++)
+                    std::sort(entry.Lost[type].begin(), entry.Lost[type].end());
+                
+                for(ssize_t iter = abc.Binds.size()-1; iter >= 0; iter--) {
+                    const AssetBindEntry& abe = abc.Binds[iter];
+                    auto& lost = entry.Lost[(int) abe.Type];
+                    auto iterator = std::lower_bound(lost.begin(), lost.end(), abe.Id);
+                    if(iterator != lost.end()) {
+                        lost.erase(iterator);
+                        abc.Binds.erase(abc.Binds.begin()+iter);
+                    }
+                }
+
+                for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++) {
+                    abc.Lost[type].append_range(entry.Lost[type]);
+                    entry.Lost[type].clear();
+                    std::sort(abc.Lost[type].begin(), abc.Lost[type].end());
+                }
+
+                for(AssetBindEntry& abe : entry.Binds) {
+                    auto iterator = std::lower_bound(entry.Lost[(int) abe.Type].begin(), entry.Lost[(int) abe.Type].end(), abe.Id);
+                    if(iterator != entry.Lost[(int) abe.Type].end()) {
+                        // Получили новую привязку, которая была удалена в предыдущем такте
+                        entry.Lost[(int) abe.Type].erase(iterator);
+                    } else {
+                        // Данная привязка не удалялась, может она была изменена?
+                        bool hasChanged = false;
+                        for(AssetBindEntry& abe2 : abc.Binds) {
+                            if(abe2.Type == abe.Type && abe2.Id == abe.Id) {
+                                // Привязка была изменена
+                                abe2 = std::move(abe);
+                                hasChanged = true;
+                                break;
+                            }
+                        }
+
+                        if(!hasChanged)
+                            // Изменения не было, это просто новая привязка
+                            abc.Binds.emplace_back(std::move(abe));
+                    }
+                }
+
+                entry.Binds.clear();
+            }
+            
+            AsyncContext.Binds.clear();
+
+            for(AssetBindEntry& entry : abc.Binds) {
+                Assets.ExistBinds[(int) entry.Type].insert(entry.Id);
+                result.Assets_ChangeOrAdd[entry.Type].push_back(entry.Id);
+
+                // Если ресурс был в кеше, то достаётся от туда
+                auto iter = Assets.NotInUse[(int) entry.Type].find(entry.Domain+':'+entry.Key);
+                if(iter != Assets.NotInUse[(int) entry.Type].end()) {
+                    IServerSession::Assets[entry.Type][entry.Id] = std::get<0>(iter->second);
+                    Assets.NotInUse[(int) entry.Type].erase(iter);
+                }
+            }
+
+            for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++) {
+                for(ResourceId id : abc.Lost[type]) {
+                    Assets.ExistBinds[type].erase(id);
+
+                    // Потерянные ресурсы уходят в кеш
+                    auto iter = IServerSession::Assets[(EnumAssets) type].find(id);
+                    if(iter != IServerSession::Assets[(EnumAssets) type].end()) {
+                        Assets.NotInUse[(int) iter->second.Type][iter->second.Domain+':'+iter->second.Key] = {iter->second, TIME_BEFORE_UNLOAD_RESOURCE+time(nullptr)};
+                        IServerSession::Assets[(EnumAssets) type].erase(iter);
+                    }
+                }
+
+                result.Assets_Lost[(EnumAssets) type] = std::move(abc.Lost[type]);
+            }
+        }
+
+        // Получаем ресурсы
+        {
+            for(AssetEntry& entry : AsyncContext.LoadedResources) {
+                if(Assets.ExistBinds[(int) entry.Type].contains(entry.Id)) {
+                    // Ресурс ещё нужен
+                    IServerSession::Assets[entry.Type][entry.Id] = entry;
+                } else {
+                    // Ресурс уже не нужен, отправляем в кеш
+                    Assets.NotInUse[(int) entry.Type][entry.Domain+':'+entry.Key] = {entry, TIME_BEFORE_UNLOAD_RESOURCE+time(nullptr)};
+                }
+            }
+            
+            AsyncContext.LoadedResources.clear();
+        }
+
+        // Чистим кеш ресурсов
+        {
+            uint64_t now = time(nullptr);
+            for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++) {
+                std::vector<std::string> toDelete;
+                for(auto& [key, value] : Assets.NotInUse[type]) {
+                    if(std::get<1>(value) < now)
+                        toDelete.push_back(key);
+                }
+
+                for(std::string& key : toDelete)
+                    Assets.NotInUse[type].erase(Assets.NotInUse[type].find(key));
+            }
+        }
 
         if(RS)
             RS->tickSync(result);

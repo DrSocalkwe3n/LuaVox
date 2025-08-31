@@ -873,11 +873,11 @@ PreparedNodeState::PreparedNodeState(const std::u8string& data) {
     uint16_t size;
     lr >> size;
 
-    ResourceToLocalId.reserve(size);
+    ModelToLocalId.reserve(size);
     for(int counter = 0; counter < size; counter++) {
         std::string domain, key;
         lr >> domain >> key;
-        ResourceToLocalId.emplace_back(std::move(domain), std::move(key));
+        ModelToLocalId.emplace_back(std::move(domain), std::move(key));
     }
 
     lr >> size;
@@ -987,10 +987,10 @@ std::u8string PreparedNodeState::dump() const {
     Net::Packet result;
 
     // ResourceToLocalId
-    assert(ResourceToLocalId.size() < (1 << 16));
-    result << uint16_t(ResourceToLocalId.size());
+    assert(ModelToLocalId.size() < (1 << 16));
+    result << uint16_t(ModelToLocalId.size());
 
-    for(const auto& [domain, key] : ResourceToLocalId) {
+    for(const auto& [domain, key] : ModelToLocalId) {
         assert(domain.size() < 32);
         result << domain;
         assert(key.size() < 32);
@@ -1421,7 +1421,7 @@ uint16_t PreparedNodeState::parseCondition(const std::string_view expression) {
 }
 
 std::pair<float, std::variant<PreparedNodeState::Model, PreparedNodeState::VectorModel>> PreparedNodeState::parseModel(const std::string_view modid, const js::object& obj) {
-    // ResourceToLocalId
+    // ModelToLocalId
 
     bool uvlock;
     float weight = 1;
@@ -1449,15 +1449,15 @@ std::pair<float, std::variant<PreparedNodeState::Model, PreparedNodeState::Vecto
         auto [domain, key] = parseDomainKey((std::string) *model_key, modid);
         
         uint16_t resId = 0;
-        for(auto& [lDomain, lKey] : ResourceToLocalId) {
+        for(auto& [lDomain, lKey] : ModelToLocalId) {
             if(lDomain == domain && lKey == key)
                 break;
 
             resId++;
         }
 
-        if(resId == ResourceToLocalId.size()) {
-            ResourceToLocalId.emplace_back(domain, key);
+        if(resId == ModelToLocalId.size()) {
+            ModelToLocalId.emplace_back(domain, key);
         }
 
         result.Id = resId;
@@ -1484,15 +1484,15 @@ std::pair<float, std::variant<PreparedNodeState::Model, PreparedNodeState::Vecto
             auto [domain, key] = parseDomainKey((std::string) js_obj.at("model").as_string(), modid);
         
             uint16_t resId = 0;
-            for(auto& [lDomain, lKey] : ResourceToLocalId) {
+            for(auto& [lDomain, lKey] : ModelToLocalId) {
                 if(lDomain == domain && lKey == key)
                     break;
 
                 resId++;
             }
 
-            if(resId == ResourceToLocalId.size()) {
-                ResourceToLocalId.emplace_back(domain, key);
+            if(resId == ModelToLocalId.size()) {
+                ModelToLocalId.emplace_back(domain, key);
             }
 
             subModel.Id = resId;
@@ -1598,8 +1598,7 @@ PreparedModel::PreparedModel(const std::string_view modid, const js::object& pro
         const js::object& textures = textures_val->as_object();
 
         for(const auto& [key, value] : textures) {
-            auto [domain, key2] = parseDomainKey((const std::string) value.as_string(), modid);
-            Textures[key] = {domain, key2};
+            Textures[key] = value.as_string();
         }
     }
 
@@ -1807,9 +1806,9 @@ PreparedModel::PreparedModel(const std::u8string& data) {
     lr >> size;
     Textures.reserve(size);
     for(int counter = 0; counter < size; counter++) {
-        std::string tkey, domain, key;
-        lr >> tkey >> domain >> key;
-        Textures.insert({tkey, {std::move(domain), std::move(key)}});
+        std::string tkey, pipeline;
+        lr >> tkey >> pipeline;
+        Textures.insert({tkey, pipeline});
     }
 
     lr >> size;
@@ -1916,11 +1915,8 @@ std::u8string PreparedModel::dump() const {
         assert(tkey.size() < 32);
         result << tkey;
 
-        assert(dk.first.size() < 32);
-        result << dk.first;
-
-        assert(dk.second.size() < 32);
-        result << dk.second;
+        assert(dk.size() < 512);
+        result << dk;
     }
 
     assert(Cuboids.size() < (1 << 16));

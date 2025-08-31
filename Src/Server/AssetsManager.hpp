@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <variant>
 
 
@@ -17,31 +18,40 @@ namespace fs = std::filesystem;
 
 /*
     Используется для расчёта коллизии,
-    если это необходимо.
-
-    glTF конвертируется в кубы
+    если это необходимо, а также зависимостей к ассетам.
 */
-struct PreparedModelCollision {
-    struct Cuboid {
-        glm::vec3 From, To;
-        uint8_t Faces;
-    
-        std::vector<PreparedModel::Cuboid::Transformation> Transformations;
-    };
+struct PreparedModel {
+    // Упрощённая коллизия
+    std::vector<std::pair<glm::vec3, glm::vec3>> Cuboids;
+    // Зависимости от текстур, которые нужно сообщить клиенту
+    std::unordered_map<std::string, std::vector<std::string>> TextureDependencies;
+    // Зависимости от моделей
+    std::unordered_map<std::string, std::vector<std::string>> ModelDependencies;
 
-    std::vector<Cuboid> Cuboids;
-    std::vector<PreparedModel::SubModel> SubModels;
+    PreparedModel(const std::string& domain, const LV::PreparedModel& model);
+    PreparedModel(const std::string& domain, const js::object& glTF);
+    PreparedModel(const std::string& domain, Resource glb);
 
-    PreparedModelCollision(const PreparedModel& model);
-    PreparedModelCollision(const std::string& domain, const js::object& glTF);
-    PreparedModelCollision(const std::string& domain, Resource glb);
+    PreparedModel() = default;
+    PreparedModel(const PreparedModel&) = default;
+    PreparedModel(PreparedModel&&) = default;
 
-    PreparedModelCollision() = default;
-    PreparedModelCollision(const PreparedModelCollision&) = default;
-    PreparedModelCollision(PreparedModelCollision&&) = default;
+    PreparedModel& operator=(const PreparedModel&) = default;
+    PreparedModel& operator=(PreparedModel&&) = default;
+};
 
-    PreparedModelCollision& operator=(const PreparedModelCollision&) = default;
-    PreparedModelCollision& operator=(PreparedModelCollision&&) = default;
+struct ModelDependency {
+    // Прямые зависимости к тестурам и моделям
+    std::vector<AssetsTexture> TextureDeps;
+    std::vector<AssetsModel> ModelDeps;
+    // Коллизия
+    std::vector<std::pair<glm::vec3, glm::vec3>> Cuboids;
+
+    // 
+    bool Ready = false;
+    // Полный список зависимостей рекурсивно
+    std::vector<AssetsTexture> FullSubTextureDeps;
+    std::vector<AssetsModel> FullSubModelDeps;
 };
 
 /*
@@ -59,7 +69,7 @@ public:
     
         
         std::unordered_map<std::string, std::vector<std::pair<std::string, PreparedNodeState>>> Nodestates;
-        std::unordered_map<std::string, std::vector<std::pair<std::string, PreparedModelCollision>>> Models;
+        std::unordered_map<std::string, std::vector<std::pair<std::string, PreparedModel>>> Models;
     };
 
 private:
@@ -76,7 +86,7 @@ private:
         static constexpr size_t ChunkSize = 4096;
         bool IsFull = false;
         std::bitset<ChunkSize> Empty;
-        std::array<std::optional<DataEntry>, ChunkSize> Entries;
+        std::array<std::optional<T>, ChunkSize> Entries;
 
         TableEntry() {
             Empty.set();
@@ -87,14 +97,64 @@ private:
         // Связь ресурсов по идентификаторам
         std::vector<std::unique_ptr<TableEntry<DataEntry>>> Table[(int) EnumAssets::MAX_ENUM];
 
-        // Распаршенные ресурсы, для использования сервером
-        std::vector<std::unique_ptr<TableEntry<PreparedNodeState>>> Table_NodeState;
-        std::vector<std::unique_ptr<TableEntry<PreparedModelCollision>>> Table_Model;
+        // Распаршенные ресурсы, для использования сервером (сбор зависимостей профиля нод и расчёт коллизии если нужно)
+        // Первичные зависимости Nodestate к моделям
+        std::vector<std::unique_ptr<TableEntry<std::vector<AssetsModel>>>> Table_NodeState;
+        // Упрощённые модели для коллизии
+        std::vector<std::unique_ptr<TableEntry<ModelDependency>>> Table_Model;
 
         // Связь домены -> {ключ -> идентификатор}
         std::unordered_map<std::string, std::unordered_map<std::string, ResourceId>> KeyToId[(int) EnumAssets::MAX_ENUM];
         
         std::tuple<ResourceId, std::optional<DataEntry>&> nextId(EnumAssets type);
+
+
+        ResourceId getId(EnumAssets type, const std::string& domain, const std::string& key) {
+            auto& keyToId = KeyToId[(int) type];
+            if(auto iterKTI = keyToId.find(domain); iterKTI != keyToId.end()) {
+                if(auto iterKey = iterKTI->second.find(key); iterKey != iterKTI->second.end()) {
+                    return iterKey->second;
+                }
+            }
+
+            auto [id, entry] = nextId(type);
+            keyToId[domain][key] = id;
+
+            // Расширяем таблицу с ресурсами, если необходимо
+            ssize_t tableChunks = (ssize_t) (id/TableEntry<DataEntry>::ChunkSize)-(ssize_t) Table[(int) type].size()+1;
+            for(; tableChunks > 0; tableChunks--) {
+                Table[(int) type].emplace_back(std::make_unique<TableEntry<DataEntry>>());
+
+                if(type == EnumAssets::Nodestate)
+                    Table_NodeState.emplace_back(std::make_unique<TableEntry<std::vector<AssetsModel>>>());
+                else if(type == EnumAssets::Model)
+                    Table_Model.emplace_back(std::make_unique<TableEntry<ModelDependency>>());
+            }
+
+            return id;
+        }
+
+        std::optional<std::tuple<Resource, const std::string&, const std::string&>> getResource(EnumAssets type, ResourceId id) {
+            assert(id < Table[(int) type].size()*TableEntry<DataEntry>::ChunkSize);
+            auto& value = Table[(int) type][id / TableEntry<DataEntry>::ChunkSize]->Entries[id % TableEntry<DataEntry>::ChunkSize];
+            if(value)
+                return {{value->Res, value->Domain, value->Key}};
+            else
+                return std::nullopt;
+        }
+
+        const std::optional<std::vector<AssetsModel>>& getResourceNodestate(ResourceId id) {
+            assert(id < Table_NodeState.size()*TableEntry<DataEntry>::ChunkSize);
+            return Table_NodeState[id / TableEntry<DataEntry>::ChunkSize]
+                ->Entries[id % TableEntry<DataEntry>::ChunkSize];
+        }
+
+
+        const std::optional<ModelDependency>& getResourceModel(ResourceId id) {
+            assert(id < Table_Model.size()*TableEntry<DataEntry>::ChunkSize);
+            return Table_Model[id / TableEntry<DataEntry>::ChunkSize]
+                ->Entries[id % TableEntry<DataEntry>::ChunkSize];
+        }
     };
 
     TOS::SpinlockObject<Local> LocalObj;
@@ -167,28 +227,56 @@ public:
         resource должен содержать домен и путь
     */
     ResourceId getId(EnumAssets type, const std::string& domain, const std::string& key) {
+        return LocalObj.lock()->getId(type, domain, key);
+    }
+
+    // Выдаёт ресурс по идентификатору
+    std::optional<std::tuple<Resource, const std::string&, const std::string&>> getResource(EnumAssets type, ResourceId id) {
+       return LocalObj.lock()->getResource(type, id);
+    }
+
+    // Выдаёт зависимости к ресурсам профиля ноды
+    std::tuple<AssetsNodestate, std::vector<AssetsModel>, std::vector<AssetsTexture>>
+        getNodeDependency(const std::string& domain, const std::string& key)
+    {
         auto lock = LocalObj.lock();
-        auto& keyToId = lock->KeyToId[(int) type];
-        if(auto iterKTI = keyToId.find(domain); iterKTI != keyToId.end()) {
-            if(auto iterKey = iterKTI->second.find(key); iterKey != iterKTI->second.end()) {
-                return iterKey->second;
+        AssetsNodestate nodestateId = lock->getId(EnumAssets::Nodestate, domain, key);
+
+        std::vector<AssetsModel> models;
+        std::vector<AssetsTexture> textures;
+
+        if(auto subModelsPtr = lock->getResourceNodestate(nodestateId)) {
+            for(AssetsModel resId : *subModelsPtr) {
+                const auto& subModel = lock->getResourceModel(resId);
+
+                if(!subModel)
+                    continue;
+
+                models.push_back(resId);
+                models.append_range(subModel->FullSubModelDeps);
+                textures.append_range(subModel->FullSubTextureDeps);
             }
         }
 
-        auto [id, entry] = lock->nextId(type);
-        keyToId[domain][key] = id;
-        return id;
+        {
+            std::sort(models.begin(), models.end());
+            auto eraseIter = std::unique(models.begin(), models.end());
+            models.erase(eraseIter, models.end());
+            models.shrink_to_fit();
+        }
+
+        {
+            std::sort(textures.begin(), textures.end());
+            auto eraseIter = std::unique(textures.begin(), textures.end());
+            textures.erase(eraseIter, textures.end());
+            textures.shrink_to_fit();
+        }
+        return {nodestateId, std::move(models), std::move(textures)};
     }
 
-    std::optional<std::tuple<Resource, const std::string&, const std::string&>> getResource(EnumAssets type, ResourceId id) {
-        auto lock = LocalObj.lock();
-        assert(id < lock->Table[(int) type].size()*TableEntry<DataEntry>::ChunkSize);
-        auto& value = lock->Table[(int) type][id / TableEntry<DataEntry>::ChunkSize]->Entries[id % TableEntry<DataEntry>::ChunkSize];
-        if(value)
-            return {{value->Res, value->Domain, value->Key}};
-        else
-            return std::nullopt;
-    }
+private:
+    TOS::Logger LOG = "Server>AssetsManager";
+
 };
 
 }

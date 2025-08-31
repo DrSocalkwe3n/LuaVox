@@ -1512,6 +1512,15 @@ void GameServer::prerun() {
 }
 
 void GameServer::run() {
+    {
+        IWorldSaveBackend::TickSyncInfo_In in;
+        for(int x = -1; x <= 1; x++)
+            for(int y = -1; y <= 1; y++)
+                for(int z = -1; z <= 1; z++)
+                    in.Load[0].push_back(Pos::GlobalChunk(x, y, z));
+
+        stepGeneratorAndLuaAsync(SaveBackend.World->tickSync(std::move(in)));
+    }
 
     while(true) {
         ((uint32_t&) Game.AfterStartTime) += (uint32_t) (CurrentTickDuration*256);

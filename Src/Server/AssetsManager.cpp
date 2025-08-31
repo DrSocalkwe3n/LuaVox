@@ -2,6 +2,7 @@
 #include "Common/Abstract.hpp"
 #include "boost/json.hpp"
 #include "png++/rgb_pixel.hpp"
+#include <algorithm>
 #include <exception>
 #include <filesystem>
 #include <png.h>
@@ -14,25 +15,34 @@
 
 namespace LV::Server {
 
-PreparedModelCollision::PreparedModelCollision(const PreparedModel& model) {
+PreparedModel::PreparedModel(const std::string& domain, const LV::PreparedModel& model) {
     Cuboids.reserve(model.Cuboids.size());
 
-    for(const PreparedModel::Cuboid& cuboid : model.Cuboids) {
-        Cuboid result;
-        result.From = cuboid.From;
-        result.To = cuboid.To;
-        result.Faces = 0;
-
-        for(const auto& [key, _] : cuboid.Faces)
-            result.Faces |= (1 << int(key));
-
-        result.Transformations = cuboid.Transformations;
+    for(auto& [key, cmd] : model.Textures) {
+        PrecompiledTexturePipeline ptp = compileTexturePipeline(cmd, domain);
+        for(auto& [domain, key] : ptp.Assets) {
+            TextureDependencies[domain].push_back(key);
+        }
     }
 
-    SubModels = model.SubModels;
+    for(auto& sub : model.SubModels) {
+        ModelDependencies[sub.Domain].push_back(sub.Key);
+    }
+
+    // for(const PreparedModel::Cuboid& cuboid : model.Cuboids) {
+    //     Cuboid result;
+    //     result.From = cuboid.From;
+    //     result.To = cuboid.To;
+    //     result.Faces = 0;
+
+    //     for(const auto& [key, _] : cuboid.Faces)
+    //         result.Faces |= (1 << int(key));
+
+    //     result.Transformations = cuboid.Transformations;
+    // }
 }
 
-PreparedModelCollision::PreparedModelCollision(const std::string& domain, const js::object& glTF) {
+PreparedModel::PreparedModel(const std::string& domain, const js::object& glTF) {
     // gltf
 
     // Сцена по умолчанию
@@ -45,7 +55,7 @@ PreparedModelCollision::PreparedModelCollision(const std::string& domain, const 
     // Буферы
 }
 
-PreparedModelCollision::PreparedModelCollision(const std::string& domain, Resource glb) {
+PreparedModel::PreparedModel(const std::string& domain, Resource glb) {
 
 }
 
@@ -104,26 +114,26 @@ void AssetsManager::loadResourceFromFile_Model(ResourceChangeObj& out, const std
 
     Resource res(path);
     std::filesystem::file_time_type ftt = fs::last_write_time(path);
+    PreparedModel pmc;
     
     if(path.extension() == "json") {
         js::object obj = js::parse(std::string_view((const char*) res.data(), res.size())).as_object();
-        PreparedModel pm(domain, obj);
-        PreparedModelCollision pmc(pm);
+        LV::PreparedModel pm(domain, obj);
         std::u8string data = pm.dump();
-        out.Models[domain].emplace_back(key, pmc);
+        pmc = PreparedModel(domain, pm);
         out.NewOrChange[(int) EnumAssets::Model][domain].emplace_back(key, Resource((const uint8_t*) data.data(), data.size()), ftt);
     } else if(path.extension() == "gltf") {
         js::object obj = js::parse(std::string_view((const char*) res.data(), res.size())).as_object();
-        PreparedModelCollision pmc(domain, obj);
-        out.Models[domain].emplace_back(key, pmc);
+        pmc = PreparedModel(domain, obj);
         out.NewOrChange[(int) EnumAssets::Model][domain].emplace_back(key, res, ftt);
     } else if(path.extension() == "glb") {
-        PreparedModelCollision pmc(domain, res);
-        out.Models[domain].emplace_back(key, pmc);
+        pmc = PreparedModel(domain, res);
         out.NewOrChange[(int) EnumAssets::Model][domain].emplace_back(key, res, ftt);
     } else {
         MAKE_ERROR("Не поддерживаемый формат файла");
     }
+
+    out.Models[domain].emplace_back(key, pmc);
 }
 
 void AssetsManager::loadResourceFromFile_Texture(ResourceChangeObj& out, const std::string& domain, const std::string& key, fs::path path) const {
@@ -436,14 +446,21 @@ AssetsManager::Out_applyResourceChange AssetsManager::applyResourceChange(const 
                 assert(iter != keyToIdDomain.end());
 
                 ResourceId resId = iter->second;
-                // keyToIdDomain.erase(iter);
-                // lost[type].push_back(resId);
 
-                uint32_t localId = resId % TableEntry<DataEntry>::ChunkSize;
+                if(type == (int) EnumAssets::Nodestate) {
+                    if(resId / TableEntry<PreparedNodeState>::ChunkSize < lock->Table_NodeState.size()) {
+                        lock->Table_NodeState[resId / TableEntry<PreparedNodeState>::ChunkSize]
+                            ->Entries[resId % TableEntry<PreparedNodeState>::ChunkSize].reset();
+                    }
+                } else if(type == (int) EnumAssets::Model) {
+                    if(resId / TableEntry<ModelDependency>::ChunkSize < lock->Table_Model.size()) {
+                        lock->Table_Model[resId / TableEntry<ModelDependency>::ChunkSize]
+                            ->Entries[resId % TableEntry<ModelDependency>::ChunkSize].reset();
+                    }
+                }
+
                 auto& chunk = lock->Table[type][resId / TableEntry<DataEntry>::ChunkSize];
-                // chunk->IsFull = false;
-                // chunk->Empty.set(localId);
-                chunk->Entries[localId].reset();
+                chunk->Entries[resId % TableEntry<DataEntry>::ChunkSize].reset();
             }
         }
     }
@@ -482,6 +499,130 @@ AssetsManager::Out_applyResourceChange AssetsManager::applyResourceChange(const 
         std::unordered_set<ResourceId> l(result.Lost[type].begin(), result.Lost[type].end());
         result.Lost[type].clear();
         std::set_difference(l.begin(), l.end(), noc.begin(), noc.end(), std::back_inserter(result.Lost[type]));
+    }
+
+    if(!orr.Nodestates.empty())
+    {
+        auto lock = LocalObj.lock();
+        for(auto& [domain, table] : orr.Nodestates) {
+            for(auto& [key, value] : table) {
+                ResourceId resId = lock->getId(EnumAssets::Nodestate, domain, key);
+
+                std::vector<AssetsModel> models;
+
+                for(auto& [domain, key] : value.ModelToLocalId) {
+                    models.push_back(lock->getId(EnumAssets::Model, domain, key));
+                }
+
+                {
+                    std::sort(models.begin(), models.end());
+                    auto iterErase = std::unique(models.begin(), models.end());
+                    models.erase(iterErase, models.end());
+                    models.shrink_to_fit();
+                }
+
+                lock->Table_NodeState[resId / TableEntry<DataEntry>::ChunkSize]
+                    ->Entries[resId % TableEntry<DataEntry>::ChunkSize] = std::move(models);
+            }
+        }
+    }
+
+    if(!orr.Models.empty())
+    {
+        auto lock = LocalObj.lock();
+        for(auto& [domain, table] : orr.Models) {
+            for(auto& [key, value] : table) {
+                ResourceId resId = lock->getId(EnumAssets::Model, domain, key);
+
+                ModelDependency deps;
+                for(auto& [domain, list] : value.ModelDependencies) {
+                    ResourceId subResId = lock->getId(EnumAssets::Model, domain, key);
+                    deps.ModelDeps.push_back(subResId);
+                }
+
+                for(auto& [domain, list] : value.TextureDependencies) {
+                    ResourceId subResId = lock->getId(EnumAssets::Texture, domain, key);
+                    deps.TextureDeps.push_back(subResId);
+                }
+
+                lock->Table_Model[resId / TableEntry<DataEntry>::ChunkSize]
+                    ->Entries[resId % TableEntry<DataEntry>::ChunkSize] = std::move(deps);
+            }
+        }
+    }
+
+    // Вычислить зависимости моделей
+    {
+        // Затираем старые данные
+        auto lock = LocalObj.lock();
+        for(auto& entriesChunk : lock->Table_Model) {
+            for(auto& entry : entriesChunk->Entries) {
+                if(!entry)
+                    continue;
+
+                entry->Ready = false;
+                entry->FullSubTextureDeps.clear();
+                entry->FullSubModelDeps.clear();
+            }
+        }
+
+        // Вычисляем зависимости
+        std::function<void(AssetsModel resId, ModelDependency&)> calcDeps = [&](AssetsModel resId, ModelDependency& entry) {
+            for(AssetsModel subResId : entry.ModelDeps) {
+                auto& model = lock->Table_Model[subResId / TableEntry<ModelDependency>::ChunkSize]
+                    ->Entries[subResId % TableEntry<ModelDependency>::ChunkSize];
+
+                if(!model)
+                    continue;
+
+                if(!model->Ready)
+                    calcDeps(subResId, *model);
+
+                if(std::binary_search(model->FullSubModelDeps.begin(), model->FullSubModelDeps.end(), resId)) {
+                    // Циклическая зависимость
+                    const auto object1 = lock->getResource(EnumAssets::Model, resId);
+                    const auto object2 = lock->getResource(EnumAssets::Model, subResId);
+                    assert(object1);
+
+                    LOG.warn() << "В моделе " << std::get<1>(*object1) << ':' << std::get<2>(*object1)
+                        << " обнаружена циклическая зависимость с " << std::get<1>(*object2) << ':' 
+                        << std::get<2>(*object2);
+                } else {
+                    entry.FullSubTextureDeps.append_range(model->FullSubTextureDeps);
+                    entry.FullSubModelDeps.push_back(subResId);
+                    entry.FullSubModelDeps.append_range(model->FullSubModelDeps);
+                }
+            }
+
+            {
+                std::sort(entry.FullSubTextureDeps.begin(), entry.FullSubTextureDeps.end());
+                auto eraseIter = std::unique(entry.FullSubTextureDeps.begin(), entry.FullSubTextureDeps.end());
+                entry.FullSubTextureDeps.erase(eraseIter, entry.FullSubTextureDeps.end());
+                entry.FullSubTextureDeps.shrink_to_fit();
+            }
+
+            {
+                std::sort(entry.FullSubModelDeps.begin(), entry.FullSubModelDeps.end());
+                auto eraseIter = std::unique(entry.FullSubModelDeps.begin(), entry.FullSubModelDeps.end());
+                entry.FullSubModelDeps.erase(eraseIter, entry.FullSubModelDeps.end());
+                entry.FullSubModelDeps.shrink_to_fit();
+            }
+
+            entry.Ready = true;
+        };
+
+        ssize_t iter = -1;
+        for(auto& entriesChunk : lock->Table_Model) {
+            for(auto& entry : entriesChunk->Entries) {
+                iter++;
+
+                if(!entry || entry->Ready)
+                    continue;
+
+                // Собираем зависимости
+                calcDeps(iter, *entry);
+            }
+        }
     }
 
     return result;

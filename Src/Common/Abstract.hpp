@@ -6,6 +6,7 @@
 #include <glm/ext.hpp>
 #include <memory>
 #include <sol/forward.hpp>
+#include <string>
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
@@ -494,13 +495,6 @@ void unCompressNodes(const std::u8string& compressed, Node* ptr);
 std::u8string compressLinear(const std::u8string& data);
 std::u8string unCompressLinear(const std::u8string& data);
 
-enum struct TexturePipelineCMD : uint8_t {
-    Texture,    // Указание текстуры
-    Combine,    // Комбинирование
-
-};
-
-
 struct NodestateEntry {
     std::string Name;
     int Variability = 0;                    // Количество возможный значений состояния
@@ -551,7 +545,7 @@ struct PreparedNodeState {
     };
 
     // Локальный идентификатор в именной ресурс
-    std::vector<std::pair<std::string, std::string>> ResourceToLocalId;
+    std::vector<std::pair<std::string, std::string>> ModelToLocalId;
     // Ноды выражений
     std::vector<Node> Nodes;
     // Условия -> вариации модели + веса
@@ -578,6 +572,7 @@ struct PreparedNodeState {
     // Пишет в сжатый двоичный формат
     std::u8string dump() const;
 
+    // Если зависит от случайного распределения по миру
     bool hasVariability() const {
         return HasVariability;
     }
@@ -609,7 +604,7 @@ struct PreparedModel {
     };
     
     std::unordered_map<std::string, FullTransformation> Display;
-    std::unordered_map<std::string, std::pair<std::string, std::string>> Textures;
+    std::unordered_map<std::string, std::string> Textures;
 
     struct Cuboid {
         bool Shade;
@@ -670,9 +665,9 @@ private:
     bool load(const std::u8string& data) noexcept;
 };
 
-struct TexturePipeline {
-    std::vector<AssetsTexture> BinTextures;
-    std::u8string Pipeline;
+enum struct TexturePipelineCMD : uint8_t {
+    Texture,    // Указание текстуры
+    Combine,    // Комбинирование
 };
 
 using Hash_t = std::array<uint8_t, 32>;
@@ -689,6 +684,30 @@ inline std::pair<std::string, std::string> parseDomainKey(const std::string& val
     }
 }
 
+struct PrecompiledTexturePipeline {
+    // Локальные идентификаторы пайплайна в домен+ключ
+    std::vector<std::pair<std::string, std::string>> Assets;
+    // Чистый код текстурных преобразований, локальные идентификаторы связаны с Assets
+    std::u8string Pipeline;
+};
+
+struct TexturePipeline {
+    // Разыменованые идентификаторы
+    std::vector<AssetsTexture> BinTextures;
+    // Чистый код текстурных преобразований, локальные идентификаторы связаны с BinTextures
+    std::u8string Pipeline;
+};
+
+// Компилятор текстурных потоков
+inline PrecompiledTexturePipeline compileTexturePipeline(const std::string &cmd, const std::string_view defaultDomain = "core") {
+    PrecompiledTexturePipeline result;
+
+    auto [domain, key] = parseDomainKey(cmd, defaultDomain);
+
+    result.Assets.emplace_back(domain, key);
+
+    return result;
+}
 
 struct Resource {
 private:

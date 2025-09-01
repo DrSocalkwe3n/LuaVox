@@ -94,7 +94,7 @@ private:
     struct TickData {
         std::vector<std::pair<DefVoxelId, void*>> Profile_Voxel_AddOrChange;
         std::vector<DefVoxelId> Profile_Voxel_Lost;
-        std::vector<std::pair<DefNodeId, void*>> Profile_Node_AddOrChange;
+        std::vector<std::pair<DefNodeId, DefNode_t>> Profile_Node_AddOrChange;
         std::vector<DefNodeId> Profile_Node_Lost;
         std::vector<std::pair<DefWorldId, void*>> Profile_World_AddOrChange;
         std::vector<DefWorldId> Profile_World_Lost;

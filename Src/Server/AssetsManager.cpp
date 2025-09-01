@@ -262,6 +262,13 @@ std::tuple<ResourceId, std::optional<AssetsManager::DataEntry>&> AssetsManager::
         table.emplace_back(std::make_unique<TableEntry<DataEntry>>());
         id = (table.size()-1)*TableEntry<DataEntry>::ChunkSize;
         data = &table.back()->Entries[0];
+
+        // Расширяем таблицу с ресурсами, если необходимо
+        if(type == EnumAssets::Nodestate)
+            Table_NodeState.emplace_back(std::make_unique<TableEntry<std::vector<AssetsModel>>>());
+        else if(type == EnumAssets::Model)
+            Table_Model.emplace_back(std::make_unique<TableEntry<ModelDependency>>());
+    
     }
 
     return {id, *data};

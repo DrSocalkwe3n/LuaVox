@@ -29,7 +29,11 @@ struct ResourceBase {
 };
 
 struct DefVoxel : public ResourceBase { };
-struct DefNode : public ResourceBase { };
+struct DefNode : public ResourceBase {
+    AssetsNodestate NodestateId;
+    std::vector<AssetsModel> ModelDeps;
+    std::vector<AssetsTexture> TextureDeps;
+};
 struct DefWorld : public ResourceBase { };
 struct DefPortal : public ResourceBase { };
 struct DefEntity : public ResourceBase { };
@@ -126,11 +130,11 @@ class ContentManager {
         return resId;
     }
 
-    void registerBase_Node(ResourceId id, const sol::table& profile);
-    void registerBase_World(ResourceId id, const sol::table& profile);
+    void registerBase_Node(ResourceId id, const std::string& domain, const std::string& key, const sol::table& profile);
+    void registerBase_World(ResourceId id, const std::string& domain, const std::string& key, const sol::table& profile);
 
 public:
-    ContentManager(asio::io_context& ioc);
+    ContentManager(AssetsManager &am);
     ~ContentManager();
 
     // Регистрирует определение контента
@@ -199,6 +203,10 @@ public:
         else
             return std::nullopt;
     }
+
+private:
+    TOS::Logger LOG = "Server>ContentManager";
+    AssetsManager& AM;
 };
 
 }

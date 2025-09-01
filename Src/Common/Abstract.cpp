@@ -1108,6 +1108,7 @@ uint16_t PreparedNodeState::parseCondition(const std::string_view expression) {
             ssize_t npos = pos;
             for(; npos < expression.size() && std::isalpha(expression[npos]); npos++);
             std::string_view value = expression.substr(pos, npos-pos);
+            pos += value.size();
             if(value == "true")
                 tokens.push_back(1);
             else if(value == "false")
@@ -1198,7 +1199,7 @@ uint16_t PreparedNodeState::parseCondition(const std::string_view expression) {
         }
 
         // Обрабатываем унарные операции
-        for(ssize_t index = end; index >= pos; index--) {
+        for(ssize_t index = end-1; index >= (ssize_t) pos; index--) {
             if(EnumTokenKind *kind = std::get_if<EnumTokenKind>(&tokens[index])) {
                 if(*kind != EnumTokenKind::Not && *kind != EnumTokenKind::Plus && *kind != EnumTokenKind::Minus)
                     continue;
@@ -1367,11 +1368,7 @@ uint16_t PreparedNodeState::parseCondition(const std::string_view expression) {
         }
     };
 
-    uint16_t nodeId = lambdaParse(0);
-    if(!tokens.empty())
-        MAKE_ERROR("Выражение не действительно");
-
-    return nodeId;
+    return lambdaParse(0);
 
     // std::unordered_map<std::string, int> vars;
     // std::function<int(uint16_t)> lambdaCalcNode = [&](uint16_t nodeId) -> int {

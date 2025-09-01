@@ -151,6 +151,7 @@ struct DefItemInfo {
 
 struct DefVoxel_t {};
 struct DefNode_t {
+    AssetsNodestate NodestateId = 0;
     AssetsTexture TexId = 0;
 
 };

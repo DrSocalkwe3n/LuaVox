@@ -436,7 +436,7 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
         // Профили
         std::unordered_map<DefVoxelId, void*> profile_Voxel_AddOrChange;
         std::vector<DefVoxelId> profile_Voxel_Lost;
-        std::unordered_map<DefNodeId, void*> profile_Node_AddOrChange;
+        std::unordered_map<DefNodeId, DefNode_t> profile_Node_AddOrChange;
         std::vector<DefNodeId> profile_Node_Lost;
         std::unordered_map<DefWorldId, void*> profile_World_AddOrChange;
         std::vector<DefWorldId> profile_World_Lost;
@@ -811,6 +811,13 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
             }
         }
 
+        // Определения
+        {
+            for(auto& [resId, def] : profile_Node_AddOrChange) {
+                Profiles.DefNode[resId] = def;
+            }
+        }
+
         // Чанки
         {
             for(auto& [wId, lost] : regions_Lost_Result) {
@@ -1110,29 +1117,19 @@ coro<> ServerSession::rP_Definition(Net::AsyncSocket &sock) {
     }
     case ToClient::L2Definition::Node:
     {
-        // DefNodeId id;
-        // DefNode_t def;
-        // id = co_await sock.read<DefNodeId>();
-        // def.DrawType = (DefNode_t::EnumDrawType) co_await sock.read<uint8_t>();
-        // for(int iter = 0; iter < 6; iter++) {
-        //     auto &pl = def.Texs[iter].Pipeline;
-        //     pl.resize(co_await sock.read<uint16_t>());
-        //     co_await sock.read((std::byte*) pl.data(), pl.size());
-        // }
+        DefNode_t def;
+        DefNodeId id = co_await sock.read<DefNodeId>();
+        def.NodestateId = co_await sock.read<uint32_t>();
+        def.TexId = id;
 
-        // PP_Definition_Node *packet = new PP_Definition_Node(
-        //     id,
-        //     def
-        // );
+        AsyncContext.ThisTickEntry.Profile_Node_AddOrChange.emplace_back(id, def);
 
-        // while(!NetInputPackets.push(packet));
-
-        // co_return;
+        co_return;
     }
     case ToClient::L2Definition::FreeNode:
     {
         DefNodeId id = co_await sock.read<DefNodeId>();
-    
+        AsyncContext.ThisTickEntry.Profile_Node_Lost.push_back(id);
 
         co_return;
     }

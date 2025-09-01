@@ -120,17 +120,6 @@ private:
             auto [id, entry] = nextId(type);
             keyToId[domain][key] = id;
 
-            // Расширяем таблицу с ресурсами, если необходимо
-            ssize_t tableChunks = (ssize_t) (id/TableEntry<DataEntry>::ChunkSize)-(ssize_t) Table[(int) type].size()+1;
-            for(; tableChunks > 0; tableChunks--) {
-                Table[(int) type].emplace_back(std::make_unique<TableEntry<DataEntry>>());
-
-                if(type == EnumAssets::Nodestate)
-                    Table_NodeState.emplace_back(std::make_unique<TableEntry<std::vector<AssetsModel>>>());
-                else if(type == EnumAssets::Model)
-                    Table_Model.emplace_back(std::make_unique<TableEntry<ModelDependency>>());
-            }
-
             return id;
         }
 
@@ -256,6 +245,8 @@ public:
                 models.append_range(subModel->FullSubModelDeps);
                 textures.append_range(subModel->FullSubTextureDeps);
             }
+        } else {
+            LOG.debug() << "Для ноды " << domain << ':' << key << " отсутствует описание Nodestate";
         }
 
         {
@@ -271,6 +262,7 @@ public:
             textures.erase(eraseIter, textures.end());
             textures.shrink_to_fit();
         }
+        
         return {nodestateId, std::move(models), std::move(textures)};
     }
 

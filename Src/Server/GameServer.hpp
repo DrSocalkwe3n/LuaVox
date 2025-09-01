@@ -80,7 +80,7 @@ class GameServer : public AsyncObject {
 
 
         ContentObj(asio::io_context& ioc)
-            : AM(ioc), CM(ioc)
+            : AM(ioc), CM(AM)
         {}
     } Content;
 

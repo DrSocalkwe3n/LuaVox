@@ -1472,6 +1472,7 @@ void GameServer::init(fs::path worldPath) {
     initLuaPost();
     pushEvent("postInit");
 
+
     // Загрузить миры с существующими профилями
     LOG.info() << "Загрузка существующих миров...";
 

@@ -4,18 +4,22 @@
 
 namespace LV::Server {
 
-ContentManager::ContentManager(asio::io_context& ioc) {
+ContentManager::ContentManager(AssetsManager &am)
+    : AM(am)
+{
 
 }
 
 ContentManager::~ContentManager() = default;
 
-void ContentManager::registerBase_Node(ResourceId id, const sol::table& profile) {
+void ContentManager::registerBase_Node(ResourceId id, const std::string& domain, const std::string& key, const sol::table& profile) {
     std::optional<DefNode>& node = getEntry_Node(id);
     if(!node)
         node.emplace();
 
     DefNode& def = *node;
+    def.Domain = domain;
+    def.Key = key;
 
     {
         std::optional<std::variant<std::string, sol::table>> parent = profile.get<std::optional<std::variant<std::string, sol::table>>>("parent");
@@ -70,7 +74,7 @@ void ContentManager::registerBase_Node(ResourceId id, const sol::table& profile)
     // result.NodeAdvancementFactory = profile["node_advancement_factory"];
 }
 
-void ContentManager::registerBase_World(ResourceId id, const sol::table& profile) {
+void ContentManager::registerBase_World(ResourceId id, const std::string& domain, const std::string& key, const sol::table& profile) {
     std::optional<DefWorld>& world = getEntry_World(id);
     if(!world)
         world.emplace();
@@ -82,9 +86,9 @@ void ContentManager::registerBase(EnumDefContent type, const std::string& domain
     ProfileChanges[(int) type].push_back(id);
 
     if(type == EnumDefContent::Node)
-        registerBase_Node(id, profile);
+        registerBase_Node(id, domain, key, profile);
     else if(type == EnumDefContent::World)
-        registerBase_World(id, profile);
+        registerBase_World(id, domain, key, profile);
     else
         MAKE_ERROR("Не реализовано");
 }
@@ -117,8 +121,18 @@ ContentManager::Out_buildEndProfiles ContentManager::buildEndProfiles() {
         keys.erase(iterErase, keys.end());
     }
 
-    for(ResourceId id : ProfileChanges[(int) EnumDefContent::Voxel]) {
+    for(ResourceId id : ProfileChanges[(int) EnumDefContent::Node]) {
+        std::optional<DefNode>& node = getEntry_Node(id);
+        if(!node) {
+            continue;
+        }
 
+        auto [nodestateId, assetsModel, assetsTexture]
+            = AM.getNodeDependency(node->Domain, node->Key);
+
+        node->NodestateId = nodestateId;
+        node->ModelDeps = std::move(assetsModel);
+        node->TextureDeps = std::move(assetsTexture);
     }
 
     return result;

@@ -579,50 +579,34 @@ void RemoteClient::NetworkAndResource_t::informateDefVoxel(const std::vector<std
 
 void RemoteClient::NetworkAndResource_t::informateDefNode(const std::vector<std::pair<DefNodeId, DefNode*>>& nodes)
 {
-    // for(auto& [id, def] : nodes) {
-    //     if(!ResUses.DefNode.contains(id))
-    //         continue;
+    for(auto& [id, def] : nodes) {
+        if(!ResUses.DefNode.contains(id))
+            continue;
+
+        checkPacketBorder(1+1+4+4);
+        NextPacket << (uint8_t) ToClient::L1::Definition
+            << (uint8_t) ToClient::L2Definition::Node
+            << id << (uint32_t) def->NodestateId;
+
+        ResUses_t::RefAssets_t refs;
+        {
+            refs.Resources[(uint8_t) EnumAssets::Nodestate].push_back(def->NodestateId);
+            refs.Resources[(uint8_t) EnumAssets::Texture] = def->TextureDeps;
+            refs.Resources[(uint8_t) EnumAssets::Model] = def->ModelDeps;
+
+            incrementAssets(refs);
+        }
         
-    //     size_t reserve = 0;
-    //     for(int iter = 0; iter < 6; iter++)
-    //         reserve += def->Texs[iter].Pipeline.size();
-
-    //     checkPacketBorder(1+1+4+1+2*6+reserve);
-    //     NextPacket << (uint8_t) ToClient::L1::Definition
-    //         << (uint8_t) ToClient::L2Definition::Node
-    //         << id << (uint8_t) def->DrawType;
-
-    //     for(int iter = 0; iter < 6; iter++) {
-    //         NextPacket << (uint16_t) def->Texs[iter].Pipeline.size();
-    //         NextPacket.write((const std::byte*) def->Texs[iter].Pipeline.data(), def->Texs[iter].Pipeline.size());
-    //     }
-
-    //     ResUsesObj::RefDefBin_t refs;
-    //     {
-    //         auto &array = refs.Resources[(uint8_t) EnumBinResource::Texture];
-    //         for(int iter = 0; iter < 6; iter++) {
-    //             array.insert(array.end(), def->Texs[iter].BinTextures.begin(), def->Texs[iter].BinTextures.end());
-    //         }
-
-    //         std::sort(array.begin(), array.end());
-    //         auto eraseLast = std::unique(array.begin(), array.end());
-    //         array.erase(eraseLast, array.end());
-
-    //         incrementBinary(refs);
-    //     }
-
-        
-    //     {
-    //         auto iterDefRef = ResUses.RefDefNode.find(id);
-    //         if(iterDefRef != ResUses.RefDefNode.end()) {
-    //             decrementBinary(std::move(iterDefRef->second));
-    //             iterDefRef->second = std::move(refs);
-    //         } else {
-    //             ResUses.RefDefNode[id] = std::move(refs);
-    //         }
-    //     }
-
-    // }
+        {
+            auto iterDefRef = ResUses.RefDefNode.find(id);
+            if(iterDefRef != ResUses.RefDefNode.end()) {
+                decrementAssets(std::move(iterDefRef->second));
+                iterDefRef->second = std::move(refs);
+            } else {
+                ResUses.RefDefNode[id] = std::move(refs);
+            }
+        }
+    }
 }
 
 void RemoteClient::NetworkAndResource_t::informateDefWorld(const std::vector<std::pair<DefWorldId, DefWorld*>>& worlds)

@@ -1440,7 +1440,7 @@ std::pair<float, std::variant<PreparedNodeState::Model, PreparedNodeState::Vecto
     if(const auto model_key = model.try_as_string()) {
         // Одна модель
         Model result;
-        result.UVLock = uvlock;
+        result.UVLock = false;
         result.Transforms = std::move(transforms);
 
         auto [domain, key] = parseDomainKey((std::string) *model_key, modid);
@@ -1548,8 +1548,8 @@ PreparedModel::PreparedModel(const std::string_view modid, const js::object& pro
         GuiLight = EnumGuiLight::Default;
     }
 
-    if(profile.contains("AmbientOcclusion")) {
-        AmbientOcclusion = profile.at("ambientocclusion").as_bool();
+    if(profile.contains("ambient_occlusion")) {
+        AmbientOcclusion = profile.at("ambient_occlusion").as_bool();
     }
 
     if(profile.contains("display")) {
@@ -1588,7 +1588,6 @@ PreparedModel::PreparedModel(const std::string_view modid, const js::object& pro
 
             Display[key] = result;
         }
-
     }
 
     if(boost::system::result<const js::value&> textures_val = profile.try_at("textures")) {
@@ -1745,13 +1744,22 @@ PreparedModel::PreparedModel(const std::string_view modid, const js::object& pro
 
         for(const js::value& sub_val : subModels) {
             SubModel result;
-            const js::object& sub = sub_val.as_object();
-            auto [domain, key] = parseDomainKey((std::string) sub.at("path").as_string(), modid);
-            result.Domain = std::move(domain);
-            result.Key = std::move(key);
 
-            if(boost::system::result<const js::value&> scene_val = profile.try_at("scene"))
-                result.Scene = scene_val->to_number<uint16_t>();
+            if(auto path = sub_val.try_as_string()) {
+                auto [domain, key] = parseDomainKey((std::string) path.value(), modid);
+                result.Domain = std::move(domain);
+                result.Key = std::move(key);
+            } else {
+                const js::object& sub = sub_val.as_object();
+                auto [domain, key] = parseDomainKey((std::string) sub.at("path").as_string(), modid);
+                result.Domain = std::move(domain);
+                result.Key = std::move(key);
+
+                if(boost::system::result<const js::value&> scene_val = profile.try_at("scene"))
+                    result.Scene = scene_val->to_number<uint16_t>();
+            }
+
+            SubModels.emplace_back(std::move(result));
         }
     }
 }

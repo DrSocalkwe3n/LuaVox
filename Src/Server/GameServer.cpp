@@ -1444,13 +1444,13 @@ void GameServer::init(fs::path worldPath) {
 
     {
         sol::table t = LuaMainState.create_table();
-        Content.CM.registerBase(EnumDefContent::Node, "core", "test0", t);
-        Content.CM.registerBase(EnumDefContent::Node, "core", "test1", t);
-        Content.CM.registerBase(EnumDefContent::Node, "core", "test2", t);
-        Content.CM.registerBase(EnumDefContent::Node, "core", "test3", t);
-        Content.CM.registerBase(EnumDefContent::Node, "core", "test4", t);
-        Content.CM.registerBase(EnumDefContent::Node, "core", "test5", t);
-        Content.CM.registerBase(EnumDefContent::World, "core", "devel_world", t);
+        Content.CM.registerBase(EnumDefContent::Node, "test", "test0", t);
+        Content.CM.registerBase(EnumDefContent::Node, "test", "test1", t);
+        Content.CM.registerBase(EnumDefContent::Node, "test", "test2", t);
+        Content.CM.registerBase(EnumDefContent::Node, "test", "test3", t);
+        Content.CM.registerBase(EnumDefContent::Node, "test", "test4", t);
+        Content.CM.registerBase(EnumDefContent::Node, "test", "test5", t);
+        Content.CM.registerBase(EnumDefContent::World, "test", "devel_world", t);
     }
 
     initLuaPre();
@@ -1513,15 +1513,15 @@ void GameServer::prerun() {
 }
 
 void GameServer::run() {
-    {
-        IWorldSaveBackend::TickSyncInfo_In in;
-        for(int x = -1; x <= 1; x++)
-            for(int y = -1; y <= 1; y++)
-                for(int z = -1; z <= 1; z++)
-                    in.Load[0].push_back(Pos::GlobalChunk(x, y, z));
+    // {
+    //     IWorldSaveBackend::TickSyncInfo_In in;
+    //     for(int x = -1; x <= 1; x++)
+    //         for(int y = -1; y <= 1; y++)
+    //             for(int z = -1; z <= 1; z++)
+    //                 in.Load[0].push_back(Pos::GlobalChunk(x, y, z));
 
-        stepGeneratorAndLuaAsync(SaveBackend.World->tickSync(std::move(in)));
-    }
+    //     stepGeneratorAndLuaAsync(SaveBackend.World->tickSync(std::move(in)));
+    // }
 
     while(true) {
         ((uint32_t&) Game.AfterStartTime) += (uint32_t) (CurrentTickDuration*256);
@@ -2467,13 +2467,20 @@ void GameServer::stepSyncContent() {
     }
 
     for(std::shared_ptr<RemoteClient>& remoteClient : Game.RemoteClients) {
-        remoteClient->informateAssets(resources);
-        remoteClient->informateDefVoxel(voxels);
-        remoteClient->informateDefNode(nodes);
-        remoteClient->informateDefWorld(worlds);
-        remoteClient->informateDefPortal(portals);
-        remoteClient->informateDefEntity(entities);
-        remoteClient->informateDefItem(items);
+        if(!resources.empty())
+            remoteClient->informateAssets(resources);
+        if(!voxels.empty())
+            remoteClient->informateDefVoxel(voxels);
+        if(!nodes.empty())
+            remoteClient->informateDefNode(nodes);
+        if(!worlds.empty())
+            remoteClient->informateDefWorld(worlds);
+        if(!portals.empty())
+            remoteClient->informateDefPortal(portals);
+        if(!entities.empty())
+            remoteClient->informateDefEntity(entities);
+        if(!items.empty())
+            remoteClient->informateDefItem(items);
     }
 
 

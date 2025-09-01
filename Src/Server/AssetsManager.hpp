@@ -229,7 +229,7 @@ public:
         getNodeDependency(const std::string& domain, const std::string& key)
     {
         auto lock = LocalObj.lock();
-        AssetsNodestate nodestateId = lock->getId(EnumAssets::Nodestate, domain, key);
+        AssetsNodestate nodestateId = lock->getId(EnumAssets::Nodestate, domain, key+".json");
 
         std::vector<AssetsModel> models;
         std::vector<AssetsTexture> textures;

@@ -115,18 +115,20 @@ void AssetsManager::loadResourceFromFile_Model(ResourceChangeObj& out, const std
     Resource res(path);
     std::filesystem::file_time_type ftt = fs::last_write_time(path);
     PreparedModel pmc;
+
+    auto extension = path.extension();
     
-    if(path.extension() == "json") {
+    if(extension == ".json") {
         js::object obj = js::parse(std::string_view((const char*) res.data(), res.size())).as_object();
         LV::PreparedModel pm(domain, obj);
         std::u8string data = pm.dump();
         pmc = PreparedModel(domain, pm);
         out.NewOrChange[(int) EnumAssets::Model][domain].emplace_back(key, Resource((const uint8_t*) data.data(), data.size()), ftt);
-    } else if(path.extension() == "gltf") {
+    } else if(extension == ".gltf") {
         js::object obj = js::parse(std::string_view((const char*) res.data(), res.size())).as_object();
         pmc = PreparedModel(domain, obj);
         out.NewOrChange[(int) EnumAssets::Model][domain].emplace_back(key, res, ftt);
-    } else if(path.extension() == "glb") {
+    } else if(extension == ".glb") {
         pmc = PreparedModel(domain, res);
         out.NewOrChange[(int) EnumAssets::Model][domain].emplace_back(key, res, ftt);
     } else {
@@ -251,7 +253,7 @@ std::tuple<ResourceId, std::optional<AssetsManager::DataEntry>&> AssetsManager::
         uint32_t pos = entry.Empty._Find_first();
         entry.Empty.reset(pos);
 
-        if(entry.Empty._Find_first() == entry.Empty.size())
+        if(entry.Empty._Find_next(pos) == entry.Empty.size())
             entry.IsFull = true;
 
         id = index*TableEntry<DataEntry>::ChunkSize + pos;
@@ -262,6 +264,7 @@ std::tuple<ResourceId, std::optional<AssetsManager::DataEntry>&> AssetsManager::
         table.emplace_back(std::make_unique<TableEntry<DataEntry>>());
         id = (table.size()-1)*TableEntry<DataEntry>::ChunkSize;
         data = &table.back()->Entries[0];
+        table.back()->Empty.reset(0);
 
         // Расширяем таблицу с ресурсами, если необходимо
         if(type == EnumAssets::Nodestate)
@@ -517,8 +520,8 @@ AssetsManager::Out_applyResourceChange AssetsManager::applyResourceChange(const 
 
                 std::vector<AssetsModel> models;
 
-                for(auto& [domain, key] : value.ModelToLocalId) {
-                    models.push_back(lock->getId(EnumAssets::Model, domain, key));
+                for(auto& [domain2, key2] : value.ModelToLocalId) {
+                    models.push_back(lock->getId(EnumAssets::Model, domain2, key2));
                 }
 
                 {
@@ -542,14 +545,18 @@ AssetsManager::Out_applyResourceChange AssetsManager::applyResourceChange(const 
                 ResourceId resId = lock->getId(EnumAssets::Model, domain, key);
 
                 ModelDependency deps;
-                for(auto& [domain, list] : value.ModelDependencies) {
-                    ResourceId subResId = lock->getId(EnumAssets::Model, domain, key);
-                    deps.ModelDeps.push_back(subResId);
+                for(auto& [domain2, list] : value.ModelDependencies) {
+                    for(const std::string& key2 : list) {
+                        ResourceId subResId = lock->getId(EnumAssets::Model, domain2, key2);
+                        deps.ModelDeps.push_back(subResId);
+                    }
                 }
 
-                for(auto& [domain, list] : value.TextureDependencies) {
-                    ResourceId subResId = lock->getId(EnumAssets::Texture, domain, key);
-                    deps.TextureDeps.push_back(subResId);
+                for(auto& [domain2, list] : value.TextureDependencies) {
+                    for(const std::string& key2 : list) {
+                        ResourceId subResId = lock->getId(EnumAssets::Texture, domain2, key2);
+                        deps.TextureDeps.push_back(subResId);
+                    }
                 }
 
                 lock->Table_Model[resId / TableEntry<DataEntry>::ChunkSize]
@@ -574,13 +581,22 @@ AssetsManager::Out_applyResourceChange AssetsManager::applyResourceChange(const 
         }
 
         // Вычисляем зависимости
-        std::function<void(AssetsModel resId, ModelDependency&)> calcDeps = [&](AssetsModel resId, ModelDependency& entry) {
+        std::function<void(AssetsModel resId, ModelDependency&)> calcDeps;
+        calcDeps = [&](AssetsModel resId, ModelDependency& entry) {
             for(AssetsModel subResId : entry.ModelDeps) {
                 auto& model = lock->Table_Model[subResId / TableEntry<ModelDependency>::ChunkSize]
                     ->Entries[subResId % TableEntry<ModelDependency>::ChunkSize];
 
                 if(!model)
                     continue;
+
+                if(resId == subResId) {
+                    const auto object1 = lock->getResource(EnumAssets::Model, resId);
+                    const auto object2 = lock->getResource(EnumAssets::Model, subResId);
+                    LOG.warn() << "В моделе " << std::get<1>(*object1) << ':' << std::get<2>(*object1)
+                        << " обнаружена циклическая зависимость с самой собою";
+                    continue;
+                }
 
                 if(!model->Ready)
                     calcDeps(subResId, *model);

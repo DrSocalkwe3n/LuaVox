@@ -673,7 +673,7 @@ enum struct TexturePipelineCMD : uint8_t {
 using Hash_t = std::array<uint8_t, 32>;
 
 inline std::pair<std::string, std::string> parseDomainKey(const std::string& value, const std::string_view defaultDomain = "core") {
-    auto regResult = TOS::Str::match(value, "(?:([\\w\\d_]+):)?([\\w\\d_]+)");
+    auto regResult = TOS::Str::match(value, "(?:([\\w\\d_]+):)?([\\w\\d/_.]+)");
     if(!regResult)
         MAKE_ERROR("Недействительный домен:ключ");
 

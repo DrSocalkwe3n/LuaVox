@@ -297,7 +297,19 @@ public:
 
     // Готовность кадров определяет когда можно удалять ненужные ресурсы, которые ещё используются в рендере
     void pushFrame() {
+        FrameRoulette = (FrameRoulette+1) % FRAME_COUNT_RESOURCE_LATENCY;
 
+        for(auto pointer : VPV_ToFree[FrameRoulette]) {
+            VertexPool_Voxels.dropVertexs(pointer);
+        }
+
+        VPV_ToFree[FrameRoulette].clear();
+
+        for(auto pointer : VPN_ToFree[FrameRoulette]) {
+            VertexPool_Nodes.dropVertexs(pointer);
+        }
+
+        VPN_ToFree[FrameRoulette].clear();
     }
 
     // Выдаёт буферы для рендера в порядке от ближнего к дальнему. distance - радиус в регионах

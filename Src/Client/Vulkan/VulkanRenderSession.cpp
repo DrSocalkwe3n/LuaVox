@@ -1452,6 +1452,8 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
 
         PCO.Model = orig;
     }
+
+    CP.pushFrame();
 }
 
 void VulkanRenderSession::pushStage(EnumRenderStage stage) {

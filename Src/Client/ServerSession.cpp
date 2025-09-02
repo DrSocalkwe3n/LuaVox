@@ -1080,21 +1080,27 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
     {
         Hash_t hash;
         co_await sock.read((std::byte*) hash.data(), hash.size());
-        uint32_t size = co_await sock.read<uint32_t>();
-        AssetLoading& al = AsyncContext.AssetsLoading.at(hash);
-        if(al.Data.size()-al.Offset < size)
-            MAKE_ERROR("Несоответствие ожидаемого размера ресурса");
+        try {
+            uint32_t size = co_await sock.read<uint32_t>();
+            assert(AsyncContext.AssetsLoading.contains(hash));
+            AssetLoading& al = AsyncContext.AssetsLoading.at(hash);
+            if(al.Data.size()-al.Offset < size)
+                MAKE_ERROR("Несоответствие ожидаемого размера ресурса");
 
-        co_await sock.read((std::byte*) al.Data.data() + al.Offset, size);
-        al.Offset += size;
+            co_await sock.read((std::byte*) al.Data.data() + al.Offset, size);
+            al.Offset += size;
 
-        if(al.Offset == al.Data.size()) {
-            // Ресурс полностью загружен
-            AsyncContext.LoadedAssets.lock()->emplace_back(
-                al.Type, al.Id, std::move(al.Domain), std::move(al.Key), std::move(al.Data)
-            );
+            if(al.Offset == al.Data.size()) {
+                // Ресурс полностью загружен
+                AsyncContext.LoadedAssets.lock()->emplace_back(
+                    al.Type, al.Id, std::move(al.Domain), std::move(al.Key), std::move(al.Data)
+                );
 
-            AsyncContext.AssetsLoading.erase(AsyncContext.AssetsLoading.find(hash));
+                AsyncContext.AssetsLoading.erase(AsyncContext.AssetsLoading.find(hash));
+            }
+        } catch(const std::exception& exc) {
+            std::string err = exc.what();
+            int g = 0;
         }
     
         co_return;

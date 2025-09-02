@@ -843,13 +843,13 @@ void RemoteClient::onUpdate() {
             p.write(res.data() + sended, willSend);
             sended += willSend;
 
-            if(sended == willSend) {
+            if(sended == res.size()) {
                 hasFullSended = true;
             }
         }
 
         if(hasFullSended) {
-            for(ssize_t iter = toSend.size()-1; iter > 0; iter--) {
+            for(ssize_t iter = toSend.size()-1; iter >= 0; iter--) {
                 if(std::get<4>(toSend[iter]).size() == std::get<5>(toSend[iter])) {
                     toSend.erase(toSend.begin()+iter);
                 }

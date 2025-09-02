@@ -204,6 +204,7 @@ private:
         size_t maxCacheDatabaseSize, size_t maxLifeTime);
 
     void readWriteThread(AsyncUseControl::Lock lock);
+    std::string hashToString(const Hash_t& hash);
 };
 
 }

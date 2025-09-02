@@ -342,16 +342,24 @@ void AssetsManager::readWriteThread(AsyncUseControl::Lock lock) {
                 // TODO: добавить вычистку места при нехватке
 
                 if(res.size() <= SMALL_RESOURCE) {
-                    Hash_t hash = res.hash();
-                    sqlite3_bind_blob(STMT_INLINE_INSERT, 1, (const void*) hash.data(), 32, SQLITE_STATIC);
-                    sqlite3_bind_int(STMT_INLINE_INSERT, 2, time(nullptr));
-                    sqlite3_bind_blob(STMT_INLINE_INSERT, 3, res.data(), res.size(), SQLITE_STATIC);
-                    if(sqlite3_step(STMT_INLINE_INSERT) != SQLITE_DONE) {
+                        Hash_t hash = res.hash();
+                    LOG.debug() << "Сохраняем ресурс " << hashToString(hash);
+
+                    try {
+                        sqlite3_bind_blob(STMT_INLINE_INSERT, 1, (const void*) hash.data(), 32, SQLITE_STATIC);
+                        sqlite3_bind_int(STMT_INLINE_INSERT, 2, time(nullptr));
+                        sqlite3_bind_blob(STMT_INLINE_INSERT, 3, res.data(), res.size(), SQLITE_STATIC);
+                        if(sqlite3_step(STMT_INLINE_INSERT) != SQLITE_DONE) {
+                            sqlite3_reset(STMT_INLINE_INSERT);
+                            MAKE_ERROR("Не удалось выполнить подготовленный запрос STMT_INLINE_INSERT: " << sqlite3_errmsg(DB));
+                        }
+
                         sqlite3_reset(STMT_INLINE_INSERT);
-                        MAKE_ERROR("Не удалось выполнить подготовленный запрос STMT_INLINE_INSERT: " << sqlite3_errmsg(DB));
+                    } catch(const std::exception& exc) {
+                        LOG.error() << "Произошла ошибка при сохранении " << hashToString(hash);
+                        throw;
                     }
 
-                    sqlite3_reset(STMT_INLINE_INSERT);
                 } else {
                     std::string hashKey;
                     {
@@ -393,6 +401,15 @@ void AssetsManager::readWriteThread(AsyncUseControl::Lock lock) {
         LOG.warn() << "Ошибка в работе потока:\n" << exc.what();
         IssuedAnError = true;
     }
+}
+
+std::string AssetsManager::hashToString(const Hash_t& hash) {
+    std::stringstream ss;
+    ss << std::hex << std::setfill('0');
+    for (const auto& byte : hash)
+        ss << std::setw(2) << static_cast<int>(byte);
+    
+    return ss.str();
 }
 
 }

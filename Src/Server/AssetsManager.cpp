@@ -498,6 +498,8 @@ AssetsManager::Out_applyResourceChange AssetsManager::applyResourceChange(const 
                 keyToIdDomain[key] = id;
 
                 data->emplace(lwt, resource, domain, key);
+
+                lock->HashToId[resource.hash()] = {(EnumAssets) type, id};
             }
         }
 
@@ -509,6 +511,39 @@ AssetsManager::Out_applyResourceChange AssetsManager::applyResourceChange(const 
         std::unordered_set<ResourceId> l(result.Lost[type].begin(), result.Lost[type].end());
         result.Lost[type].clear();
         std::set_difference(l.begin(), l.end(), noc.begin(), noc.end(), std::back_inserter(result.Lost[type]));
+    }
+
+    // Дамп ключей assets
+    {
+        std::stringstream result;
+
+        auto lock = LocalObj.lock();
+        for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++) {
+            if(type == 0)
+                result << "Nodestate:\n";
+            else if(type == 1)
+                result << "Particle:\n";
+            else if(type == 2)
+                result << "Animation:\n";
+            else if(type == 3)
+                result << "Model:\n";
+            else if(type == 4)
+                result << "Texture:\n";
+            else if(type == 5)
+                result << "Sound:\n";
+            else if(type == 6)
+                result << "Font:\n";
+
+            for(const auto& [domain, list] : lock->KeyToId[type]) {
+                result << "\t" << domain << ":\n";
+
+                for(const auto& [key, id] : list) {
+                    result << "\t\t" << key << " = " << id << '\n';
+                }
+            }
+        }
+
+        LOG.debug() << "Дамп ассетов:\n" << result.str();
     }
 
     if(!orr.Nodestates.empty())
@@ -617,6 +652,7 @@ AssetsManager::Out_applyResourceChange AssetsManager::applyResourceChange(const 
                 }
             }
 
+            entry.FullSubTextureDeps.append_range(entry.TextureDeps);
             {
                 std::sort(entry.FullSubTextureDeps.begin(), entry.FullSubTextureDeps.end());
                 auto eraseIter = std::unique(entry.FullSubTextureDeps.begin(), entry.FullSubTextureDeps.end());

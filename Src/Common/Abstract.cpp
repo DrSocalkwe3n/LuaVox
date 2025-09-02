@@ -2024,9 +2024,9 @@ Resource::Resource(const std::u8string& data)
     : In(std::make_shared<std::variant<InlineMMap, InlinePtr>>(InlinePtr((const uint8_t*) data.data(), data.size())))
 {}
 
-Resource::Resource(std::u8string&& data) {
-
-}
+Resource::Resource(std::u8string&& data)
+    : In(std::make_shared<std::variant<InlineMMap, InlinePtr>>(InlinePtr(std::move(data))))
+{}
 
 const std::byte* Resource::data() const { assert(In); return std::visit<const std::byte*>([](auto& obj){ return obj.data(); }, *In); }
 size_t Resource::size() const { assert(In); return std::visit<size_t>([](auto& obj){ return obj.size(); }, *In); }

@@ -192,7 +192,7 @@ class GameServer : public AsyncObject {
                 thread.join();
         }
 
-        __attribute__((optimize("O3"))) void run(int id);
+        /* __attribute__((optimize("O3"))) */ void run(int id);
     } BackingChunkPressure;
 
     /*

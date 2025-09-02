@@ -70,11 +70,9 @@ private:
     struct {
         // Существующие привязки ресурсов
         std::unordered_set<ResourceId> ExistBinds[(int) EnumAssets::MAX_ENUM];
-        // Используемые в данных момент ресурсы (определяется по действующей привязке)
-        std::unordered_map<ResourceId, AssetEntry> InUse[(int) EnumAssets::MAX_ENUM];
         // Недавно использованные ресурсы, пока хранятся здесь в течении TIME_BEFORE_UNLOAD_RESOURCE секунд
         std::unordered_map<std::string, std::pair<AssetEntry, uint64_t>> NotInUse[(int) EnumAssets::MAX_ENUM];
-    } Assets;
+    } MyAssets;
 
     struct AssetLoading {
         EnumAssets Type;

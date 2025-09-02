@@ -523,10 +523,12 @@ void RemoteClient::informateAssets(const std::vector<std::tuple<EnumAssets, Reso
 
                 auto it = std::lower_bound(AssetsInWork.OnClient.begin(), AssetsInWork.OnClient.end(), hash);
 
-                if(it == AssetsInWork.OnClient.end() || *it != hash)
+                if(it == AssetsInWork.OnClient.end() || *it != hash) {
                     AssetsInWork.OnClient.insert(it, hash);
-
-                AssetsInWork.ToSend.emplace_back(type, domain, key, resId, resource, 0);
+                    AssetsInWork.ToSend.emplace_back(type, domain, key, resId, resource, 0);
+                } else {
+                    LOG.warn() << "Клиент повторно запросил имеющийся у него ресурс";
+                }
 
                 lock = NetworkAndResource.lock();
             }
@@ -552,13 +554,13 @@ void RemoteClient::informateAssets(const std::vector<std::tuple<EnumAssets, Reso
         assert(newForClient.size() < 65535*4);
         auto lock = NetworkAndResource.lock();
 
-        lock->checkPacketBorder(2+4+newForClient.size()*(1+4+32));
+        lock->checkPacketBorder(2+1+4+newForClient.size()*(1+4+64+32));
         lock->NextPacket << (uint8_t) ToClient::L1::Resource    // Оповещение
             << ((uint8_t) ToClient::L2Resource::Bind) << uint32_t(newForClient.size());
 
         for(auto& [type, resId, domain, key, hash, size] : newForClient) {
             // TODO: может внести ограничение на длину домена и ключа?
-            lock->NextPacket << uint8_t(type) << uint32_t(resId) << domain << key << size;
+            lock->NextPacket << uint8_t(type) << uint32_t(resId) << domain << key;
             lock->NextPacket.write((const std::byte*) hash.data(), hash.size());
         }
     }

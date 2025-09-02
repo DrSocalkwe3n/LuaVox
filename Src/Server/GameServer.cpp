@@ -806,14 +806,15 @@ void GameServer::BackingNoiseGenerator_t::run(int id) {
 
             std::array<float, 64*64*64> data;
             float *ptr = &data[0];
+            std::fill(ptr, ptr+64*64*64, 0);
 
-            for(int z = 0; z < 64; z++)
-                for(int y = 0; y < 64; y++)
-                for(int x = 0; x < 64; x++, ptr++) {
-                    // *ptr = TOS::genRand();
-                    *ptr = glm::perlin(glm::vec3(posNode.x+x, posNode.y+y, posNode.z+z) / 16.13f);
-                    //*ptr = std::pow(*ptr, 0.75f)*1.5f;
-                }
+            // for(int z = 0; z < 64; z++)
+            //     for(int y = 0; y < 64; y++)
+            //     for(int x = 0; x < 64; x++, ptr++) {
+            //         // *ptr = TOS::genRand();
+            //         *ptr = glm::perlin(glm::vec3(posNode.x+x, posNode.y+y, posNode.z+z) / 16.13f);
+            //         //*ptr = std::pow(*ptr, 0.75f)*1.5f;
+            //     }
 
             Output.lock()->push_back({key, std::move(data)});
         }
@@ -1493,7 +1494,7 @@ void GameServer::init(fs::path worldPath) {
         BackingNoiseGenerator.Threads[iter] = std::thread(&BackingNoiseGenerator_t::run, &BackingNoiseGenerator, iter);
     }
 
-    BackingAsyncLua.Threads.resize(4);
+    BackingAsyncLua.Threads.resize(1);
     for(size_t iter = 0; iter < BackingAsyncLua.Threads.size(); iter++) {
         BackingAsyncLua.Threads[iter] = std::thread(&BackingAsyncLua_t::run, &BackingAsyncLua, iter);
     }
@@ -1837,12 +1838,8 @@ void GameServer::stepGeneratorAndLuaAsync(IWorldSaveBackend::TickSyncInfo_Out db
     // Обработка шума на стороне луа
     {
         std::vector<std::pair<BackingNoiseGenerator_t::NoiseKey, std::array<float, 64*64*64>>> calculatedNoise = BackingNoiseGenerator.tickSync(std::move(db.NotExisten));
-        if(!calculatedNoise.empty()) {
-            auto lock = BackingAsyncLua.NoiseIn.lock();
-
-            for(auto& pair : calculatedNoise)
-                lock->push(pair);
-        }
+        if(!calculatedNoise.empty())
+            BackingAsyncLua.NoiseIn.lock()->push_range(calculatedNoise);
 
         calculatedNoise.clear();
 
@@ -2408,7 +2405,15 @@ void GameServer::stepSyncContent() {
             auto& [resource, domain, key] = *result;
             resources.emplace_back((EnumAssets) type, resId, domain, key, resource);
         }
-        
+    }
+
+    for(const Hash_t& hash : full.Hashes) {
+        std::optional<std::tuple<Resource, const std::string&, const std::string&, EnumAssets, ResourceId>> result = Content.AM.getResource(hash);
+        if(!result)
+            continue;
+
+        auto& [resource, domain, key, type, id] = *result;
+        resources.emplace_back(type, id, domain, key, resource);
     }
 
     // Информируем о запрошенных профилях

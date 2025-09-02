@@ -249,7 +249,7 @@ void AssetsManager::readWriteThread(AsyncUseControl::Lock lock) {
                         // Нашли
                         finded = true;
                         Resource res = Resource(end).convertToMem();
-                        ReadyQueue.lock()->emplace_back(rk.Hash, res);
+                        ReadyQueue.lock()->emplace_back(rk, res);
                         break;
                     }
                 }
@@ -264,7 +264,7 @@ void AssetsManager::readWriteThread(AsyncUseControl::Lock lock) {
                         int size = sqlite3_column_bytes(STMT_INLINE_GET, 0);
                         Resource res(hash, size);
                         finded = true;
-                        ReadyQueue.lock()->emplace_back(rk.Hash, res);
+                        ReadyQueue.lock()->emplace_back(rk, res);
                     } else if(errc != SQLITE_DONE) {
                         sqlite3_reset(STMT_INLINE_GET);
                         MAKE_ERROR("Не удалось выполнить подготовленный запрос STMT_INLINE_GET: " << sqlite3_errmsg(DB));
@@ -323,7 +323,7 @@ void AssetsManager::readWriteThread(AsyncUseControl::Lock lock) {
 
                 if(!finded) {
                     // Не нашли
-                    ReadyQueue.lock()->emplace_back(rk.Hash, std::nullopt);
+                    ReadyQueue.lock()->emplace_back(rk, std::nullopt);
                 }
 
                 continue;
@@ -342,7 +342,8 @@ void AssetsManager::readWriteThread(AsyncUseControl::Lock lock) {
                 // TODO: добавить вычистку места при нехватке
 
                 if(res.size() <= SMALL_RESOURCE) {
-                    sqlite3_bind_blob(STMT_INLINE_INSERT, 1, (const void*) res.hash().data(), 32, SQLITE_STATIC);
+                    Hash_t hash = res.hash();
+                    sqlite3_bind_blob(STMT_INLINE_INSERT, 1, (const void*) hash.data(), 32, SQLITE_STATIC);
                     sqlite3_bind_int(STMT_INLINE_INSERT, 2, time(nullptr));
                     sqlite3_bind_blob(STMT_INLINE_INSERT, 3, res.data(), res.size(), SQLITE_STATIC);
                     if(sqlite3_step(STMT_INLINE_INSERT) != SQLITE_DONE) {
@@ -371,7 +372,8 @@ void AssetsManager::readWriteThread(AsyncUseControl::Lock lock) {
 
                     fd.close();
 
-                    sqlite3_bind_blob(STMT_DISK_INSERT, 1, (const void*) res.hash().data(), 32, SQLITE_STATIC);
+                    Hash_t hash = res.hash();
+                    sqlite3_bind_blob(STMT_DISK_INSERT, 1, (const void*) hash.data(), 32, SQLITE_STATIC);
                     sqlite3_bind_int(STMT_DISK_INSERT, 2, time(nullptr));
                     sqlite3_bind_int(STMT_DISK_INSERT, 3, res.size());
                     if(sqlite3_step(STMT_DISK_INSERT) != SQLITE_DONE) {

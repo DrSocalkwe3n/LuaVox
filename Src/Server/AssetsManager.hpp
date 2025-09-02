@@ -105,6 +105,7 @@ private:
 
         // Связь домены -> {ключ -> идентификатор}
         std::unordered_map<std::string, std::unordered_map<std::string, ResourceId>> KeyToId[(int) EnumAssets::MAX_ENUM];
+        std::unordered_map<Hash_t, std::tuple<EnumAssets, ResourceId>> HashToId;
         
         std::tuple<ResourceId, std::optional<DataEntry>&> nextId(EnumAssets type);
 
@@ -130,6 +131,28 @@ private:
                 return {{value->Res, value->Domain, value->Key}};
             else
                 return std::nullopt;
+        }
+
+        std::optional<std::tuple<Resource, const std::string&, const std::string&, EnumAssets, ResourceId>> getResource(const Hash_t& hash) {
+            auto iter = HashToId.find(hash);
+            if(iter == HashToId.end())
+                return std::nullopt;
+
+            auto [type, id] = iter->second;
+            std::optional<std::tuple<Resource, const std::string&, const std::string&>> res = getResource(type, id);
+            if(!res) {
+                HashToId.erase(iter);
+                return std::nullopt;
+            }
+
+            if(std::get<Resource>(*res).hash() == hash) {
+                auto& [resource, domain, key] = *res;
+                return std::tuple<Resource, const std::string&, const std::string&, EnumAssets, ResourceId>{resource, domain, key, type, id};
+            }
+
+
+            HashToId.erase(iter);
+            return std::nullopt;
         }
 
         const std::optional<std::vector<AssetsModel>>& getResourceNodestate(ResourceId id) {
@@ -222,6 +245,11 @@ public:
     // Выдаёт ресурс по идентификатору
     std::optional<std::tuple<Resource, const std::string&, const std::string&>> getResource(EnumAssets type, ResourceId id) {
        return LocalObj.lock()->getResource(type, id);
+    }
+
+    // Выдаёт ресурс по хешу
+    std::optional<std::tuple<Resource, const std::string&, const std::string&, EnumAssets, ResourceId>> getResource(const Hash_t& hash) {
+        return LocalObj.lock()->getResource(hash);
     }
 
     // Выдаёт зависимости к ресурсам профиля ноды

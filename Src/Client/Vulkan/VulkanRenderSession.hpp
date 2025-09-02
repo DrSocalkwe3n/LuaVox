@@ -169,7 +169,7 @@ public:
         assert(vkInst);
         assert(serverSession);
 
-        CMG.changeThreadsCount(2);
+        CMG.changeThreadsCount(1);
 
         const VkCommandPoolCreateInfo infoCmdPool =
         {

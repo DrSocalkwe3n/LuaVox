@@ -268,10 +268,10 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
             AsyncContext.LoadedResources.emplace_back(std::move(entry));
             
             // // Проверяем используется ли сейчас ресурс
-            // auto iter = Assets.ExistBinds[(int) entry.Type].find(entry.Id);
-            // if(iter == Assets.ExistBinds[(int) entry.Type].end()) {
+            // auto iter = MyAssets.ExistBinds[(int) entry.Type].find(entry.Id);
+            // if(iter == MyAssets.ExistBinds[(int) entry.Type].end()) {
             //     // Не используется
-            //     Assets.NotInUse[(int) entry.Type][entry.Domain + ':' + entry.Key] = {entry, TIME_BEFORE_UNLOAD_RESOURCE+time(nullptr)};
+            //     MyAssets.NotInUse[(int) entry.Type][entry.Domain + ':' + entry.Key] = {entry, TIME_BEFORE_UNLOAD_RESOURCE+time(nullptr)};
             // } else {
             //     // Используется
             //     Assets.InUse[(int) entry.Type][entry.Id] = entry;
@@ -290,10 +290,10 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
         for(auto& [key, res] : resources) {
             if(!res) {
                 // Проверить не был ли уже отправлен запрос на получение этого хеша
-                auto iter = std::lower_bound(AsyncContext.AlreadyLoading.begin(), AsyncContext.AlreadyLoading.end(), res->hash());
-                if(iter == AsyncContext.AlreadyLoading.end()) {
-                    AsyncContext.AlreadyLoading.insert(iter, res->hash());
-                    needRequest.push_back(res->hash());
+                auto iter = std::lower_bound(AsyncContext.AlreadyLoading.begin(), AsyncContext.AlreadyLoading.end(), key.Hash);
+                if(iter == AsyncContext.AlreadyLoading.end() || *iter != key.Hash) {
+                    AsyncContext.AlreadyLoading.insert(iter, key.Hash);
+                    needRequest.push_back(key.Hash);
                 }
             } else {
                 AssetEntry entry {
@@ -339,7 +339,7 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                     const AssetBindEntry& abe = abc.Binds[iter];
                     auto& lost = entry.Lost[(int) abe.Type];
                     auto iterator = std::lower_bound(lost.begin(), lost.end(), abe.Id);
-                    if(iterator != lost.end()) {
+                    if(iterator != lost.end() && *iterator == abe.Id) {
                         // Привязка будет удалена
                         lost.erase(iterator);
                         abc.Binds.erase(abc.Binds.begin()+iter);
@@ -354,7 +354,7 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
 
                 for(AssetBindEntry& abe : entry.Binds) {
                     auto iterator = std::lower_bound(entry.Lost[(int) abe.Type].begin(), entry.Lost[(int) abe.Type].end(), abe.Id);
-                    if(iterator != entry.Lost[(int) abe.Type].end()) {
+                    if(iterator != entry.Lost[(int) abe.Type].end() && *iterator == abe.Id) {
                         // Получили новую привязку, которая была удалена в предыдущем такте
                         entry.Lost[(int) abe.Type].erase(iterator);
                     } else {
@@ -382,26 +382,26 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
         // Запрос к дисковому кешу новых ресурсов
         std::vector<AssetsManager::ResourceKey> needToLoad;
         for(const AssetBindEntry& bind : abc.Binds) {
-            bool needQuery = false;
+            bool needQuery = true;
             // Проверить in memory кеш по домену+ключу
             {
                 std::string dk = bind.Domain + ':' + bind.Key;
-                auto &niubdk = Assets.NotInUse[(int) bind.Type];
+                auto &niubdk = MyAssets.NotInUse[(int) bind.Type];
                 auto iter = niubdk.find(dk);
                 if(iter != niubdk.end()) {
                     // Есть ресурс
-                    needQuery = true;
+                    needQuery = false;
                 }
             }
 
             // Проверить если такой запрос уже был отправлен в AssetsManager и ожидает ответа
-            if(!needQuery) {
+            if(needQuery) {
                 auto& list = AsyncContext.ResourceWait[(int) bind.Type];
                 auto iterDomain = list.find(bind.Domain);
                 if(iterDomain != list.end()) {
                     for(const auto& [key, hash] : iterDomain->second) {
                         if(key == bind.Key && hash == bind.Hash) {
-                            needQuery = true;
+                            needQuery = false;
                             break;
                         }
                     }
@@ -452,7 +452,7 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                 {
                     for(auto& [id, profile] : data.Profile_Voxel_AddOrChange) {
                         auto iter = std::lower_bound(profile_Voxel_Lost.begin(), profile_Voxel_Lost.end(), id);
-                        if(iter != profile_Voxel_Lost.end())
+                        if(iter != profile_Voxel_Lost.end() && *iter == id)
                             profile_Voxel_Lost.erase(iter);
 
                         profile_Voxel_AddOrChange[id] = profile;
@@ -471,7 +471,7 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                 {
                     for(auto& [id, profile] : data.Profile_Node_AddOrChange) {
                         auto iter = std::lower_bound(profile_Node_Lost.begin(), profile_Node_Lost.end(), id);
-                        if(iter != profile_Node_Lost.end())
+                        if(iter != profile_Node_Lost.end() && *iter == id)
                             profile_Node_Lost.erase(iter);
 
                         profile_Node_AddOrChange[id] = profile;
@@ -490,7 +490,7 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                 {
                     for(auto& [id, profile] : data.Profile_World_AddOrChange) {
                         auto iter = std::lower_bound(profile_World_Lost.begin(), profile_World_Lost.end(), id);
-                        if(iter != profile_World_Lost.end())
+                        if(iter != profile_World_Lost.end() && *iter == id)
                             profile_World_Lost.erase(iter);
 
                         profile_World_AddOrChange[id] = profile;
@@ -509,7 +509,7 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                 {
                     for(auto& [id, profile] : data.Profile_Portal_AddOrChange) {
                         auto iter = std::lower_bound(profile_Portal_Lost.begin(), profile_Portal_Lost.end(), id);
-                        if(iter != profile_Portal_Lost.end())
+                        if(iter != profile_Portal_Lost.end() && *iter == id)
                             profile_Portal_Lost.erase(iter);
 
                         profile_Portal_AddOrChange[id] = profile;
@@ -528,7 +528,7 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                 {
                     for(auto& [id, profile] : data.Profile_Entity_AddOrChange) {
                         auto iter = std::lower_bound(profile_Entity_Lost.begin(), profile_Entity_Lost.end(), id);
-                        if(iter != profile_Entity_Lost.end())
+                        if(iter != profile_Entity_Lost.end() && *iter == id)
                             profile_Entity_Lost.erase(iter);
 
                         profile_Entity_AddOrChange[id] = profile;
@@ -547,7 +547,7 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                 {
                     for(auto& [id, profile] : data.Profile_Item_AddOrChange) {
                         auto iter = std::lower_bound(profile_Item_Lost.begin(), profile_Item_Lost.end(), id);
-                        if(iter != profile_Item_Lost.end())
+                        if(iter != profile_Item_Lost.end() && *iter == id)
                             profile_Item_Lost.erase(iter);
 
                         profile_Item_AddOrChange[id] = profile;
@@ -713,7 +713,7 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                     const AssetBindEntry& abe = abc.Binds[iter];
                     auto& lost = entry.Lost[(int) abe.Type];
                     auto iterator = std::lower_bound(lost.begin(), lost.end(), abe.Id);
-                    if(iterator != lost.end()) {
+                    if(iterator != lost.end() && *iterator == abe.Id) {
                         lost.erase(iterator);
                         abc.Binds.erase(abc.Binds.begin()+iter);
                     }
@@ -727,7 +727,7 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
 
                 for(AssetBindEntry& abe : entry.Binds) {
                     auto iterator = std::lower_bound(entry.Lost[(int) abe.Type].begin(), entry.Lost[(int) abe.Type].end(), abe.Id);
-                    if(iterator != entry.Lost[(int) abe.Type].end()) {
+                    if(iterator != entry.Lost[(int) abe.Type].end() && *iterator == abe.Id) {
                         // Получили новую привязку, которая была удалена в предыдущем такте
                         entry.Lost[(int) abe.Type].erase(iterator);
                     } else {
@@ -754,25 +754,25 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
             AsyncContext.Binds.clear();
 
             for(AssetBindEntry& entry : abc.Binds) {
-                Assets.ExistBinds[(int) entry.Type].insert(entry.Id);
+                MyAssets.ExistBinds[(int) entry.Type].insert(entry.Id);
                 result.Assets_ChangeOrAdd[entry.Type].push_back(entry.Id);
 
                 // Если ресурс был в кеше, то достаётся от туда
-                auto iter = Assets.NotInUse[(int) entry.Type].find(entry.Domain+':'+entry.Key);
-                if(iter != Assets.NotInUse[(int) entry.Type].end()) {
+                auto iter = MyAssets.NotInUse[(int) entry.Type].find(entry.Domain+':'+entry.Key);
+                if(iter != MyAssets.NotInUse[(int) entry.Type].end()) {
                     IServerSession::Assets[entry.Type][entry.Id] = std::get<0>(iter->second);
-                    Assets.NotInUse[(int) entry.Type].erase(iter);
+                    MyAssets.NotInUse[(int) entry.Type].erase(iter);
                 }
             }
 
             for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++) {
                 for(ResourceId id : abc.Lost[type]) {
-                    Assets.ExistBinds[type].erase(id);
+                    MyAssets.ExistBinds[type].erase(id);
 
                     // Потерянные ресурсы уходят в кеш
                     auto iter = IServerSession::Assets[(EnumAssets) type].find(id);
                     if(iter != IServerSession::Assets[(EnumAssets) type].end()) {
-                        Assets.NotInUse[(int) iter->second.Type][iter->second.Domain+':'+iter->second.Key] = {iter->second, TIME_BEFORE_UNLOAD_RESOURCE+time(nullptr)};
+                        MyAssets.NotInUse[(int) iter->second.Type][iter->second.Domain+':'+iter->second.Key] = {iter->second, TIME_BEFORE_UNLOAD_RESOURCE+time(nullptr)};
                         IServerSession::Assets[(EnumAssets) type].erase(iter);
                     }
                 }
@@ -784,12 +784,12 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
         // Получаем ресурсы
         {
             for(AssetEntry& entry : AsyncContext.LoadedResources) {
-                if(Assets.ExistBinds[(int) entry.Type].contains(entry.Id)) {
+                if(MyAssets.ExistBinds[(int) entry.Type].contains(entry.Id)) {
                     // Ресурс ещё нужен
                     IServerSession::Assets[entry.Type][entry.Id] = entry;
                 } else {
                     // Ресурс уже не нужен, отправляем в кеш
-                    Assets.NotInUse[(int) entry.Type][entry.Domain+':'+entry.Key] = {entry, TIME_BEFORE_UNLOAD_RESOURCE+time(nullptr)};
+                    MyAssets.NotInUse[(int) entry.Type][entry.Domain+':'+entry.Key] = {entry, TIME_BEFORE_UNLOAD_RESOURCE+time(nullptr)};
                 }
             }
             
@@ -801,13 +801,13 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
             uint64_t now = time(nullptr);
             for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++) {
                 std::vector<std::string> toDelete;
-                for(auto& [key, value] : Assets.NotInUse[type]) {
+                for(auto& [key, value] : MyAssets.NotInUse[type]) {
                     if(std::get<1>(value) < now)
                         toDelete.push_back(key);
                 }
 
                 for(std::string& key : toDelete)
-                    Assets.NotInUse[type].erase(Assets.NotInUse[type].find(key));
+                    MyAssets.NotInUse[type].erase(MyAssets.NotInUse[type].find(key));
             }
         }
 
@@ -1017,6 +1017,10 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
 
         for(size_t iter = 0; iter < count; iter++) {
             uint8_t type = co_await sock.read<uint8_t>();
+
+            if(type >= (int) EnumAssets::MAX_ENUM)
+                protocolError();
+
             uint32_t id = co_await sock.read<uint32_t>();
             std::string domain, key;
             domain = co_await sock.read<std::string>();
@@ -1031,6 +1035,7 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
         }
 
         AsyncContext.AssetsBinds.lock()->push_back(AssetsBindsChange(binds, {}));
+        co_return;
     }
     case ToClient::L2Resource::Lost:
     {
@@ -1041,10 +1046,14 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
             uint8_t type = co_await sock.read<uint8_t>();
             uint32_t id = co_await sock.read<uint32_t>();
 
+            if(type >= (int) EnumAssets::MAX_ENUM)
+                protocolError();
+
             abc.Lost[(int) type].push_back(id);
         }
 
         AsyncContext.AssetsBinds.lock()->emplace_back(std::move(abc));
+        co_return;
     }
     case ToClient::L2Resource::InitResSend:
     {
@@ -1053,6 +1062,10 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
         co_await sock.read((std::byte*) hash.data(), hash.size());
         ResourceId id = co_await sock.read<uint32_t>();
         EnumAssets type = (EnumAssets) co_await sock.read<uint8_t>();
+
+        if(type >= EnumAssets::MAX_ENUM)
+            protocolError();
+
         std::string domain = co_await sock.read<std::string>();
         std::string key = co_await sock.read<std::string>();
 

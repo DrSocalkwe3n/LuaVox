@@ -497,7 +497,8 @@ void ChunkMeshGenerator::run(uint8_t id) {
 
                 // Вычислить индексы и сократить вершины
                 {
-
+                    std::vector<uint32_t> indexes;
+                    
                 }
             }
 

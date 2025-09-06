@@ -72,7 +72,7 @@ struct ChunkMeshGenerator {
         // Вершины нод
         std::vector<NodeVertexStatic> NodeVertexs;
         // Индексы
-        std::variant<std::vector<uint16_t>, std::vector<uint32_t>> NodeIndicies;
+        std::variant<std::vector<uint16_t>, std::vector<uint32_t>> NodeIndexes;
     };
 
     // Очередь чанков на перерисовку
@@ -164,7 +164,9 @@ public:
         :   VkInst(vkInst),
             CMG(serverSession),
             VertexPool_Voxels(vkInst),
-            VertexPool_Nodes(vkInst)
+            VertexPool_Nodes(vkInst),
+            IndexPool_Nodes_16(vkInst),
+            IndexPool_Nodes_32(vkInst)
     {
         assert(vkInst);
         assert(serverSession);
@@ -253,8 +255,9 @@ public:
                                 auto& chunk = iterRegion->second[iter];
                                 if(chunk.VoxelPointer)
                                     VPV_ToFree[frameRetirement].emplace_back(std::move(chunk.VoxelPointer));
-                                if(chunk.NodePointer)
-                                    VPN_ToFree[frameRetirement].emplace_back(std::move(chunk.NodePointer));
+                                if(chunk.NodePointer) {
+                                    VPN_ToFree[frameRetirement].emplace_back(std::move(chunk.NodePointer), std::move(chunk.NodeIndexes));
+                                }
                             }
                             
                             iterWorld->second.erase(iterRegion);
@@ -305,8 +308,13 @@ public:
 
         VPV_ToFree[FrameRoulette].clear();
 
-        for(auto pointer : VPN_ToFree[FrameRoulette]) {
-            VertexPool_Nodes.dropVertexs(pointer);
+        for(auto& pointer : VPN_ToFree[FrameRoulette]) {
+            VertexPool_Nodes.dropVertexs(std::get<0>(pointer));
+            if(VertexPool<uint16_t>::Pointer* ind = std::get_if<VertexPool<uint16_t>::Pointer>(&std::get<1>(pointer))) {
+                IndexPool_Nodes_16.dropVertexs(*ind);
+            } else if(VertexPool<uint32_t>::Pointer* ind = std::get_if<VertexPool<uint32_t>::Pointer>(&std::get<1>(pointer))) {
+                IndexPool_Nodes_32.dropVertexs(*ind);
+            }
         }
 
         VPN_ToFree[FrameRoulette].clear();
@@ -330,12 +338,15 @@ private:
     // Буферы для хранения вершин
     VertexPool<VoxelVertexPoint> VertexPool_Voxels;
     VertexPool<NodeVertexStatic> VertexPool_Nodes;
+    VertexPool<uint16_t> IndexPool_Nodes_16;
+    VertexPool<uint32_t> IndexPool_Nodes_32;
 
     struct ChunkObj_t {
         std::vector<DefVoxelId> Voxels;
         VertexPool<VoxelVertexPoint>::Pointer VoxelPointer;
         std::vector<DefNodeId> Nodes;
         VertexPool<NodeVertexStatic>::Pointer NodePointer;
+        std::variant<VertexPool<uint16_t>::Pointer, VertexPool<uint32_t>::Pointer> NodeIndexes;
     };
 
     // Склад указателей на вершины чанков
@@ -346,7 +357,10 @@ private:
     uint8_t FrameRoulette = 0;
     // Вершины, ожидающие удаления по прошествию какого-то количества кадров
     std::vector<VertexPool<VoxelVertexPoint>::Pointer> VPV_ToFree[FRAME_COUNT_RESOURCE_LATENCY];
-    std::vector<VertexPool<NodeVertexStatic>::Pointer> VPN_ToFree[FRAME_COUNT_RESOURCE_LATENCY];
+    std::vector<std::tuple<
+        VertexPool<NodeVertexStatic>::Pointer,
+        std::variant<VertexPool<uint16_t>::Pointer, VertexPool<uint32_t>::Pointer>
+    >> VPN_ToFree[FRAME_COUNT_RESOURCE_LATENCY];
 
     // Следующий идентификатор запроса
     uint32_t NextRequest = 0;

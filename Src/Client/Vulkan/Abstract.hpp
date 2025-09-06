@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 
 /*
     Воксели рендерятся точками, которые распаковываются в квадратные плоскости
@@ -28,6 +29,8 @@ struct VoxelVertexPoint {
     Максимальный размер меша 14^3 м от центра ноды
     Координатное пространство то же, что и у вокселей + 8 позиций с двух сторон
     Рисуется полигонами
+
+    В будущем - хранить данные освещения в отдельных буферах. Основные данные пусть спокойно индексируются
 */
 
 struct NodeVertexStatic {
@@ -38,6 +41,12 @@ struct NodeVertexStatic {
         Tex : 18,               // Текстура
         N2 : 14,                // Не занято
         TU : 16, TV : 16;       // UV на текстуре
+
+    bool operator==(const NodeVertexStatic& other) const {
+        return std::memcmp(this, &other, sizeof(*this)) == 0;
+    }
+
+    bool operator<=>(const NodeVertexStatic&) const = default;
 };
 
 }

@@ -15,7 +15,7 @@ namespace LV::Client::VK {
     Получаемые вершины сначала пишутся в общий буфер, потом передаются на устройство
 */
 // Нужна реализация индексного буфера
-template<typename Vertex, uint16_t PerBlock = 1 << 10, uint16_t PerPool = 1 << 12>
+template<typename Vertex, uint16_t PerBlock = 1 << 10, uint16_t PerPool = 1 << 12, bool IsIndex = false>
 class VertexPool {
     static constexpr size_t HC_Buffer_Size = size_t(PerBlock)*size_t(PerPool);
 
@@ -36,7 +36,7 @@ class VertexPool {
         Pool(Vulkan* inst)
             : DeviceBuff(inst, 
                 sizeof(Vertex)*size_t(PerBlock)*size_t(PerPool)+4 /* Для vkCmdFillBuffer */, 
-                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, 
+                (IsIndex ? VK_BUFFER_USAGE_INDEX_BUFFER_BIT : VK_BUFFER_USAGE_VERTEX_BUFFER_BIT) | VK_BUFFER_USAGE_TRANSFER_DST_BIT, 
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
         {
             Allocation.set();
@@ -327,5 +327,7 @@ public:
     }
 };
 
+template<typename Type, uint16_t PerBlock = 1 << 10, uint16_t PerPool = 1 << 12>
+using IndexPool = VertexPool<Type, PerBlock, PerPool, true>;
 
 }

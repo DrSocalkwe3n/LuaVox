@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstring>
 #include <memory>
 #include <thread>
 #include <unordered_map>
@@ -19,6 +20,19 @@
 #include <vulkan/vulkan_core.h>
 #include <fstream>
 
+namespace std {
+    template<>
+    struct hash<LV::Client::VK::NodeVertexStatic> {
+        size_t operator()(const LV::Client::VK::NodeVertexStatic& v) const {
+            const uint32_t* ptr = reinterpret_cast<const uint32_t*>(&v);
+            size_t h1 = std::hash<uint32_t>{}(ptr[0]);
+            size_t h2 = std::hash<uint32_t>{}(ptr[1]);
+            size_t h3 = std::hash<uint32_t>{}(ptr[2]);
+
+            return h1 ^ (h2 << 1) ^ (h3 << 2);
+        }
+    };
+}
 
 namespace LV::Client::VK {
 
@@ -271,6 +285,7 @@ void ChunkMeshGenerator::run(uint8_t id) {
             // Генерация вершин нод
             {
                 NodeVertexStatic v;
+                std::memset(&v, 0, sizeof(v));
 
                 // Сбор вершин
                 for(int z = 0; z < 16; z++)
@@ -497,8 +512,35 @@ void ChunkMeshGenerator::run(uint8_t id) {
 
                 // Вычислить индексы и сократить вершины
                 {
+                    uint32_t nextIndex = 0;
+                    std::vector<NodeVertexStatic> vertexes;
+                    std::unordered_map<NodeVertexStatic, uint32_t> vertexTable;
                     std::vector<uint32_t> indexes;
                     
+                    for(const NodeVertexStatic& vertex : result.NodeVertexs) {
+                        auto iter = vertexTable.find(vertex);
+                        if(iter == vertexTable.end()) {
+                            vertexTable.insert({vertex, nextIndex});
+                            vertexes.push_back(vertex);
+                            indexes.push_back(nextIndex);
+                            nextIndex += 1;
+                        } else {
+                            indexes.push_back(iter->second);
+                        }
+                    }
+
+                    result.NodeVertexs = std::move(vertexes);
+
+                    if(nextIndex <= (1 << 16)) {
+                        std::vector<uint16_t> indexes16;
+                        indexes16.reserve(indexes.size());
+                        for(size_t iter = 0; iter < indexes.size(); iter++)
+                            indexes16.push_back(indexes[iter]);
+
+                        result.NodeIndexes = std::move(indexes16);
+                    } else {
+                        result.NodeIndexes = std::move(indexes);
+                    }
                 }
             }
 
@@ -522,7 +564,7 @@ void ChunkMeshGenerator::run(uint8_t id) {
 
 std::pair<
     std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>>,
-    std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>>
+    std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, std::pair<VkBuffer, int>, bool, uint32_t>>
 > ChunkPreparator::getChunksForRender(
     WorldId_t worldId, Pos::Object pos, uint8_t distance, glm::mat4 projView, Pos::GlobalRegion x64offset
 ) {
@@ -530,7 +572,7 @@ std::pair<
     Pos::GlobalRegion center = playerChunk >> 2;
 
     std::vector<std::tuple<float, Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>> vertexVoxels;
-    std::vector<std::tuple<float, Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>> vertexNodes;
+    std::vector<std::tuple<float, Pos::GlobalChunk, std::pair<VkBuffer, int>, std::pair<VkBuffer, int>, bool, uint32_t>> vertexNodes;
 
     auto iterWorld = ChunksMesh.find(worldId);
     if(iterWorld == ChunksMesh.end())
@@ -576,37 +618,56 @@ std::pair<
                     }
 
                     if(chunk.NodePointer) {
-                        vertexNodes.emplace_back(distance, local+Pos::GlobalChunk(localPos), VertexPool_Nodes.map(chunk.NodePointer), chunk.NodePointer.VertexCount);
+                        vertexNodes.emplace_back(
+                            distance, local+Pos::GlobalChunk(localPos), 
+                            VertexPool_Nodes.map(chunk.NodePointer), 
+                            chunk.NodeIndexes.index() == 0
+                                ? IndexPool_Nodes_16.map(std::get<0>(chunk.NodeIndexes))
+                                : IndexPool_Nodes_32.map(std::get<1>(chunk.NodeIndexes))
+                            , chunk.NodeIndexes.index() == 0, 
+                            std::visit<uint32_t>([](const auto& val) -> uint32_t { return val.VertexCount; }, chunk.NodeIndexes));
                     }
                 }
             }
         }
     }
 
-    auto sortByDistance = []
-    (
-        const std::tuple<float, Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>& a, 
-        const std::tuple<float, Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>& b
-    ) {
-        return std::get<0>(a) < std::get<0>(b);
-    };
-    
-    std::sort(vertexVoxels.begin(), vertexVoxels.end(), sortByDistance);
-    std::sort(vertexNodes.begin(), vertexNodes.end(), sortByDistance);
+    {
+        auto sortByDistance = []
+        (
+            const std::tuple<float, Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>& a, 
+            const std::tuple<float, Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>& b
+        ) {
+            return std::get<0>(a) < std::get<0>(b);
+        };
+        
+        std::sort(vertexVoxels.begin(), vertexVoxels.end(), sortByDistance);
+    }
+
+    {
+        auto sortByDistance = []
+        (
+            const std::tuple<float, Pos::GlobalChunk, std::pair<VkBuffer, int>, std::pair<VkBuffer, int>, bool, uint32_t>& a, 
+            const std::tuple<float, Pos::GlobalChunk, std::pair<VkBuffer, int>, std::pair<VkBuffer, int>, bool, uint32_t>& b
+        ) {
+            return std::get<0>(a) < std::get<0>(b);
+        };
+        std::sort(vertexNodes.begin(), vertexNodes.end(), sortByDistance);
+    }
 
     std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>> resVertexVoxels;
-    std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>> resVertexNodes;
+    std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, std::pair<VkBuffer, int>, bool, uint32_t>> resVertexNodes;
 
     resVertexVoxels.reserve(vertexVoxels.size());
     resVertexNodes.reserve(vertexNodes.size());
 
-    for(const auto& [d, pos, ptr, count] : vertexVoxels)
-        resVertexVoxels.emplace_back(pos, ptr, count);
+    for(auto& [d, pos, ptr, count] : vertexVoxels)
+        resVertexVoxels.emplace_back(pos, std::move(ptr), count);
 
-    for(const auto& [d, pos, ptr, count] : vertexNodes)
-        resVertexNodes.emplace_back(pos, ptr, count);
+    for(auto& [d, pos, ptr, ptr2, type, count] : vertexNodes)
+        resVertexNodes.emplace_back(pos, std::move(ptr), std::move(ptr2), type, count);
 
-    return std::pair{resVertexVoxels, resVertexNodes};
+    return std::pair{std::move(resVertexVoxels), std::move(resVertexNodes)};
 }
 
 VulkanRenderSession::VulkanRenderSession(Vulkan *vkInst, IServerSession *serverSession)
@@ -1433,22 +1494,24 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
         size_t count = 0;
 
         glm::mat4 orig = PCO.Model;
-        for(auto& [chunkPos, vertexs, vertexCount] : nodeVertexs) {
+        for(auto& [chunkPos, vertexs, indexes, type, vertexCount] : nodeVertexs) {
             count += vertexCount;
             
             glm::vec3 cpos(chunkPos-x64offset);
             PCO.Model = glm::translate(orig, cpos*16.f);
-            auto [vkBufferN, offset] = vertexs;
+            auto [vkBufferV, offsetV] = vertexs;
+            auto [vkBufferI, offsetI] = indexes;
 
             vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, offsetof(WorldPCO, Model), sizeof(WorldPCO::Model), &PCO.Model);
             
-            if(vkBufferN != vkBuffer) {
-                vkBuffer = vkBufferN;
-                vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBuffer, &vkOffsets);
-            }
+            VkDeviceSize offset = offsetV*sizeof(NodeVertexStatic);
+            vkCmdBindVertexBuffers(drawCmd, 0, 1, &vkBufferV, &offset);
+            offset = offsetI * (type ? 2 : 4);
+            vkCmdBindIndexBuffer(drawCmd, vkBufferI, offset, type ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
 
-            vkCmdDraw(drawCmd, vertexCount, 1, offset, 0);
+            vkCmdDrawIndexed(drawCmd, vertexCount, 1, 0, 0, 0);
+            //vkCmdDraw(drawCmd, vertexCount, 1, 0, 0);
         }
 
         PCO.Model = orig;

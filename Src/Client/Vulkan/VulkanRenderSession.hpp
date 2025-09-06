@@ -12,6 +12,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <variant>
 #include <vulkan/vulkan_core.h>
 #include "Abstract.hpp"
 #include "TOSLib.hpp"
@@ -288,12 +289,22 @@ public:
                     rChunk.VoxelPointer = VertexPool_Voxels.pushVertexs(std::move(chunk.VoxelVertexs));
                 rChunk.Nodes = std::move(chunk.NodeDefines);
                 if(!chunk.NodeVertexs.empty())
-                    rChunk.NodePointer = VertexPool_Nodes.pushVertexs(std::move(chunk.NodeVertexs)); 
+                    rChunk.NodePointer = VertexPool_Nodes.pushVertexs(std::move(chunk.NodeVertexs));
+
+                if(std::vector<uint16_t>* ptr = std::get_if<std::vector<uint16_t>>(&chunk.NodeIndexes)) {
+                    if(!ptr->empty())
+                        rChunk.NodeIndexes = IndexPool_Nodes_16.pushVertexs(std::move(*ptr));
+                } else if(std::vector<uint32_t>* ptr = std::get_if<std::vector<uint32_t>>(&chunk.NodeIndexes)) {
+                    if(!ptr->empty())
+                        rChunk.NodeIndexes = IndexPool_Nodes_32.pushVertexs(std::move(*ptr));
+                }
             }
         }
 
         VertexPool_Voxels.update(CMDPool);
         VertexPool_Nodes.update(CMDPool);
+        IndexPool_Nodes_16.update(CMDPool);
+        IndexPool_Nodes_32.update(CMDPool);
 
         CMG.endTickSync();
     }
@@ -310,9 +321,9 @@ public:
 
         for(auto& pointer : VPN_ToFree[FrameRoulette]) {
             VertexPool_Nodes.dropVertexs(std::get<0>(pointer));
-            if(VertexPool<uint16_t>::Pointer* ind = std::get_if<VertexPool<uint16_t>::Pointer>(&std::get<1>(pointer))) {
+            if(IndexPool<uint16_t>::Pointer* ind = std::get_if<IndexPool<uint16_t>::Pointer>(&std::get<1>(pointer))) {
                 IndexPool_Nodes_16.dropVertexs(*ind);
-            } else if(VertexPool<uint32_t>::Pointer* ind = std::get_if<VertexPool<uint32_t>::Pointer>(&std::get<1>(pointer))) {
+            } else if(IndexPool<uint32_t>::Pointer* ind = std::get_if<IndexPool<uint32_t>::Pointer>(&std::get<1>(pointer))) {
                 IndexPool_Nodes_32.dropVertexs(*ind);
             }
         }
@@ -323,7 +334,7 @@ public:
     // Выдаёт буферы для рендера в порядке от ближнего к дальнему. distance - радиус в регионах
     std::pair<
         std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>>,
-        std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, uint32_t>>
+        std::vector<std::tuple<Pos::GlobalChunk, std::pair<VkBuffer, int>, std::pair<VkBuffer, int>, bool, uint32_t>>
     > getChunksForRender(WorldId_t worldId, Pos::Object pos, uint8_t distance, glm::mat4 projView, Pos::GlobalRegion x64offset);
 
 private:
@@ -338,15 +349,15 @@ private:
     // Буферы для хранения вершин
     VertexPool<VoxelVertexPoint> VertexPool_Voxels;
     VertexPool<NodeVertexStatic> VertexPool_Nodes;
-    VertexPool<uint16_t> IndexPool_Nodes_16;
-    VertexPool<uint32_t> IndexPool_Nodes_32;
+    IndexPool<uint16_t> IndexPool_Nodes_16;
+    IndexPool<uint32_t> IndexPool_Nodes_32;
 
     struct ChunkObj_t {
         std::vector<DefVoxelId> Voxels;
         VertexPool<VoxelVertexPoint>::Pointer VoxelPointer;
         std::vector<DefNodeId> Nodes;
         VertexPool<NodeVertexStatic>::Pointer NodePointer;
-        std::variant<VertexPool<uint16_t>::Pointer, VertexPool<uint32_t>::Pointer> NodeIndexes;
+        std::variant<IndexPool<uint16_t>::Pointer, IndexPool<uint32_t>::Pointer> NodeIndexes;
     };
 
     // Склад указателей на вершины чанков
@@ -359,7 +370,7 @@ private:
     std::vector<VertexPool<VoxelVertexPoint>::Pointer> VPV_ToFree[FRAME_COUNT_RESOURCE_LATENCY];
     std::vector<std::tuple<
         VertexPool<NodeVertexStatic>::Pointer,
-        std::variant<VertexPool<uint16_t>::Pointer, VertexPool<uint32_t>::Pointer>
+        std::variant<IndexPool<uint16_t>::Pointer, IndexPool<uint32_t>::Pointer>
     >> VPN_ToFree[FRAME_COUNT_RESOURCE_LATENCY];
 
     // Следующий идентификатор запроса

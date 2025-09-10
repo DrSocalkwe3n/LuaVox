@@ -11,6 +11,7 @@
 #include <boost/iostreams/filter/zlib.hpp>
 #include <cstddef>
 #include <endian.h>
+#include <print>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -981,6 +982,7 @@ PreparedNodeState::PreparedNodeState(const std::u8string& data) {
         }
     }
 
+    lr.checkUnreaded();
 }
 
 std::u8string PreparedNodeState::dump() const {
@@ -1502,7 +1504,7 @@ std::pair<float, std::variant<PreparedNodeState::Model, PreparedNodeState::Vecto
     }
 }
 
-std::vector<PreparedNodeState::Transformation> PreparedNodeState::parseTransormations(const js::array& arr) {
+std::vector<Transformation> PreparedNodeState::parseTransormations(const js::array& arr) {
     std::vector<Transformation> result;
 
     for(const js::value& js_value : arr) {
@@ -1721,21 +1723,23 @@ PreparedModel::PreparedModel(const std::string_view modid, const js::object& pro
                     }
 
                     if(key == "x")
-                        result.Transformations.emplace_back(Transformation::MoveX, f_value);
+                        result.Trs.OPs.emplace_back(Transformation::MoveX, f_value);
                     else if(key == "y")
-                        result.Transformations.emplace_back(Transformation::MoveY, f_value);
+                        result.Trs.OPs.emplace_back(Transformation::MoveY, f_value);
                     else if(key == "z")
-                        result.Transformations.emplace_back(Transformation::MoveZ, f_value);
+                        result.Trs.OPs.emplace_back(Transformation::MoveZ, f_value);
                     else if(key == "rx")
-                        result.Transformations.emplace_back(Transformation::RotateX, f_value);
+                        result.Trs.OPs.emplace_back(Transformation::RotateX, f_value);
                     else if(key == "ry")
-                        result.Transformations.emplace_back(Transformation::RotateY, f_value);
+                        result.Trs.OPs.emplace_back(Transformation::RotateY, f_value);
                     else if(key == "rz")
-                        result.Transformations.emplace_back(Transformation::RotateZ, f_value);
+                        result.Trs.OPs.emplace_back(Transformation::RotateZ, f_value);
                     else
                         MAKE_ERROR("Неизвестный ключ трансформации");
                 }
             }
+
+            Cuboids.emplace_back(std::move(result));
         }
     }
 
@@ -1770,6 +1774,8 @@ PreparedModel::PreparedModel(const std::string_view modid, const sol::table& pro
 
 PreparedModel::PreparedModel(const std::u8string& data) {
     Net::LinearReader lr(data);
+
+    lr.read<uint16_t>();
 
     if(lr.read<uint8_t>()) {
         GuiLight = (EnumGuiLight) lr.read<uint8_t>();
@@ -1811,8 +1817,8 @@ PreparedModel::PreparedModel(const std::u8string& data) {
     lr >> size;
     Textures.reserve(size);
     for(int counter = 0; counter < size; counter++) {
-        std::string tkey, pipeline;
-        lr >> tkey >> pipeline;
+        std::string tkey;
+        lr >> tkey;
         TexturePipeline pipe;
 
         uint16_t size;
@@ -1852,9 +1858,9 @@ PreparedModel::PreparedModel(const std::u8string& data) {
 
             lr >> face.Texture;
             uint8_t val = lr.read<uint8_t>();
-            if(val != uint8_t(-1)) {
-                face.Cullface = EnumFace(val);
-            }
+            face.Cullface = EnumFace(val);
+            if((int) face.Cullface > (int) EnumFace::None)
+                MAKE_ERROR("Unknown face");
 
             lr >> face.TintIndex >> face.Rotation;
 
@@ -1863,21 +1869,22 @@ PreparedModel::PreparedModel(const std::u8string& data) {
 
         uint16_t transformationsSize;
         lr >> transformationsSize;
-        cuboid.Transformations.reserve(transformationsSize);
+        cuboid.Trs.OPs.reserve(transformationsSize);
 
         for(int counter2 = 0; counter2 < transformationsSize; counter2++) {
             Transformation tsf;
             tsf.Op = (Transformation::EnumTransform) lr.read<uint8_t>();
             lr >> tsf.Value;
-            cuboid.Transformations.emplace_back(tsf);
+            cuboid.Trs.OPs.emplace_back(tsf);
         }
 
         Cuboids.emplace_back(std::move(cuboid));
     }
 
-    lr >> size;
-    SubModels.reserve(size);
-    for(int counter = 0; counter < size; counter++) {
+    uint8_t size8;
+    lr >> size8;
+    SubModels.reserve(size8);
+    for(int counter = 0; counter < size8; counter++) {
         SubModel sub;
         lr >> sub.Domain >> sub.Key;
         uint16_t val = lr.read<uint16_t>();
@@ -1887,6 +1894,8 @@ PreparedModel::PreparedModel(const std::u8string& data) {
 
         SubModels.push_back(std::move(sub));
     }
+
+    lr.checkUnreaded();
 }
 
 std::u8string PreparedModel::dump() const {
@@ -1964,17 +1973,14 @@ std::u8string PreparedModel::dump() const {
                 result << face.UV[iter];
 
             result << face.Texture;
-            if(face.Cullface)
-                result << uint8_t(*face.Cullface);
-            else
-                result << uint8_t(-1);
+            result << uint8_t(face.Cullface);
 
             result << face.TintIndex << face.Rotation;
         }
 
-        assert(cuboid.Transformations.size() < 256);
-        result << uint8_t(cuboid.Transformations.size());
-        for(const auto& [op, value] : cuboid.Transformations) {
+        assert(cuboid.Trs.OPs.size() < 256);
+        result << uint8_t(cuboid.Trs.OPs.size());
+        for(const auto& [op, value] : cuboid.Trs.OPs) {
             result << uint8_t(op) << value;
         }
     }
@@ -2014,6 +2020,7 @@ PreparedGLTF::PreparedGLTF(const std::string_view modid, Resource glb) {
 
 PreparedGLTF::PreparedGLTF(std::u8string_view data) {
 
+    // lr.checkUnreaded();
 }
 
 

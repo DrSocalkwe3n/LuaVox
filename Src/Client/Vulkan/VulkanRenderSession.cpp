@@ -1460,6 +1460,35 @@ void VulkanRenderSession::tickSync(const TickSyncData& data) {
     mcpData.ChangedChunks = data.Chunks_ChangeOrAdd;
     mcpData.LostRegions = data.Chunks_Lost;
     CP.tickSync(mcpData);
+
+    {
+        std::vector<std::tuple<ResourceId, Resource>> resources;
+        std::vector<ResourceId> lost;
+
+        for(const auto& [type, ids] : data.Assets_ChangeOrAdd) {
+            if(type != EnumAssets::Model)
+                continue;
+
+            const auto& list = ServerSession->Assets[type];
+            for(ResourceId id : ids) {
+                auto iter = list.find(id);
+                if(iter == list.end())
+                    continue;
+
+                resources.emplace_back(id, iter->second.Res);
+            }
+        }
+
+        for(const auto& [type, ids] : data.Assets_Lost) {
+            if(type != EnumAssets::Model)
+                continue;
+
+            lost.append_range(ids);
+        }
+
+        if(!resources.empty() || !lost.empty())
+            MP.onModelChanges(std::move(resources), std::move(lost));
+    }
 }
 
 void VulkanRenderSession::setCameraPos(WorldId_t worldId, Pos::Object pos, glm::quat quat) {

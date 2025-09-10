@@ -761,6 +761,7 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                 auto iter = MyAssets.NotInUse[(int) entry.Type].find(entry.Domain+':'+entry.Key);
                 if(iter != MyAssets.NotInUse[(int) entry.Type].end()) {
                     IServerSession::Assets[entry.Type][entry.Id] = std::get<0>(iter->second);
+                    result.Assets_ChangeOrAdd[entry.Type].push_back(entry.Id);
                     MyAssets.NotInUse[(int) entry.Type].erase(iter);
                 }
             }
@@ -774,6 +775,7 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                     if(iter != IServerSession::Assets[(EnumAssets) type].end()) {
                         MyAssets.NotInUse[(int) iter->second.Type][iter->second.Domain+':'+iter->second.Key] = {iter->second, TIME_BEFORE_UNLOAD_RESOURCE+time(nullptr)};
                         IServerSession::Assets[(EnumAssets) type].erase(iter);
+                        result.Assets_Lost[iter->second.Type].push_back(iter->second.Id);
                     }
                 }
 
@@ -787,6 +789,7 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                 if(MyAssets.ExistBinds[(int) entry.Type].contains(entry.Id)) {
                     // Ресурс ещё нужен
                     IServerSession::Assets[entry.Type][entry.Id] = entry;
+                    result.Assets_ChangeOrAdd[entry.Type].push_back(entry.Id);
                 } else {
                     // Ресурс уже не нужен, отправляем в кеш
                     MyAssets.NotInUse[(int) entry.Type][entry.Domain+':'+entry.Key] = {entry, TIME_BEFORE_UNLOAD_RESOURCE+time(nullptr)};

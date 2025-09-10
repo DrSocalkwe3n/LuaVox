@@ -12,6 +12,7 @@
 #include <vector>
 #include <boost/json.hpp>
 #include <boost/container/small_vector.hpp>
+#include <execution>
 
 
 namespace LV {
@@ -539,6 +540,68 @@ struct NodestateEntry {
     std::vector<std::string> ValueNames;    // Имена состояний, если имеются
 };
 
+struct Vertex {
+    glm::vec3 Pos;
+    glm::vec2 UV;
+    uint32_t TexId;
+};
+
+struct Transformation {
+    enum EnumTransform {
+        MoveX, MoveY, MoveZ,
+        RotateX, RotateY, RotateZ,
+        ScaleX, ScaleY, ScaleZ,
+        MAX_ENUM
+    } Op;
+
+    float Value;
+};
+
+struct Transformations {
+    std::vector<Transformation> OPs;
+
+    void apply(std::vector<Vertex>& vertices) const {
+        if (vertices.empty() || OPs.empty())
+            return;
+
+        glm::mat4 transform(1.0f);
+
+        for (const auto& op : OPs) {
+            switch (op.Op) {
+                case Transformation::MoveX:   transform = glm::translate(transform, glm::vec3(op.Value, 0.0f, 0.0f)); break;
+                case Transformation::MoveY:   transform = glm::translate(transform, glm::vec3(0.0f, op.Value, 0.0f)); break;
+                case Transformation::MoveZ:   transform = glm::translate(transform, glm::vec3(0.0f, 0.0f, op.Value)); break;
+                case Transformation::ScaleX:  transform = glm::scale(transform, glm::vec3(op.Value, 1.0f, 1.0f)); break;
+                case Transformation::ScaleY:  transform = glm::scale(transform, glm::vec3(1.0f, op.Value, 1.0f)); break;
+                case Transformation::ScaleZ:  transform = glm::scale(transform, glm::vec3(1.0f, 1.0f, op.Value)); break;
+                case Transformation::RotateX: transform = glm::rotate(transform, op.Value, glm::vec3(1.0f, 0.0f, 0.0f)); break;
+                case Transformation::RotateY: transform = glm::rotate(transform, op.Value, glm::vec3(0.0f, 1.0f, 0.0f)); break;
+                case Transformation::RotateZ: transform = glm::rotate(transform, op.Value, glm::vec3(0.0f, 0.0f, 1.0f)); break;
+                default: break;
+            }
+        }
+
+        std::transform(
+            std::execution::unseq,
+            vertices.begin(),
+            vertices.end(),
+            vertices.begin(),
+            [transform](Vertex v) -> Vertex {
+                glm::vec4 pos_h(v.Pos, 1.0f);
+                pos_h = transform * pos_h;
+                v.Pos = glm::vec3(pos_h) / pos_h.w;
+                return v;
+            }
+        );
+    }
+
+    std::vector<Vertex> apply(const std::vector<Vertex>& vertices) const {
+        std::vector<Vertex> result = vertices;
+        apply(result);
+        return result;
+    }
+};
+
 /*
     Хранит распаршенное определение состояний нод.
     Не привязано ни к какому окружению.
@@ -557,16 +620,6 @@ struct PreparedNodeState {
         struct Unary { Op op; uint16_t rhs; };
         struct Binary { Op op; uint16_t lhs, rhs; };
         std::variant<Num, Var, Unary, Binary> v;
-    };
-
-    struct Transformation {
-        enum EnumTransform {
-            MoveX, MoveY, MoveZ,
-            RotateX, RotateY, RotateZ,
-            MAX_ENUM
-        } Op;
-
-        float Value;
     };
 
     struct Model {
@@ -628,17 +681,6 @@ enum class EnumFace {
     Down, Up, North, South, West, East, None
 };
 
-struct Transformation {
-    enum EnumTransform {
-        MoveX, MoveY, MoveZ,
-        RotateX, RotateY, RotateZ,
-        ScaleX, ScaleY, ScaleZ,
-        MAX_ENUM
-    } Op;
-
-    float Value;
-};
-
 /*
     Парсит json модель
 */
@@ -668,14 +710,14 @@ struct PreparedModel {
         struct Face {
             glm::vec4 UV;
             std::string Texture;
-            std::optional<EnumFace> Cullface;
+            EnumFace Cullface = EnumFace::None;
             int TintIndex = -1;
             int16_t Rotation = 0;
         };
 
         std::unordered_map<EnumFace, Face> Faces;
     
-        std::vector<Transformation> Transformations;
+        Transformations Trs;
     };
 
     std::vector<Cuboid> Cuboids;
@@ -704,12 +746,6 @@ struct PreparedModel {
 
 private:
     void load(std::u8string_view data);
-};
-
-struct Vertex {
-    glm::vec3 Pos;
-    glm::vec2 UV;
-    uint32_t TexId;
 };
 
 struct PreparedGLTF {

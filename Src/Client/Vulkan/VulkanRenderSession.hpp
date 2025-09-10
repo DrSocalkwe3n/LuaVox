@@ -19,6 +19,7 @@
 #include "Abstract.hpp"
 #include "TOSLib.hpp"
 #include "VertexPool.hpp"
+#include "glm/common.hpp"
 #include "glm/fwd.hpp"
 #include "../FrustumCull.h"
 #include "glm/geometric.hpp"
@@ -53,51 +54,6 @@ struct WorldPCO {
 static_assert(sizeof(WorldPCO) == 128);
 
 class ModelProvider {
-    struct Transformations {
-        std::vector<Transformation> OPs;
-
-        void apply(std::vector<Vertex>& vertices) const {
-            if (vertices.empty() || OPs.empty())
-                return;
-
-            glm::mat4 transform(1.0f);
-
-            for (const auto& op : OPs) {
-                switch (op.Op) {
-                    case Transformation::MoveX:   transform = glm::translate(transform, glm::vec3(op.Value, 0.0f, 0.0f)); break;
-                    case Transformation::MoveY:   transform = glm::translate(transform, glm::vec3(0.0f, op.Value, 0.0f)); break;
-                    case Transformation::MoveZ:   transform = glm::translate(transform, glm::vec3(0.0f, 0.0f, op.Value)); break;
-                    case Transformation::ScaleX:  transform = glm::scale(transform, glm::vec3(op.Value, 1.0f, 1.0f)); break;
-                    case Transformation::ScaleY:  transform = glm::scale(transform, glm::vec3(1.0f, op.Value, 1.0f)); break;
-                    case Transformation::ScaleZ:  transform = glm::scale(transform, glm::vec3(1.0f, 1.0f, op.Value)); break;
-                    case Transformation::RotateX: transform = glm::rotate(transform, op.Value, glm::vec3(1.0f, 0.0f, 0.0f)); break;
-                    case Transformation::RotateY: transform = glm::rotate(transform, op.Value, glm::vec3(0.0f, 1.0f, 0.0f)); break;
-                    case Transformation::RotateZ: transform = glm::rotate(transform, op.Value, glm::vec3(0.0f, 0.0f, 1.0f)); break;
-                    default: break;
-                }
-            }
-
-            std::transform(
-                std::execution::unseq,
-                vertices.begin(),
-                vertices.end(),
-                vertices.begin(),
-                [transform](Vertex v) -> Vertex {
-                    glm::vec4 pos_h(v.Pos, 1.0f);
-                    pos_h = transform * pos_h;
-                    v.Pos = glm::vec3(pos_h) / pos_h.w;
-                    return v;
-                }
-            );
-        }
-
-        std::vector<Vertex> apply(const std::vector<Vertex>& vertices) const {
-            std::vector<Vertex> result = vertices;
-            apply(result);
-            return result;
-        }
-    };
-
     struct Model {
         // В вершинах текущей модели TexId ссылается на локальный текстурный ключ
         // 0 -> default_texture -> luavox:grass.png
@@ -191,26 +147,92 @@ public:
                 if(data.starts_with((const char8_t*) "bm")) {
                     type = "InternalBinary";
                     // Компилированная модель внутреннего формата
-                    LV::PreparedModel pm((std::u8string) data.substr(2));
+                    LV::PreparedModel pm((std::u8string) data);
+                    model.TextureMap = pm.CompiledTextures;
                     model.TextureKeys = {};
 
                     for(const PreparedModel::Cuboid& cb : pm.Cuboids) {
+                        glm::vec3 min = glm::min(cb.From, cb.To), max = glm::max(cb.From, cb.To);
+                        
+
                         for(const auto& [face, params] : cb.Faces) {
-                            // params.
+                            glm::vec2 from_uv = {params.UV[0], params.UV[1]}, to_uv = {params.UV[2], params.UV[3]};
+
+                            uint32_t texId;
+                            {
+                                auto iter = std::find(model.TextureKeys.begin(), model.TextureKeys.end(), params.Texture);
+                                if(iter == model.TextureKeys.end()) {
+                                    texId = model.TextureKeys.size();
+                                    model.TextureKeys.push_back(params.Texture);
+                                } else {
+                                    texId = iter-model.TextureKeys.begin();
+                                }
+                            }
+
+                            std::vector<Vertex> v;
+                            
+                            switch(face) {
+                            case EnumFace::Down:
+                                v.emplace_back(glm::vec3{min.x, min.y, min.z}, from_uv, texId);
+                                v.emplace_back(glm::vec3{max.x, min.y, max.z}, glm::vec2{from_uv.x, to_uv.y}, texId);
+                                v.emplace_back(glm::vec3{max.x, min.y, min.z}, to_uv, texId);
+                                v.emplace_back(glm::vec3{min.x, min.y, min.z}, from_uv, texId);
+                                v.emplace_back(glm::vec3{min.x, min.y, max.z}, to_uv, texId);
+                                v.emplace_back(glm::vec3{max.x, min.y, max.z}, glm::vec2{to_uv.x, from_uv.y}, texId);
+                            break;
+                            case EnumFace::Up:
+                                v.emplace_back(glm::vec3{min.x, max.y, min.z}, from_uv, texId);
+                                v.emplace_back(glm::vec3{max.x, max.y, min.z}, glm::vec2{from_uv.x, to_uv.y}, texId);
+                                v.emplace_back(glm::vec3{max.x, max.y, max.z}, to_uv, texId);
+                                v.emplace_back(glm::vec3{min.x, max.y, min.z}, from_uv, texId);
+                                v.emplace_back(glm::vec3{max.x, max.y, max.z}, to_uv, texId);
+                                v.emplace_back(glm::vec3{min.x, max.y, max.z}, glm::vec2{to_uv.x, from_uv.y}, texId);
+                            break;
+                            case EnumFace::North:
+                                v.emplace_back(glm::vec3{min.x, min.y, min.z}, from_uv, texId);
+                                v.emplace_back(glm::vec3{max.x, min.y, min.z}, glm::vec2{from_uv.x, to_uv.y}, texId);
+                                v.emplace_back(glm::vec3{max.x, max.y, min.z}, to_uv, texId);
+                                v.emplace_back(glm::vec3{min.x, min.y, min.z}, from_uv, texId);
+                                v.emplace_back(glm::vec3{max.x, max.y, min.z}, to_uv, texId);
+                                v.emplace_back(glm::vec3{min.x, max.y, min.z}, glm::vec2{to_uv.x, from_uv.y}, texId);
+                            break;
+                            case EnumFace::South:
+                                v.emplace_back(glm::vec3{min.x, min.y, max.z}, from_uv, texId);
+                                v.emplace_back(glm::vec3{max.x, min.y, max.z}, glm::vec2{from_uv.x, to_uv.y}, texId);
+                                v.emplace_back(glm::vec3{max.x, max.y, max.z}, to_uv, texId);
+                                v.emplace_back(glm::vec3{min.x, min.y, max.z}, from_uv, texId);
+                                v.emplace_back(glm::vec3{max.x, max.y, max.z}, to_uv, texId);
+                                v.emplace_back(glm::vec3{min.x, max.y, max.z}, glm::vec2{to_uv.x, from_uv.y}, texId);
+                            break;
+                            case EnumFace::West:
+                                v.emplace_back(glm::vec3{min.x, min.y, min.z}, from_uv, texId);
+                                v.emplace_back(glm::vec3{min.x, min.y, max.z}, glm::vec2{from_uv.x, to_uv.y}, texId);
+                                v.emplace_back(glm::vec3{min.x, max.y, max.z}, to_uv, texId);
+                                v.emplace_back(glm::vec3{min.x, min.y, min.z}, from_uv, texId);
+                                v.emplace_back(glm::vec3{min.x, max.y, max.z}, to_uv, texId);
+                                v.emplace_back(glm::vec3{min.x, max.y, min.z}, glm::vec2{to_uv.x, from_uv.y}, texId);
+                            break;
+                            case EnumFace::East:
+                                v.emplace_back(glm::vec3{max.x, min.y, min.z}, from_uv, texId);
+                                v.emplace_back(glm::vec3{max.x, min.y, max.z}, glm::vec2{from_uv.x, to_uv.y}, texId);
+                                v.emplace_back(glm::vec3{max.x, max.y, max.z}, to_uv, texId);
+                                v.emplace_back(glm::vec3{max.x, min.y, min.z}, from_uv, texId);
+                                v.emplace_back(glm::vec3{max.x, max.y, max.z}, to_uv, texId);
+                                v.emplace_back(glm::vec3{max.x, max.y, min.z}, glm::vec2{to_uv.x, from_uv.y}, texId);
+                            break;
+                            default:
+                                MAKE_ERROR("EnumFace::None");
+                            }
+
+                            cb.Trs.apply(v);
+                            model.Vertecies[params.Cullface].append_range(v);
                         }
                     }
 
-        // glm::vec3 From, To;
-
         // struct Face {
-        //     glm::vec4 UV;
-        //     std::string Texture;
-        //     std::optional<EnumFace> Cullface;
         //     int TintIndex = -1;
         //     int16_t Rotation = 0;
         // };
-
-        // std::unordered_map<EnumFace, Face> Faces;
     
         // std::vector<Transformation> Transformations;
                     
@@ -230,7 +252,6 @@ public:
 
             lock->insert({key, std::move(model)});
         }
-
 
         std::sort(result.begin(), result.end());
         auto eraseIter = std::unique(result.begin(), result.end());
@@ -559,6 +580,7 @@ class VulkanRenderSession : public IRenderSession {
     glm::quat Quat;
 
     ChunkPreparator CP;
+    ModelProvider MP;
 
     AtlasImage MainTest, LightDummy;
     Buffer TestQuad;

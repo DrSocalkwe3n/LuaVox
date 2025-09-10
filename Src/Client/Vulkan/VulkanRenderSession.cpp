@@ -36,6 +36,26 @@ namespace std {
 
 namespace LV::Client::VK {
 
+void ChunkMeshGenerator::changeThreadsCount(uint8_t threads) {
+    Sync.NeedShutdown = true;
+    std::unique_lock lock(Sync.Mutex);
+    Sync.CV_CountInRun.wait(lock, [&]() { return Sync.CountInRun == 0; });
+
+    for(std::thread& thr : Threads)
+        thr.join();
+
+    Sync.NeedShutdown = false;
+
+    Threads.resize(threads);
+    for(int iter = 0; iter < threads; iter++)
+        Threads[iter] = std::thread(&ChunkMeshGenerator::run, this, iter);
+
+    Sync.CV_CountInRun.wait(lock, [&]() { return Sync.CountInRun == Threads.size() || Sync.NeedShutdown; });
+    
+    if(Sync.NeedShutdown)
+        MAKE_ERROR("Ошибка обработчика вершин чанков");
+}
+
 void ChunkMeshGenerator::run(uint8_t id) {
     Logger LOG = "ChunkMeshGenerator<"+std::to_string(id)+'>';
 
@@ -560,6 +580,136 @@ void ChunkMeshGenerator::run(uint8_t id) {
     }
 
     LOG.debug() << "Завершение потока верширования чанков";
+}
+
+
+void ChunkPreparator::tickSync(const TickSyncData& data) {
+    // Обработать изменения в чанках
+    // Пересчёт соседних чанков
+    // Проверить необходимость пересчёта чанков при изменении профилей
+
+    // Добавляем к изменёным чанкам пересчёт соседей
+    {
+        std::vector<std::tuple<WorldId_t, Pos::GlobalChunk, uint32_t>> toBuild;
+        for(auto& [wId, chunks] : data.ChangedChunks) {
+            std::vector<Pos::GlobalChunk> list;
+            for(const Pos::GlobalChunk& pos : chunks) {
+                list.push_back(pos);
+                list.push_back(pos+Pos::GlobalChunk(1, 0, 0));
+                list.push_back(pos+Pos::GlobalChunk(-1, 0, 0));
+                list.push_back(pos+Pos::GlobalChunk(0, 1, 0));
+                list.push_back(pos+Pos::GlobalChunk(0, -1, 0));
+                list.push_back(pos+Pos::GlobalChunk(0, 0, 1));
+                list.push_back(pos+Pos::GlobalChunk(0, 0, -1));
+            }
+
+            std::sort(list.begin(), list.end());
+            auto eraseIter = std::unique(list.begin(), list.end());
+            list.erase(eraseIter, list.end());
+
+
+            for(Pos::GlobalChunk& pos : list) {
+                Pos::GlobalRegion rPos = pos >> 2;
+                auto iterRegion = Requests[wId].find(rPos);
+                if(iterRegion != Requests[wId].end())
+                    toBuild.emplace_back(wId, pos, iterRegion->second);
+                else
+                    toBuild.emplace_back(wId, pos, Requests[wId][rPos] = NextRequest++);
+            }
+        }
+
+        CMG.Input.lock()->push_range(toBuild);
+    }
+
+    // Чистим запросы и чанки
+    {
+        uint8_t frameRetirement = (FrameRoulette+FRAME_COUNT_RESOURCE_LATENCY) % FRAME_COUNT_RESOURCE_LATENCY;
+        for(auto& [wId, regions] : data.LostRegions) {
+            if(auto iterWorld = Requests.find(wId); iterWorld != Requests.end()) {
+                for(const Pos::GlobalRegion& rPos : regions)
+                    if(auto iterRegion = iterWorld->second.find(rPos); iterRegion != iterWorld->second.end())
+                        iterWorld->second.erase(iterRegion);
+            }
+
+            if(auto iterWorld = ChunksMesh.find(wId); iterWorld != ChunksMesh.end()) {
+                for(const Pos::GlobalRegion& rPos : regions)
+                    if(auto iterRegion = iterWorld->second.find(rPos); iterRegion != iterWorld->second.end()) {
+                        for(int iter = 0; iter < 4*4*4; iter++) {
+                            auto& chunk = iterRegion->second[iter];
+                            if(chunk.VoxelPointer)
+                                VPV_ToFree[frameRetirement].emplace_back(std::move(chunk.VoxelPointer));
+                            if(chunk.NodePointer) {
+                                VPN_ToFree[frameRetirement].emplace_back(std::move(chunk.NodePointer), std::move(chunk.NodeIndexes));
+                            }
+                        }
+                        
+                        iterWorld->second.erase(iterRegion);
+                    }
+            }
+        }
+    }
+
+    // Получаем готовые чанки
+    {
+        std::vector<ChunkMeshGenerator::ChunkObj_t> chunks = std::move(*CMG.Output.lock());
+        for(auto& chunk : chunks) {
+            auto iterWorld = Requests.find(chunk.WId);
+            if(iterWorld == Requests.end())
+                continue;
+
+            auto iterRegion = iterWorld->second.find(chunk.Pos >> 2);
+            if(iterRegion == iterWorld->second.end())
+                continue;
+
+            if(iterRegion->second != chunk.RequestId)
+                continue;
+
+            // Чанк ожидаем
+            auto& rChunk = ChunksMesh[chunk.WId][chunk.Pos >> 2][Pos::bvec4u(chunk.Pos & 0x3).pack()];
+            rChunk.Voxels = std::move(chunk.VoxelDefines);
+            if(!chunk.VoxelVertexs.empty())
+                rChunk.VoxelPointer = VertexPool_Voxels.pushVertexs(std::move(chunk.VoxelVertexs));
+            rChunk.Nodes = std::move(chunk.NodeDefines);
+            if(!chunk.NodeVertexs.empty())
+                rChunk.NodePointer = VertexPool_Nodes.pushVertexs(std::move(chunk.NodeVertexs));
+
+            if(std::vector<uint16_t>* ptr = std::get_if<std::vector<uint16_t>>(&chunk.NodeIndexes)) {
+                if(!ptr->empty())
+                    rChunk.NodeIndexes = IndexPool_Nodes_16.pushVertexs(std::move(*ptr));
+            } else if(std::vector<uint32_t>* ptr = std::get_if<std::vector<uint32_t>>(&chunk.NodeIndexes)) {
+                if(!ptr->empty())
+                    rChunk.NodeIndexes = IndexPool_Nodes_32.pushVertexs(std::move(*ptr));
+            }
+        }
+    }
+
+    VertexPool_Voxels.update(CMDPool);
+    VertexPool_Nodes.update(CMDPool);
+    IndexPool_Nodes_16.update(CMDPool);
+    IndexPool_Nodes_32.update(CMDPool);
+
+    CMG.endTickSync();
+}
+
+void ChunkPreparator::pushFrame() {
+    FrameRoulette = (FrameRoulette+1) % FRAME_COUNT_RESOURCE_LATENCY;
+
+    for(auto pointer : VPV_ToFree[FrameRoulette]) {
+        VertexPool_Voxels.dropVertexs(pointer);
+    }
+
+    VPV_ToFree[FrameRoulette].clear();
+
+    for(auto& pointer : VPN_ToFree[FrameRoulette]) {
+        VertexPool_Nodes.dropVertexs(std::get<0>(pointer));
+        if(IndexPool<uint16_t>::Pointer* ind = std::get_if<IndexPool<uint16_t>::Pointer>(&std::get<1>(pointer))) {
+            IndexPool_Nodes_16.dropVertexs(*ind);
+        } else if(IndexPool<uint32_t>::Pointer* ind = std::get_if<IndexPool<uint32_t>::Pointer>(&std::get<1>(pointer))) {
+            IndexPool_Nodes_32.dropVertexs(*ind);
+        }
+    }
+
+    VPN_ToFree[FrameRoulette].clear();
 }
 
 std::pair<

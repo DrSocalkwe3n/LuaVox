@@ -29,8 +29,7 @@ struct PreparedModel {
     std::unordered_map<std::string, std::vector<std::string>> ModelDependencies;
 
     PreparedModel(const std::string& domain, const LV::PreparedModel& model);
-    PreparedModel(const std::string& domain, const js::object& glTF);
-    PreparedModel(const std::string& domain, Resource glb);
+    PreparedModel(const std::string& domain, const PreparedGLTF& glTF);
 
     PreparedModel() = default;
     PreparedModel(const PreparedModel&) = default;
@@ -66,10 +65,13 @@ public:
         std::unordered_map<std::string, std::vector<std::string>> Lost[(int) EnumAssets::MAX_ENUM];
         // Домен и ключ ресурса
         std::unordered_map<std::string, std::vector<std::tuple<std::string, Resource, fs::file_time_type>>> NewOrChange[(int) EnumAssets::MAX_ENUM];
-    
+        std::unordered_map<std::string, std::vector<std::tuple<std::string, std::variant<
+            LV::PreparedModel,
+            PreparedGLTF
+        >, fs::file_time_type>>> NewOrChange_Models;
         
         std::unordered_map<std::string, std::vector<std::pair<std::string, PreparedNodeState>>> Nodestates;
-        std::unordered_map<std::string, std::vector<std::pair<std::string, PreparedModel>>> Models;
+        // std::unordered_map<std::string, std::vector<std::pair<std::string, PreparedModel>>> Models;
     };
 
 private:

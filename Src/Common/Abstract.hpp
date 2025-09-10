@@ -391,6 +391,7 @@ struct Object_t {
 
 
 using ResourceId = uint32_t;
+struct Resource;
 
 /*
     Объекты, собранные из папки assets или зарегистрированные модами.
@@ -495,6 +496,43 @@ void unCompressNodes(const std::u8string& compressed, Node* ptr);
 std::u8string compressLinear(const std::u8string& data);
 std::u8string unCompressLinear(const std::u8string& data);
 
+inline std::pair<std::string, std::string> parseDomainKey(const std::string& value, const std::string_view defaultDomain = "core") {
+    auto regResult = TOS::Str::match(value, "(?:([\\w\\d_]+):)?([\\w\\d/_.]+)");
+    if(!regResult)
+        MAKE_ERROR("Недействительный домен:ключ");
+
+    if(regResult->at(1)) {
+        return std::pair<std::string, std::string>{*regResult->at(1), *regResult->at(2)};
+    } else {
+        return std::pair<std::string, std::string>{defaultDomain, *regResult->at(2)};
+    }
+}
+
+struct PrecompiledTexturePipeline {
+    // Локальные идентификаторы пайплайна в домен+ключ
+    std::vector<std::pair<std::string, std::string>> Assets;
+    // Чистый код текстурных преобразований, локальные идентификаторы связаны с Assets
+    std::u8string Pipeline;
+};
+
+struct TexturePipeline {
+    // Разыменованые идентификаторы
+    std::vector<AssetsTexture> BinTextures;
+    // Чистый код текстурных преобразований, локальные идентификаторы связаны с BinTextures
+    std::u8string Pipeline;
+};
+
+// Компилятор текстурных потоков
+inline PrecompiledTexturePipeline compileTexturePipeline(const std::string &cmd, const std::string_view defaultDomain = "core") {
+    PrecompiledTexturePipeline result;
+
+    auto [domain, key] = parseDomainKey(cmd, defaultDomain);
+
+    result.Assets.emplace_back(domain, key);
+
+    return result;
+}
+
 struct NodestateEntry {
     std::string Name;
     int Variability = 0;                    // Количество возможный значений состояния
@@ -585,6 +623,22 @@ private:
     std::vector<Transformation> parseTransormations(const js::array& arr);
 };
 
+
+enum class EnumFace {
+    Down, Up, North, South, West, East, None
+};
+
+struct Transformation {
+    enum EnumTransform {
+        MoveX, MoveY, MoveZ,
+        RotateX, RotateY, RotateZ,
+        ScaleX, ScaleY, ScaleZ,
+        MAX_ENUM
+    } Op;
+
+    float Value;
+};
+
 /*
     Парсит json модель
 */
@@ -604,15 +658,12 @@ struct PreparedModel {
     };
     
     std::unordered_map<std::string, FullTransformation> Display;
-    std::unordered_map<std::string, std::string> Textures;
+    std::unordered_map<std::string, PrecompiledTexturePipeline> Textures;
+    std::unordered_map<std::string, TexturePipeline> CompiledTextures;
 
     struct Cuboid {
         bool Shade;
         glm::vec3 From, To;
-
-        enum class EnumFace {
-            Down, Up, North, South, West, East
-        };
 
         struct Face {
             glm::vec4 UV;
@@ -623,16 +674,6 @@ struct PreparedModel {
         };
 
         std::unordered_map<EnumFace, Face> Faces;
-
-        struct Transformation {
-            enum EnumTransform {
-                MoveX, MoveY, MoveZ,
-                RotateX, RotateY, RotateZ,
-                MAX_ENUM
-            } Op;
-
-            float Value;
-        };
     
         std::vector<Transformation> Transformations;
     };
@@ -662,7 +703,38 @@ struct PreparedModel {
     std::u8string dump() const;
 
 private:
-    bool load(const std::u8string& data) noexcept;
+    void load(std::u8string_view data);
+};
+
+struct Vertex {
+    glm::vec3 Pos;
+    glm::vec2 UV;
+    uint32_t TexId;
+};
+
+struct PreparedGLTF {
+    std::vector<std::string> TextureKey;
+    std::unordered_map<std::string, PrecompiledTexturePipeline> Textures;
+    std::unordered_map<std::string, TexturePipeline> CompiledTextures;
+    std::vector<Vertex> Vertices;
+
+
+    PreparedGLTF(const std::string_view modid, const js::object& gltf);
+    PreparedGLTF(const std::string_view modid, Resource glb);
+    PreparedGLTF(std::u8string_view data);
+
+    PreparedGLTF() = default;
+    PreparedGLTF(const PreparedGLTF&) = default;
+    PreparedGLTF(PreparedGLTF&&) = default;
+
+    PreparedGLTF& operator=(const PreparedGLTF&) = default;
+    PreparedGLTF& operator=(PreparedGLTF&&) = default;
+
+    // Пишет в сжатый двоичный формат
+    std::u8string dump() const;
+
+private:
+    void load(std::u8string_view data);
 };
 
 enum struct TexturePipelineCMD : uint8_t {
@@ -671,43 +743,6 @@ enum struct TexturePipelineCMD : uint8_t {
 };
 
 using Hash_t = std::array<uint8_t, 32>;
-
-inline std::pair<std::string, std::string> parseDomainKey(const std::string& value, const std::string_view defaultDomain = "core") {
-    auto regResult = TOS::Str::match(value, "(?:([\\w\\d_]+):)?([\\w\\d/_.]+)");
-    if(!regResult)
-        MAKE_ERROR("Недействительный домен:ключ");
-
-    if(regResult->at(1)) {
-        return std::pair<std::string, std::string>{*regResult->at(1), *regResult->at(2)};
-    } else {
-        return std::pair<std::string, std::string>{defaultDomain, *regResult->at(2)};
-    }
-}
-
-struct PrecompiledTexturePipeline {
-    // Локальные идентификаторы пайплайна в домен+ключ
-    std::vector<std::pair<std::string, std::string>> Assets;
-    // Чистый код текстурных преобразований, локальные идентификаторы связаны с Assets
-    std::u8string Pipeline;
-};
-
-struct TexturePipeline {
-    // Разыменованые идентификаторы
-    std::vector<AssetsTexture> BinTextures;
-    // Чистый код текстурных преобразований, локальные идентификаторы связаны с BinTextures
-    std::u8string Pipeline;
-};
-
-// Компилятор текстурных потоков
-inline PrecompiledTexturePipeline compileTexturePipeline(const std::string &cmd, const std::string_view defaultDomain = "core") {
-    PrecompiledTexturePipeline result;
-
-    auto [domain, key] = parseDomainKey(cmd, defaultDomain);
-
-    result.Assets.emplace_back(domain, key);
-
-    return result;
-}
 
 struct Resource {
 private:

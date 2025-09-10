@@ -1594,7 +1594,7 @@ PreparedModel::PreparedModel(const std::string_view modid, const js::object& pro
         const js::object& textures = textures_val->as_object();
 
         for(const auto& [key, value] : textures) {
-            Textures[key] = value.as_string();
+            Textures[key] = compileTexturePipeline((std::string) value.as_string(), modid);
         }
     }
 
@@ -1634,20 +1634,20 @@ PreparedModel::PreparedModel(const std::string_view modid, const js::object& pro
                 const js::object& faces = cuboid.at("faces").as_object();
 
                 for(const auto& [key, value] : faces) {
-                    Cuboid::EnumFace type;
+                    EnumFace type;
 
                     if(key == "down")
-                        type = Cuboid::EnumFace::Down;
+                        type = EnumFace::Down;
                     else if(key == "up")
-                        type = Cuboid::EnumFace::Up;
+                        type = EnumFace::Up;
                     else if(key == "north")
-                        type = Cuboid::EnumFace::North;
+                        type = EnumFace::North;
                     else if(key == "south")
-                        type = Cuboid::EnumFace::South;
+                        type = EnumFace::South;
                     else if(key == "west")
-                        type = Cuboid::EnumFace::West;
+                        type = EnumFace::West;
                     else if(key == "east")
-                        type = Cuboid::EnumFace::East;
+                        type = EnumFace::East;
                     else
                         MAKE_ERROR("Unknown face");
 
@@ -1671,17 +1671,17 @@ PreparedModel::PreparedModel(const std::string_view modid, const js::object& pro
                         const std::string_view cullface = cullface_val->as_string();
 
                         if(cullface == "down")
-                            face.Cullface = Cuboid::EnumFace::Down;
+                            face.Cullface = EnumFace::Down;
                         else if(cullface == "up")
-                            face.Cullface = Cuboid::EnumFace::Up;
+                            face.Cullface = EnumFace::Up;
                         else if(cullface == "north")
-                            face.Cullface = Cuboid::EnumFace::North;
+                            face.Cullface = EnumFace::North;
                         else if(cullface == "south")
-                            face.Cullface = Cuboid::EnumFace::South;
+                            face.Cullface = EnumFace::South;
                         else if(cullface == "west")
-                            face.Cullface = Cuboid::EnumFace::West;
+                            face.Cullface = EnumFace::West;
                         else if(cullface == "east")
-                            face.Cullface = Cuboid::EnumFace::East;
+                            face.Cullface = EnumFace::East;
                         else
                             MAKE_ERROR("Unknown face");
                     }
@@ -1721,17 +1721,17 @@ PreparedModel::PreparedModel(const std::string_view modid, const js::object& pro
                     }
 
                     if(key == "x")
-                        result.Transformations.emplace_back(Cuboid::Transformation::MoveX, f_value);
+                        result.Transformations.emplace_back(Transformation::MoveX, f_value);
                     else if(key == "y")
-                        result.Transformations.emplace_back(Cuboid::Transformation::MoveY, f_value);
+                        result.Transformations.emplace_back(Transformation::MoveY, f_value);
                     else if(key == "z")
-                        result.Transformations.emplace_back(Cuboid::Transformation::MoveZ, f_value);
+                        result.Transformations.emplace_back(Transformation::MoveZ, f_value);
                     else if(key == "rx")
-                        result.Transformations.emplace_back(Cuboid::Transformation::RotateX, f_value);
+                        result.Transformations.emplace_back(Transformation::RotateX, f_value);
                     else if(key == "ry")
-                        result.Transformations.emplace_back(Cuboid::Transformation::RotateY, f_value);
+                        result.Transformations.emplace_back(Transformation::RotateY, f_value);
                     else if(key == "rz")
-                        result.Transformations.emplace_back(Cuboid::Transformation::RotateZ, f_value);
+                        result.Transformations.emplace_back(Transformation::RotateZ, f_value);
                     else
                         MAKE_ERROR("Неизвестный ключ трансформации");
                 }
@@ -1813,7 +1813,17 @@ PreparedModel::PreparedModel(const std::u8string& data) {
     for(int counter = 0; counter < size; counter++) {
         std::string tkey, pipeline;
         lr >> tkey >> pipeline;
-        Textures.insert({tkey, pipeline});
+        TexturePipeline pipe;
+
+        uint16_t size;
+        lr >> size;
+        pipe.BinTextures.reserve(size);
+        for(int iter = 0; iter < size; iter++)
+            pipe.BinTextures.push_back(lr.read<ResourceId>());
+
+        lr >> (std::string&) pipe.Pipeline;
+
+        CompiledTextures.insert({tkey, std::move(pipe)});
     }
 
     lr >> size;
@@ -1843,12 +1853,12 @@ PreparedModel::PreparedModel(const std::u8string& data) {
             lr >> face.Texture;
             uint8_t val = lr.read<uint8_t>();
             if(val != uint8_t(-1)) {
-                face.Cullface = Cuboid::EnumFace(val);
+                face.Cullface = EnumFace(val);
             }
 
             lr >> face.TintIndex >> face.Rotation;
 
-            cuboid.Faces.insert({(Cuboid::EnumFace) type, face});
+            cuboid.Faces.insert({(EnumFace) type, face});
         }
 
         uint16_t transformationsSize;
@@ -1856,8 +1866,8 @@ PreparedModel::PreparedModel(const std::u8string& data) {
         cuboid.Transformations.reserve(transformationsSize);
 
         for(int counter2 = 0; counter2 < transformationsSize; counter2++) {
-            Cuboid::Transformation tsf;
-            tsf.Op = (Cuboid::Transformation::EnumTransform) lr.read<uint8_t>();
+            Transformation tsf;
+            tsf.Op = (Transformation::EnumTransform) lr.read<uint8_t>();
             lr >> tsf.Value;
             cuboid.Transformations.emplace_back(tsf);
         }
@@ -1881,6 +1891,8 @@ PreparedModel::PreparedModel(const std::u8string& data) {
 
 std::u8string PreparedModel::dump() const {
     Net::Packet result;
+
+    result << 'b' << 'm';
 
     if(GuiLight.has_value()) {
         result << uint8_t(1);
@@ -1916,12 +1928,19 @@ std::u8string PreparedModel::dump() const {
     assert(Textures.size() < (1 << 16));
     result << uint16_t(Textures.size());
 
-    for(const auto& [tkey, dk] : Textures) {
+    assert(CompiledTextures.size() == Textures.size());
+
+    for(const auto& [tkey, dk] : CompiledTextures) {
         assert(tkey.size() < 32);
         result << tkey;
 
-        assert(dk.size() < 512);
-        result << dk;
+        assert(dk.BinTextures.size() < 512);
+        result << uint16_t(dk.BinTextures.size());
+        for(size_t iter = 0; iter < dk.BinTextures.size(); iter++) {
+            result << dk.BinTextures[iter];
+        }
+
+        result << (const std::string&) dk.Pipeline;
     }
 
     assert(Cuboids.size() < (1 << 16));
@@ -1974,6 +1993,36 @@ std::u8string PreparedModel::dump() const {
     }
 
     return result.complite();
+}
+
+PreparedGLTF::PreparedGLTF(const std::string_view modid, const js::object& gltf) {
+    // gltf
+
+    // Сцена по умолчанию
+    // Сцены -> Ноды
+    // Ноды -> Ноды, меши, матрицы, translation, rotation
+    // Меши -> Примитивы
+    // Примитивы -> Материал, вершинные данные
+    // Материалы -> текстуры
+    // Текстуры
+    // Буферы
+}
+
+PreparedGLTF::PreparedGLTF(const std::string_view modid, Resource glb) {
+
+}
+
+PreparedGLTF::PreparedGLTF(std::u8string_view data) {
+
+}
+
+
+std::u8string PreparedGLTF::dump() const {
+    std::unreachable();
+}
+
+void PreparedGLTF::load(std::u8string_view data) {
+
 }
 
 struct Resource::InlineMMap {

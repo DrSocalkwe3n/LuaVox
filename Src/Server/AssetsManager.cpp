@@ -19,8 +19,7 @@ PreparedModel::PreparedModel(const std::string& domain, const LV::PreparedModel&
     Cuboids.reserve(model.Cuboids.size());
 
     for(auto& [key, cmd] : model.Textures) {
-        PrecompiledTexturePipeline ptp = compileTexturePipeline(cmd, domain);
-        for(auto& [domain, key] : ptp.Assets) {
+        for(auto& [domain, key] : cmd.Assets) {
             TextureDependencies[domain].push_back(key);
         }
     }
@@ -42,20 +41,7 @@ PreparedModel::PreparedModel(const std::string& domain, const LV::PreparedModel&
     // }
 }
 
-PreparedModel::PreparedModel(const std::string& domain, const js::object& glTF) {
-    // gltf
-
-    // Сцена по умолчанию
-    // Сцены -> Ноды
-    // Ноды -> Ноды, меши, матрицы, translation, rotation
-    // Меши -> Примитивы
-    // Примитивы -> Материал, вершинные данные
-    // Материалы -> текстуры
-    // Текстуры
-    // Буферы
-}
-
-PreparedModel::PreparedModel(const std::string& domain, Resource glb) {
+PreparedModel::PreparedModel(const std::string& domain, const PreparedGLTF& glTF) {
 
 }
 
@@ -110,32 +96,24 @@ void AssetsManager::loadResourceFromFile_Model(ResourceChangeObj& out, const std
         json, glTF, glB
     */
 
-    // Либо это внутренний формат, либо glTF
-
     Resource res(path);
     std::filesystem::file_time_type ftt = fs::last_write_time(path);
-    PreparedModel pmc;
-
     auto extension = path.extension();
     
     if(extension == ".json") {
         js::object obj = js::parse(std::string_view((const char*) res.data(), res.size())).as_object();
         LV::PreparedModel pm(domain, obj);
-        std::u8string data = pm.dump();
-        pmc = PreparedModel(domain, pm);
-        out.NewOrChange[(int) EnumAssets::Model][domain].emplace_back(key, Resource((const uint8_t*) data.data(), data.size()), ftt);
+        out.NewOrChange_Models[domain].emplace_back(key, std::move(pm), ftt);
     } else if(extension == ".gltf") {
         js::object obj = js::parse(std::string_view((const char*) res.data(), res.size())).as_object();
-        pmc = PreparedModel(domain, obj);
-        out.NewOrChange[(int) EnumAssets::Model][domain].emplace_back(key, res, ftt);
+        PreparedGLTF gltf(domain, obj);
+        out.NewOrChange_Models[domain].emplace_back(key, std::move(gltf), ftt);
     } else if(extension == ".glb") {
-        pmc = PreparedModel(domain, res);
-        out.NewOrChange[(int) EnumAssets::Model][domain].emplace_back(key, res, ftt);
+        PreparedGLTF gltf(domain, res);
+        out.NewOrChange_Models[domain].emplace_back(key, std::move(gltf), ftt);
     } else {
         MAKE_ERROR("Не поддерживаемый формат файла");
     }
-
-    out.Models[domain].emplace_back(key, pmc);
 }
 
 void AssetsManager::loadResourceFromFile_Texture(ResourceChangeObj& out, const std::string& domain, const std::string& key, fs::path path) const {
@@ -513,6 +491,110 @@ AssetsManager::Out_applyResourceChange AssetsManager::applyResourceChange(const 
         std::set_difference(l.begin(), l.end(), noc.begin(), noc.end(), std::back_inserter(result.Lost[type]));
     }
 
+    if(!orr.Nodestates.empty())
+    {
+        auto lock = LocalObj.lock();
+        for(auto& [domain, table] : orr.Nodestates) {
+            for(auto& [key, value] : table) {
+                ResourceId resId = lock->getId(EnumAssets::Nodestate, domain, key);
+
+                std::vector<AssetsModel> models;
+
+                for(auto& [domain2, key2] : value.ModelToLocalId) {
+                    models.push_back(lock->getId(EnumAssets::Model, domain2, key2));
+                }
+
+                {
+                    std::sort(models.begin(), models.end());
+                    auto iterErase = std::unique(models.begin(), models.end());
+                    models.erase(iterErase, models.end());
+                    models.shrink_to_fit();
+                }
+
+                lock->Table_NodeState[resId / TableEntry<DataEntry>::ChunkSize]
+                    ->Entries[resId % TableEntry<DataEntry>::ChunkSize] = std::move(models);
+            }
+        }
+    }
+
+    // Приёмка новых/изменённых моделей
+    if(!orr.NewOrChange_Models.empty())
+    {
+        auto lock = LocalObj.lock();
+        for(auto& [domain, table] : orr.NewOrChange_Models) {
+            auto& keyToIdDomain = lock->KeyToId[(int) EnumAssets::Model][domain];
+
+            for(auto& [key, _model, ftt] : table) {
+                ResourceId resId = -1;
+                std::optional<DataEntry>* data = nullptr;
+
+                if(auto iterId = keyToIdDomain.find(key); iterId != keyToIdDomain.end()) {
+                    resId = iterId->second;
+                    data = &lock->Table[(int) EnumAssets::Model][resId / TableEntry<DataEntry>::ChunkSize]->Entries[resId % TableEntry<DataEntry>::ChunkSize];
+                } else {
+                    auto [_id, _data] = lock->nextId((EnumAssets) EnumAssets::Model);
+                    resId = _id;
+                    data = &_data;
+                }
+
+                keyToIdDomain[key] = resId;
+
+                // Ресолвим текстуры
+                std::variant<LV::PreparedModel, PreparedGLTF> model = _model;
+                std::visit([&lock](auto& val) {
+                    for(const auto& [key, pipeline] : val.Textures) {
+                        TexturePipeline pipe;
+                        pipe.Pipeline = pipeline.Pipeline;
+
+                        for(const auto& [domain, key] : pipeline.Assets) {
+                            ResourceId texId = lock->getId(EnumAssets::Texture, domain, key);
+                            pipe.BinTextures.push_back(texId);
+                        }
+
+                        val.CompiledTextures[key] = std::move(pipe);
+                    }
+                }, model);
+
+                // Сдампим для отправки клиенту (Кеш в пролёте?)
+                std::u8string dump = std::visit<std::u8string>([&lock](auto& val) {
+                    return val.dump();
+                }, model);
+                Resource res(std::move(dump));
+
+                // На оповещение
+                result.NewOrChange[(int) EnumAssets::Model].push_back({resId, res});
+
+                // Запись в таблице ресурсов
+                data->emplace(ftt, res, domain, key);
+
+                lock->HashToId[res.hash()] = {EnumAssets::Model, resId};
+
+                // Для нужд сервера, ресолвим зависимости
+                PreparedModel pm = std::visit<PreparedModel>([&domain](auto& val) {
+                    return PreparedModel(domain, val);
+                }, model);
+
+                ModelDependency deps;
+                for(auto& [domain2, list] : pm.ModelDependencies) {
+                    for(const std::string& key2 : list) {
+                        ResourceId subResId = lock->getId(EnumAssets::Model, domain2, key2);
+                        deps.ModelDeps.push_back(subResId);
+                    }
+                }
+
+                for(auto& [domain2, list] : pm.TextureDependencies) {
+                    for(const std::string& key2 : list) {
+                        ResourceId subResId = lock->getId(EnumAssets::Texture, domain2, key2);
+                        deps.TextureDeps.push_back(subResId);
+                    }
+                }
+
+                lock->Table_Model[resId / TableEntry<DataEntry>::ChunkSize]
+                    ->Entries[resId % TableEntry<DataEntry>::ChunkSize] = std::move(deps);
+            }
+        }
+    }
+
     // Дамп ключей assets
     {
         std::stringstream result;
@@ -544,60 +626,6 @@ AssetsManager::Out_applyResourceChange AssetsManager::applyResourceChange(const 
         }
 
         LOG.debug() << "Дамп ассетов:\n" << result.str();
-    }
-
-    if(!orr.Nodestates.empty())
-    {
-        auto lock = LocalObj.lock();
-        for(auto& [domain, table] : orr.Nodestates) {
-            for(auto& [key, value] : table) {
-                ResourceId resId = lock->getId(EnumAssets::Nodestate, domain, key);
-
-                std::vector<AssetsModel> models;
-
-                for(auto& [domain2, key2] : value.ModelToLocalId) {
-                    models.push_back(lock->getId(EnumAssets::Model, domain2, key2));
-                }
-
-                {
-                    std::sort(models.begin(), models.end());
-                    auto iterErase = std::unique(models.begin(), models.end());
-                    models.erase(iterErase, models.end());
-                    models.shrink_to_fit();
-                }
-
-                lock->Table_NodeState[resId / TableEntry<DataEntry>::ChunkSize]
-                    ->Entries[resId % TableEntry<DataEntry>::ChunkSize] = std::move(models);
-            }
-        }
-    }
-
-    if(!orr.Models.empty())
-    {
-        auto lock = LocalObj.lock();
-        for(auto& [domain, table] : orr.Models) {
-            for(auto& [key, value] : table) {
-                ResourceId resId = lock->getId(EnumAssets::Model, domain, key);
-
-                ModelDependency deps;
-                for(auto& [domain2, list] : value.ModelDependencies) {
-                    for(const std::string& key2 : list) {
-                        ResourceId subResId = lock->getId(EnumAssets::Model, domain2, key2);
-                        deps.ModelDeps.push_back(subResId);
-                    }
-                }
-
-                for(auto& [domain2, list] : value.TextureDependencies) {
-                    for(const std::string& key2 : list) {
-                        ResourceId subResId = lock->getId(EnumAssets::Texture, domain2, key2);
-                        deps.TextureDeps.push_back(subResId);
-                    }
-                }
-
-                lock->Table_Model[resId / TableEntry<DataEntry>::ChunkSize]
-                    ->Entries[resId % TableEntry<DataEntry>::ChunkSize] = std::move(deps);
-            }
-        }
     }
 
     // Вычислить зависимости моделей

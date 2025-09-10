@@ -5,10 +5,12 @@
 #include <Client/Vulkan/Vulkan.hpp>
 #include <algorithm>
 #include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <queue>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -20,6 +22,7 @@
 #include "glm/fwd.hpp"
 #include "../FrustumCull.h"
 #include "glm/geometric.hpp"
+#include <execution>
 
 /*
     У движка есть один текстурный атлас VK_IMAGE_VIEW_TYPE_2D_ARRAY(RGBA_UINT) и к нему Storage с инфой о положении текстур
@@ -48,6 +51,302 @@ struct WorldPCO {
 };
 
 static_assert(sizeof(WorldPCO) == 128);
+
+class ModelProvider {
+    struct Transformations {
+        std::vector<Transformation> OPs;
+
+        void apply(std::vector<Vertex>& vertices) const {
+            if (vertices.empty() || OPs.empty())
+                return;
+
+            glm::mat4 transform(1.0f);
+
+            for (const auto& op : OPs) {
+                switch (op.Op) {
+                    case Transformation::MoveX:   transform = glm::translate(transform, glm::vec3(op.Value, 0.0f, 0.0f)); break;
+                    case Transformation::MoveY:   transform = glm::translate(transform, glm::vec3(0.0f, op.Value, 0.0f)); break;
+                    case Transformation::MoveZ:   transform = glm::translate(transform, glm::vec3(0.0f, 0.0f, op.Value)); break;
+                    case Transformation::ScaleX:  transform = glm::scale(transform, glm::vec3(op.Value, 1.0f, 1.0f)); break;
+                    case Transformation::ScaleY:  transform = glm::scale(transform, glm::vec3(1.0f, op.Value, 1.0f)); break;
+                    case Transformation::ScaleZ:  transform = glm::scale(transform, glm::vec3(1.0f, 1.0f, op.Value)); break;
+                    case Transformation::RotateX: transform = glm::rotate(transform, op.Value, glm::vec3(1.0f, 0.0f, 0.0f)); break;
+                    case Transformation::RotateY: transform = glm::rotate(transform, op.Value, glm::vec3(0.0f, 1.0f, 0.0f)); break;
+                    case Transformation::RotateZ: transform = glm::rotate(transform, op.Value, glm::vec3(0.0f, 0.0f, 1.0f)); break;
+                    default: break;
+                }
+            }
+
+            std::transform(
+                std::execution::unseq,
+                vertices.begin(),
+                vertices.end(),
+                vertices.begin(),
+                [transform](Vertex v) -> Vertex {
+                    glm::vec4 pos_h(v.Pos, 1.0f);
+                    pos_h = transform * pos_h;
+                    v.Pos = glm::vec3(pos_h) / pos_h.w;
+                    return v;
+                }
+            );
+        }
+
+        std::vector<Vertex> apply(const std::vector<Vertex>& vertices) const {
+            std::vector<Vertex> result = vertices;
+            apply(result);
+            return result;
+        }
+    };
+
+    struct Model {
+        // В вершинах текущей модели TexId ссылается на локальный текстурный ключ
+        // 0 -> default_texture -> luavox:grass.png
+        std::vector<std::string> TextureKeys;
+        // Привязка локальных ключей к глобальным
+        std::unordered_map<std::string, TexturePipeline> TextureMap;
+        // Вершины со всеми применёнными трансформациями, с CullFace
+        std::unordered_map<EnumFace, std::vector<Vertex>> Vertecies;
+        // Текстуры этой модели не будут переписаны вышестоящими
+        bool UniqueTextures = false;
+    };
+
+    struct ModelObject : public Model {
+        // Зависимости, их трансформации (здесь может повторятся одна и таже модель)
+        // и перезаписи идентификаторов текстур
+        std::vector<std::tuple<ResourceId, Transformations>> Depends;
+
+        // Те кто использовали модель как зависимость в ней отметятся
+        std::vector<ResourceId> UpUse;
+        // При изменении/удалении модели убрать метки с зависимостей
+        std::vector<ResourceId> DownUse;
+        // Для постройки зависимостей
+        bool Ready = false;
+
+        // Если модель использовалась для рендера нод, то для неё надо переформировать вершины
+        // std::optional<std::vector<NodeVertexStatic>> NodeVertecies;
+    };
+
+public:
+    // Предкомпилирует модель
+    Model getModel(ResourceId id) {
+        auto lock = Models.lock();
+        std::vector<ResourceId> used;
+        return getModelSynced(*lock, id, used);
+    }
+
+    // Применяет изменения, возвращая все затронутые модели
+    std::vector<ResourceId> onModelChanges(std::vector<std::tuple<ResourceId, Resource>> newOrChanged, std::vector<ResourceId> lost) {
+        auto lock = Models.lock();
+        std::vector<ResourceId> result;
+
+        std::move_only_function<void(ResourceId)> makeUnready;
+        makeUnready = [&](ResourceId id) {
+            auto iterModel = lock->find(id);
+            if(iterModel == lock->end())
+                return;
+
+            if(!iterModel->second.Ready)
+                return;
+
+            result.push_back(id);
+
+            for(ResourceId downId : iterModel->second.DownUse) {
+                auto iterModel = lock->find(downId);
+                if(iterModel == lock->end())
+                    return;
+
+                auto iter = std::find(iterModel->second.UpUse.begin(), iterModel->second.UpUse.end(), id);
+                assert(iter != iterModel->second.UpUse.end());
+                iterModel->second.UpUse.erase(iter);
+            }
+
+            for(ResourceId upId : iterModel->second.UpUse) {
+                makeUnready(upId);
+            }
+
+            assert(iterModel->second.UpUse.empty());
+
+            iterModel->second.Ready = false;
+        };
+
+        for(ResourceId lostId : lost) {
+            makeUnready(lostId);
+        }
+
+        for(ResourceId lostId : lost) {
+            auto iterModel = lock->find(lostId);
+            if(iterModel == lock->end())
+                continue;
+
+            lock->erase(iterModel);
+        }
+        
+        for(const auto& [key, resource] : newOrChanged) {
+            makeUnready(key);
+            ModelObject model;
+            std::string type = "unknown";
+                
+            try {
+                std::u8string_view data((const char8_t*) resource.data(), resource.size());
+                if(data.starts_with((const char8_t*) "bm")) {
+                    type = "InternalBinary";
+                    // Компилированная модель внутреннего формата
+                    LV::PreparedModel pm((std::u8string) data.substr(2));
+                    model.TextureKeys = {};
+
+                    for(const PreparedModel::Cuboid& cb : pm.Cuboids) {
+                        for(const auto& [face, params] : cb.Faces) {
+                            // params.
+                        }
+                    }
+
+        // glm::vec3 From, To;
+
+        // struct Face {
+        //     glm::vec4 UV;
+        //     std::string Texture;
+        //     std::optional<EnumFace> Cullface;
+        //     int TintIndex = -1;
+        //     int16_t Rotation = 0;
+        // };
+
+        // std::unordered_map<EnumFace, Face> Faces;
+    
+        // std::vector<Transformation> Transformations;
+                    
+                } else if(data.starts_with((const char8_t*) "glTF")) {
+                    type = "glb";
+
+                } else if(data.starts_with((const char8_t*) "bgl")) {
+                    type = "InternalGLTF";
+
+                } else if(data.starts_with((const char8_t*) "{")) {
+                    type = "InternalJson или glTF";
+                    // Модель внутреннего формата или glTF
+                }
+            } catch(const std::exception& exc) {
+                LOG.warn() << "Не удалось распарсить модель " << type << ":\n\t" << exc.what();
+            }
+
+            lock->insert({key, std::move(model)});
+        }
+
+
+        std::sort(result.begin(), result.end());
+        auto eraseIter = std::unique(result.begin(), result.end());
+        result.erase(eraseIter, result.end());
+        return result;
+    }
+
+private:
+    Logger LOG = "Client>ModelProvider";
+    // Таблица моделей
+    TOS::SpinlockObject<std::unordered_map<ResourceId, ModelObject>> Models;
+    uint64_t UniqId = 0;
+
+    Model getModelSynced(std::unordered_map<ResourceId, ModelObject>& models, ResourceId id, std::vector<ResourceId>& used) {
+        auto iterModel = models.find(id);
+        if(iterModel == models.end()) {
+            // Нет такой модели, ну и хрен с ним
+            return {};
+        }
+
+        ModelObject& model = iterModel->second;
+        if(!model.Ready) {
+            std::vector<ResourceId> deps;
+            for(const auto&[id, _] : model.Depends) {
+                deps.push_back(id);
+            }
+
+            std::sort(deps.begin(), deps.end());
+            auto eraseIter = std::unique(deps.begin(), deps.end());
+            deps.erase(eraseIter, deps.end());
+
+            // Отмечаемся в зависимостях
+            for(ResourceId subId : deps) {
+                auto iterModel = models.find(subId);
+                if(iterModel == models.end())
+                    continue;
+
+                iterModel->second.UpUse.push_back(id);
+            }
+
+            model.Ready = true;
+        }
+
+        // Собрать зависимости
+        std::vector<Model> subModels;
+        used.push_back(id);
+
+        for(const auto&[id, trans] : model.Depends) {
+            if(std::find(used.begin(), used.end(), id) != used.end()) {
+                // Цикл зависимостей
+                continue;
+            }
+
+            Model model = getModelSynced(models, id, used);
+
+            for(auto& [face, vertecies] : model.Vertecies)
+                trans.apply(vertecies);
+
+            subModels.emplace_back(std::move(model));
+        }
+
+        subModels.push_back(model);
+        used.pop_back();
+
+        // Собрать всё воедино
+        Model result;
+
+        for(Model& subModel : subModels) {
+            std::vector<ResourceId> localRelocate;
+
+            if(subModel.UniqueTextures) {
+                std::string extraKey = "#" + std::to_string(UniqId++);
+                for(std::string& key : subModel.TextureKeys) {
+                    key += extraKey;
+                }
+
+                std::unordered_map<std::string, TexturePipeline> newTable;
+                for(auto& [key, _] : subModel.TextureMap) {
+                    newTable[key + extraKey] = _;
+                }
+
+                subModel.TextureMap = std::move(newTable);
+            }
+
+            for(const std::string& key : subModel.TextureKeys) {
+                auto iterKey = std::find(result.TextureKeys.begin(), result.TextureKeys.end(), key);
+                if(iterKey == result.TextureKeys.end()) {
+                    localRelocate.push_back(result.TextureKeys.size());
+                    result.TextureKeys.push_back(key);
+                } else {
+                    localRelocate.push_back(iterKey-result.TextureKeys.begin());
+                }
+            }
+
+            for(const auto& [face, vertecies] : subModel.Vertecies) {
+                auto& resVerts = result.Vertecies[face];
+
+                for(Vertex v : vertecies) {
+                    v.TexId = localRelocate[v.TexId];
+                    resVerts.push_back(v);
+                }
+            }
+
+            for(auto& [key, dk] : subModel.TextureMap) {
+                result.TextureMap[key] = dk;
+            }
+        }
+
+        return result;
+    }
+};
+
+class ModelProviderForChunkMeshGeneretaor {
+public:
+
+};
 
 /*
     Объект, занимающийся генерацией меша на основе нод и вокселей
@@ -81,7 +380,6 @@ struct ChunkMeshGenerator {
     // Выход
     TOS::SpinlockObject<std::vector<ChunkObj_t>> Output;
 
-
 public:
     ChunkMeshGenerator(IServerSession* serverSession)
         :   SS(serverSession) 
@@ -94,25 +392,7 @@ public:
     }
 
     // Меняет количество обрабатывающих потоков
-    void changeThreadsCount(uint8_t threads) {
-        Sync.NeedShutdown = true;
-        std::unique_lock lock(Sync.Mutex);
-        Sync.CV_CountInRun.wait(lock, [&]() { return Sync.CountInRun == 0; });
-
-        for(std::thread& thr : Threads)
-            thr.join();
-
-        Sync.NeedShutdown = false;
-
-        Threads.resize(threads);
-        for(int iter = 0; iter < threads; iter++)
-            Threads[iter] = std::thread(&ChunkMeshGenerator::run, this, iter);
-
-        Sync.CV_CountInRun.wait(lock, [&]() { return Sync.CountInRun == Threads.size() || Sync.NeedShutdown; });
-        
-        if(Sync.NeedShutdown)
-            MAKE_ERROR("Ошибка обработчика вершин чанков");
-    }
+    void changeThreadsCount(uint8_t threads);
 
     void prepareTickSync() {
         Sync.Stop = true;
@@ -128,7 +408,6 @@ public:
         Sync.CV_CountInRun.notify_all();
     }
 
-
 private:
     struct {
         std::mutex Mutex;
@@ -139,8 +418,6 @@ private:
     } Sync;
 
     IServerSession *SS;
-
-    // Потоки
     std::vector<std::thread> Threads;
 
     void run(uint8_t id);
@@ -201,135 +478,10 @@ public:
         CMG.pushStageTickSync();
     }
 
-    void tickSync(const TickSyncData& data) {
-        // Обработать изменения в чанках
-        // Пересчёт соседних чанков
-        // Проверить необходимость пересчёта чанков при изменении профилей
-
-        // Добавляем к изменёным чанкам пересчёт соседей
-        {
-            std::vector<std::tuple<WorldId_t, Pos::GlobalChunk, uint32_t>> toBuild;
-            for(auto& [wId, chunks] : data.ChangedChunks) {
-                std::vector<Pos::GlobalChunk> list;
-                for(const Pos::GlobalChunk& pos : chunks) {
-                    list.push_back(pos);
-                    list.push_back(pos+Pos::GlobalChunk(1, 0, 0));
-                    list.push_back(pos+Pos::GlobalChunk(-1, 0, 0));
-                    list.push_back(pos+Pos::GlobalChunk(0, 1, 0));
-                    list.push_back(pos+Pos::GlobalChunk(0, -1, 0));
-                    list.push_back(pos+Pos::GlobalChunk(0, 0, 1));
-                    list.push_back(pos+Pos::GlobalChunk(0, 0, -1));
-                }
-
-                std::sort(list.begin(), list.end());
-                auto eraseIter = std::unique(list.begin(), list.end());
-                list.erase(eraseIter, list.end());
-
-
-                for(Pos::GlobalChunk& pos : list) {
-                    Pos::GlobalRegion rPos = pos >> 2;
-                    auto iterRegion = Requests[wId].find(rPos);
-                    if(iterRegion != Requests[wId].end())
-                        toBuild.emplace_back(wId, pos, iterRegion->second);
-                    else
-                        toBuild.emplace_back(wId, pos, Requests[wId][rPos] = NextRequest++);
-                }
-            }
-
-            CMG.Input.lock()->push_range(toBuild);
-        }
-
-        // Чистим запросы и чанки
-        {
-            uint8_t frameRetirement = (FrameRoulette+FRAME_COUNT_RESOURCE_LATENCY) % FRAME_COUNT_RESOURCE_LATENCY;
-            for(auto& [wId, regions] : data.LostRegions) {
-                if(auto iterWorld = Requests.find(wId); iterWorld != Requests.end()) {
-                    for(const Pos::GlobalRegion& rPos : regions)
-                        if(auto iterRegion = iterWorld->second.find(rPos); iterRegion != iterWorld->second.end())
-                            iterWorld->second.erase(iterRegion);
-                }
-
-                if(auto iterWorld = ChunksMesh.find(wId); iterWorld != ChunksMesh.end()) {
-                    for(const Pos::GlobalRegion& rPos : regions)
-                        if(auto iterRegion = iterWorld->second.find(rPos); iterRegion != iterWorld->second.end()) {
-                            for(int iter = 0; iter < 4*4*4; iter++) {
-                                auto& chunk = iterRegion->second[iter];
-                                if(chunk.VoxelPointer)
-                                    VPV_ToFree[frameRetirement].emplace_back(std::move(chunk.VoxelPointer));
-                                if(chunk.NodePointer) {
-                                    VPN_ToFree[frameRetirement].emplace_back(std::move(chunk.NodePointer), std::move(chunk.NodeIndexes));
-                                }
-                            }
-                            
-                            iterWorld->second.erase(iterRegion);
-                        }
-                }
-            }
-        }
-
-        // Получаем готовые чанки
-        {
-            std::vector<ChunkMeshGenerator::ChunkObj_t> chunks = std::move(*CMG.Output.lock());
-            for(auto& chunk : chunks) {
-                auto iterWorld = Requests.find(chunk.WId);
-                if(iterWorld == Requests.end())
-                    continue;
-
-                auto iterRegion = iterWorld->second.find(chunk.Pos >> 2);
-                if(iterRegion == iterWorld->second.end())
-                    continue;
-
-                if(iterRegion->second != chunk.RequestId)
-                    continue;
-
-                // Чанк ожидаем
-                auto& rChunk = ChunksMesh[chunk.WId][chunk.Pos >> 2][Pos::bvec4u(chunk.Pos & 0x3).pack()];
-                rChunk.Voxels = std::move(chunk.VoxelDefines);
-                if(!chunk.VoxelVertexs.empty())
-                    rChunk.VoxelPointer = VertexPool_Voxels.pushVertexs(std::move(chunk.VoxelVertexs));
-                rChunk.Nodes = std::move(chunk.NodeDefines);
-                if(!chunk.NodeVertexs.empty())
-                    rChunk.NodePointer = VertexPool_Nodes.pushVertexs(std::move(chunk.NodeVertexs));
-
-                if(std::vector<uint16_t>* ptr = std::get_if<std::vector<uint16_t>>(&chunk.NodeIndexes)) {
-                    if(!ptr->empty())
-                        rChunk.NodeIndexes = IndexPool_Nodes_16.pushVertexs(std::move(*ptr));
-                } else if(std::vector<uint32_t>* ptr = std::get_if<std::vector<uint32_t>>(&chunk.NodeIndexes)) {
-                    if(!ptr->empty())
-                        rChunk.NodeIndexes = IndexPool_Nodes_32.pushVertexs(std::move(*ptr));
-                }
-            }
-        }
-
-        VertexPool_Voxels.update(CMDPool);
-        VertexPool_Nodes.update(CMDPool);
-        IndexPool_Nodes_16.update(CMDPool);
-        IndexPool_Nodes_32.update(CMDPool);
-
-        CMG.endTickSync();
-    }
+    void tickSync(const TickSyncData& data);
 
     // Готовность кадров определяет когда можно удалять ненужные ресурсы, которые ещё используются в рендере
-    void pushFrame() {
-        FrameRoulette = (FrameRoulette+1) % FRAME_COUNT_RESOURCE_LATENCY;
-
-        for(auto pointer : VPV_ToFree[FrameRoulette]) {
-            VertexPool_Voxels.dropVertexs(pointer);
-        }
-
-        VPV_ToFree[FrameRoulette].clear();
-
-        for(auto& pointer : VPN_ToFree[FrameRoulette]) {
-            VertexPool_Nodes.dropVertexs(std::get<0>(pointer));
-            if(IndexPool<uint16_t>::Pointer* ind = std::get_if<IndexPool<uint16_t>::Pointer>(&std::get<1>(pointer))) {
-                IndexPool_Nodes_16.dropVertexs(*ind);
-            } else if(IndexPool<uint32_t>::Pointer* ind = std::get_if<IndexPool<uint32_t>::Pointer>(&std::get<1>(pointer))) {
-                IndexPool_Nodes_32.dropVertexs(*ind);
-            }
-        }
-
-        VPN_ToFree[FrameRoulette].clear();
-    }
+    void pushFrame();
 
     // Выдаёт буферы для рендера в порядке от ближнего к дальнему. distance - радиус в регионах
     std::pair<

@@ -53,6 +53,9 @@ struct WorldPCO {
 
 static_assert(sizeof(WorldPCO) == 128);
 
+/*
+    Хранит модели и предоставляет их конечные варианты
+*/
 class ModelProvider {
     struct Model {
         // В вершинах текущей модели TexId ссылается на локальный текстурный ключ
@@ -77,28 +80,23 @@ class ModelProvider {
         std::vector<ResourceId> DownUse;
         // Для постройки зависимостей
         bool Ready = false;
-
-        // Если модель использовалась для рендера нод, то для неё надо переформировать вершины
-        // std::optional<std::vector<NodeVertexStatic>> NodeVertecies;
     };
 
 public:
     // Предкомпилирует модель
     Model getModel(ResourceId id) {
-        auto lock = Models.lock();
         std::vector<ResourceId> used;
-        return getModelSynced(*lock, id, used);
+        return getModel(id, used);
     }
 
     // Применяет изменения, возвращая все затронутые модели
-    std::vector<ResourceId> onModelChanges(std::vector<std::tuple<ResourceId, Resource>> newOrChanged, std::vector<ResourceId> lost) {
-        auto lock = Models.lock();
-        std::vector<ResourceId> result;
+    std::vector<AssetsModel> onModelChanges(std::vector<std::tuple<AssetsModel, Resource>> newOrChanged, std::vector<AssetsModel> lost) {
+        std::vector<AssetsModel> result;
 
         std::move_only_function<void(ResourceId)> makeUnready;
         makeUnready = [&](ResourceId id) {
-            auto iterModel = lock->find(id);
-            if(iterModel == lock->end())
+            auto iterModel = Models.find(id);
+            if(iterModel == Models.end())
                 return;
 
             if(!iterModel->second.Ready)
@@ -107,8 +105,8 @@ public:
             result.push_back(id);
 
             for(ResourceId downId : iterModel->second.DownUse) {
-                auto iterModel = lock->find(downId);
-                if(iterModel == lock->end())
+                auto iterModel = Models.find(downId);
+                if(iterModel == Models.end())
                     return;
 
                 auto iter = std::find(iterModel->second.UpUse.begin(), iterModel->second.UpUse.end(), id);
@@ -130,11 +128,11 @@ public:
         }
 
         for(ResourceId lostId : lost) {
-            auto iterModel = lock->find(lostId);
-            if(iterModel == lock->end())
+            auto iterModel = Models.find(lostId);
+            if(iterModel == Models.end())
                 continue;
 
-            lock->erase(iterModel);
+            Models.erase(iterModel);
         }
         
         for(const auto& [key, resource] : newOrChanged) {
@@ -250,7 +248,7 @@ public:
                 LOG.warn() << "Не удалось распарсить модель " << type << ":\n\t" << exc.what();
             }
 
-            lock->insert({key, std::move(model)});
+            Models.insert({key, std::move(model)});
         }
 
         std::sort(result.begin(), result.end());
@@ -262,12 +260,12 @@ public:
 private:
     Logger LOG = "Client>ModelProvider";
     // Таблица моделей
-    TOS::SpinlockObject<std::unordered_map<ResourceId, ModelObject>> Models;
+    std::unordered_map<ResourceId, ModelObject> Models;
     uint64_t UniqId = 0;
 
-    Model getModelSynced(std::unordered_map<ResourceId, ModelObject>& models, ResourceId id, std::vector<ResourceId>& used) {
-        auto iterModel = models.find(id);
-        if(iterModel == models.end()) {
+    Model getModel(ResourceId id, std::vector<ResourceId>& used) {
+        auto iterModel = Models.find(id);
+        if(iterModel == Models.end()) {
             // Нет такой модели, ну и хрен с ним
             return {};
         }
@@ -285,8 +283,8 @@ private:
 
             // Отмечаемся в зависимостях
             for(ResourceId subId : deps) {
-                auto iterModel = models.find(subId);
-                if(iterModel == models.end())
+                auto iterModel = Models.find(subId);
+                if(iterModel == Models.end())
                     continue;
 
                 iterModel->second.UpUse.push_back(id);
@@ -305,7 +303,7 @@ private:
                 continue;
             }
 
-            Model model = getModelSynced(models, id, used);
+            Model model = getModel(id, used);
 
             for(auto& [face, vertecies] : model.Vertecies)
                 trans.apply(vertecies);
@@ -364,8 +362,45 @@ private:
     }
 };
 
-class ModelProviderForChunkMeshGeneretaor {
+/*
+    Хранит информацию о моделях при различных состояниях нод
+*/
+class NodestateProvider {
 public:
+    struct Model {
+        // В вершинах текущей модели TexId ссылается на локальный текстурный ключ
+        // 0 -> default_texture -> luavox:grass.png
+        std::vector<std::string> TextureKeys;
+        // Привязка локальных ключей к глобальным
+        std::unordered_map<std::string, TexturePipeline> TextureMap;
+        // Вершины со всеми применёнными трансформациями, с CullFace
+        std::unordered_map<EnumFace, std::vector<NodeVertexStatic>> Vertecies;
+    };
+
+public:
+    NodestateProvider(ModelProvider& mp)
+        : MP(mp)
+    {}
+
+    // Применяет изменения, возвращает изменённые описания состояний
+    std::vector<AssetsNodestate> onNodestateChanges(std::vector<std::tuple<AssetsNodestate, Resource>> newOrChanged, std::vector<AssetsNodestate> lost, std::vector<AssetsModel> changedModels) {
+        std::vector<AssetsNodestate> result;
+
+        
+
+
+        return result;
+    }
+
+    std::vector<Model> getModelsForNode(DefNodeId id, uint8_t meta) {
+
+    }
+
+private:
+    Logger LOG = "Client>NodestateProvider";
+    ModelProvider& MP;
+
+
 
 };
 

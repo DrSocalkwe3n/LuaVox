@@ -1844,7 +1844,7 @@ PreparedModel::PreparedModel(const std::u8string& data) {
         for(int iter = 0; iter < 3; iter++)
             lr >> cuboid.To[iter];
 
-        uint16_t facesSize;
+        uint8_t facesSize;
         lr >> facesSize;
         cuboid.Faces.reserve(facesSize);
 
@@ -1867,7 +1867,7 @@ PreparedModel::PreparedModel(const std::u8string& data) {
             cuboid.Faces.insert({(EnumFace) type, face});
         }
 
-        uint16_t transformationsSize;
+        uint8_t transformationsSize;
         lr >> transformationsSize;
         cuboid.Trs.OPs.reserve(transformationsSize);
 

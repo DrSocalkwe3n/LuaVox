@@ -332,9 +332,9 @@ void ChunkMeshGenerator::run(uint8_t id) {
 
                     // Рендерим обычный кубоид
                     if(!(fullCovered & 0b000100)) {
-                        v.FX = 135+x*16;
-                        v.FY = 135+y*16+16;
-                        v.FZ = 135+z*16+16;
+                        v.FX = 224+x*16;
+                        v.FY = 224+y*16+16;
+                        v.FZ = 224+z*16+16;
                         v.TU = 0;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
@@ -347,8 +347,8 @@ void ChunkMeshGenerator::run(uint8_t id) {
                         v.TV = 65535;
                         result.NodeVertexs.push_back(v);
 
-                        v.FX = 135+x*16;
-                        v.FZ = 135+z*16+16;
+                        v.FX = 224+x*16;
+                        v.FZ = 224+z*16+16;
                         v.TU = 0;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
@@ -365,9 +365,9 @@ void ChunkMeshGenerator::run(uint8_t id) {
                     }
 
                     if(!(fullCovered & 0b001000)) {
-                        v.FX = 135+x*16;
-                        v.FY = 135+y*16;
-                        v.FZ = 135+z*16+16;
+                        v.FX = 224+x*16;
+                        v.FY = 224+y*16;
+                        v.FZ = 224+z*16+16;
                         v.TU = 0;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
@@ -380,8 +380,8 @@ void ChunkMeshGenerator::run(uint8_t id) {
                         v.TU = 65535;
                         result.NodeVertexs.push_back(v);
 
-                        v.FX = 135+x*16;
-                        v.FZ = 135+z*16+16;
+                        v.FX = 224+x*16;
+                        v.FZ = 224+z*16+16;
                         v.TU = 0;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
@@ -398,9 +398,9 @@ void ChunkMeshGenerator::run(uint8_t id) {
                     }
 
                     if(!(fullCovered & 0b000001)) {
-                        v.FX = 135+x*16+16;
-                        v.FY = 135+y*16;
-                        v.FZ = 135+z*16+16;
+                        v.FX = 224+x*16+16;
+                        v.FY = 224+y*16;
+                        v.FZ = 224+z*16+16;
                         v.TU = 0;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
@@ -413,8 +413,8 @@ void ChunkMeshGenerator::run(uint8_t id) {
                         v.TU = 65535;
                         result.NodeVertexs.push_back(v);
 
-                        v.FY = 135+y*16;
-                        v.FZ = 135+z*16+16;
+                        v.FY = 224+y*16;
+                        v.FZ = 224+z*16+16;
                         v.TU = 0;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
@@ -431,9 +431,9 @@ void ChunkMeshGenerator::run(uint8_t id) {
                     }
 
                     if(!(fullCovered & 0b000010)) {
-                        v.FX = 135+x*16;
-                        v.FY = 135+y*16;
-                        v.FZ = 135+z*16+16;
+                        v.FX = 224+x*16;
+                        v.FY = 224+y*16;
+                        v.FZ = 224+z*16+16;
                         v.TU = 0;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
@@ -446,8 +446,8 @@ void ChunkMeshGenerator::run(uint8_t id) {
                         v.TV = 65535;
                         result.NodeVertexs.push_back(v);
 
-                        v.FY = 135+y*16;
-                        v.FZ = 135+z*16+16;
+                        v.FY = 224+y*16;
+                        v.FZ = 224+z*16+16;
                         v.TU = 0;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
@@ -464,9 +464,9 @@ void ChunkMeshGenerator::run(uint8_t id) {
                     }
 
                     if(!(fullCovered & 0b010000)) {
-                        v.FX = 135+x*16;
-                        v.FY = 135+y*16;
-                        v.FZ = 135+z*16+16;
+                        v.FX = 224+x*16;
+                        v.FY = 224+y*16;
+                        v.FZ = 224+z*16+16;
                         v.TU = 0;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
@@ -479,8 +479,8 @@ void ChunkMeshGenerator::run(uint8_t id) {
                         v.TV = 65535;
                         result.NodeVertexs.push_back(v);
 
-                        v.FX = 135+x*16;
-                        v.FY = 135+y*16;
+                        v.FX = 224+x*16;
+                        v.FY = 224+y*16;
                         v.TU = 0;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
@@ -497,9 +497,9 @@ void ChunkMeshGenerator::run(uint8_t id) {
                     }
 
                     if(!(fullCovered & 0b100000)) {
-                        v.FX = 135+x*16;
-                        v.FY = 135+y*16;
-                        v.FZ = 135+z*16;
+                        v.FX = 224+x*16;
+                        v.FY = 224+y*16;
+                        v.FZ = 224+z*16;
                         v.TU = 0;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
@@ -512,8 +512,8 @@ void ChunkMeshGenerator::run(uint8_t id) {
                         v.TU = 65535;
                         result.NodeVertexs.push_back(v);
 
-                        v.FX = 135+x*16;
-                        v.FY = 135+y*16;
+                        v.FX = 224+x*16;
+                        v.FY = 224+y*16;
                         v.TU = 0;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);

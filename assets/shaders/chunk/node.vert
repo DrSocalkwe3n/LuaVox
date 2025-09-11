@@ -16,7 +16,7 @@ layout(push_constant) uniform UniformBufferObject {
 
 // struct NodeVertexStatic {
 //     uint32_t
-//         FX : 9, FY : 9, FZ : 9, // Позиция 15 -120 ~ 240 360 15 / 16
+//         FX : 9, FY : 9, FZ : 9, // Позиция -224 ~ 288; 64 позиций в одной ноде, 7.5 метров в ряд
 //         N1 : 4,                 // Не занято
 //         LS : 1,                 // Масштаб карты освещения (1м/16 или 1м)
 //         Tex : 18,               // Текстура
@@ -27,9 +27,9 @@ layout(push_constant) uniform UniformBufferObject {
 void main()
 {
     vec4 baseVec = ubo.model*vec4(
-        float(Vertex.x & 0x1ff) / 16.f - 135/16.f,
-        float((Vertex.x >> 9) & 0x1ff) / 16.f - 135/16.f,
-        float((Vertex.x >> 18) & 0x1ff) / 16.f - 135/16.f,
+        float(Vertex.x & 0x1ff) / 64.f - 3.5f,
+        float((Vertex.x >> 9) & 0x1ff) / 64.f - 3.5f,
+        float((Vertex.x >> 18) & 0x1ff) / 64.f - 3.5f,
         1
     );
 

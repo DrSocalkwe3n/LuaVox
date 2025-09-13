@@ -636,7 +636,9 @@ struct PreparedNodeState {
     };
 
     // Локальный идентификатор в именной ресурс
-    std::vector<std::pair<std::string, std::string>> ModelToLocalId;
+    std::vector<std::pair<std::string, std::string>> LocalToModelKD;
+    // Локальный идентификатор в глобальный идентификатор
+    std::vector<AssetsModel> LocalToModel;
     // Ноды выражений
     std::vector<Node> Nodes;
     // Условия -> вариации модели + веса

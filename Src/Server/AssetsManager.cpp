@@ -77,10 +77,7 @@ void AssetsManager::loadResourceFromFile_Nodestate(ResourceChangeObj& out, const
     Resource res(path);
     js::object obj = js::parse(std::string_view((const char*) res.data(), res.size())).as_object();
     PreparedNodeState pns(domain, obj);
-    std::u8string data = pns.dump();
-    Resource result((const uint8_t*) data.data(), data.size());
-    out.Nodestates[domain].emplace_back(key, std::move(pns));
-    out.NewOrChange[(int) EnumAssets::Nodestate][domain].emplace_back(key, result, fs::last_write_time(path));
+    out.NewOrChange_Nodestates[domain].emplace_back(key, std::move(pns), fs::last_write_time(path));
 }
 
 void AssetsManager::loadResourceFromFile_Particle(ResourceChangeObj& out, const std::string& domain, const std::string& key, fs::path path) const {
@@ -491,28 +488,33 @@ AssetsManager::Out_applyResourceChange AssetsManager::applyResourceChange(const 
         std::set_difference(l.begin(), l.end(), noc.begin(), noc.end(), std::back_inserter(result.Lost[type]));
     }
 
-    if(!orr.Nodestates.empty())
+    // Приёмка новых/изменённых описаний состояний нод
+    if(!orr.NewOrChange_Nodestates.empty())
     {
         auto lock = LocalObj.lock();
-        for(auto& [domain, table] : orr.Nodestates) {
-            for(auto& [key, value] : table) {
+        for(auto& [domain, table] : orr.NewOrChange_Nodestates) {
+            for(auto& [key, _nodestate, ftt] : table) {
                 ResourceId resId = lock->getId(EnumAssets::Nodestate, domain, key);
+                std::optional<DataEntry>& data = lock->Table[(int) EnumAssets::Nodestate][resId / TableEntry<DataEntry>::ChunkSize]->Entries[resId % TableEntry<DataEntry>::ChunkSize];
+                PreparedNodeState nodestate = _nodestate;
 
-                std::vector<AssetsModel> models;
-
-                for(auto& [domain2, key2] : value.ModelToLocalId) {
-                    models.push_back(lock->getId(EnumAssets::Model, domain2, key2));
+                // Ресолвим модели
+                for(const auto& [lKey, lDomain] : nodestate.LocalToModelKD) {
+                    nodestate.LocalToModel.push_back(lock->getId(EnumAssets::Nodestate, lDomain, lKey));
                 }
 
-                {
-                    std::sort(models.begin(), models.end());
-                    auto iterErase = std::unique(models.begin(), models.end());
-                    models.erase(iterErase, models.end());
-                    models.shrink_to_fit();
-                }
+                // Сдампим для отправки клиенту (Кеш в пролёте?)
+                Resource res(nodestate.dump());
+
+                // На оповещение
+                result.NewOrChange[(int) EnumAssets::Model].push_back({resId, res});
+
+                // Запись в таблице ресурсов
+                data.emplace(ftt, res, domain, key);
+                lock->HashToId[res.hash()] = {EnumAssets::Nodestate, resId};
 
                 lock->Table_NodeState[resId / TableEntry<DataEntry>::ChunkSize]
-                    ->Entries[resId % TableEntry<DataEntry>::ChunkSize] = std::move(models);
+                    ->Entries[resId % TableEntry<DataEntry>::ChunkSize] = nodestate.LocalToModel;
             }
         }
     }

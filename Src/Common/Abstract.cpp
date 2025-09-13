@@ -874,11 +874,11 @@ PreparedNodeState::PreparedNodeState(const std::u8string& data) {
     uint16_t size;
     lr >> size;
 
-    ModelToLocalId.reserve(size);
+    LocalToModel.reserve(size);
     for(int counter = 0; counter < size; counter++) {
-        std::string domain, key;
-        lr >> domain >> key;
-        ModelToLocalId.emplace_back(std::move(domain), std::move(key));
+        AssetsModel modelId;
+        lr >> modelId;
+        LocalToModel.push_back(modelId);
     }
 
     lr >> size;
@@ -989,14 +989,12 @@ std::u8string PreparedNodeState::dump() const {
     Net::Packet result;
 
     // ResourceToLocalId
-    assert(ModelToLocalId.size() < (1 << 16));
-    result << uint16_t(ModelToLocalId.size());
+    assert(LocalToModelKD.size() < (1 << 16));
+    assert(LocalToModelKD.size() == LocalToModel.size());
+    result << uint16_t(LocalToModel.size());
 
-    for(const auto& [domain, key] : ModelToLocalId) {
-        assert(domain.size() < 32);
-        result << domain;
-        assert(key.size() < 32);
-        result << key;
+    for(AssetsModel modelId : LocalToModel) {
+        result << modelId;
     }
 
     // Nodes
@@ -1448,15 +1446,15 @@ std::pair<float, std::variant<PreparedNodeState::Model, PreparedNodeState::Vecto
         auto [domain, key] = parseDomainKey((std::string) *model_key, modid);
         
         uint16_t resId = 0;
-        for(auto& [lDomain, lKey] : ModelToLocalId) {
+        for(auto& [lDomain, lKey] : LocalToModelKD) {
             if(lDomain == domain && lKey == key)
                 break;
 
             resId++;
         }
 
-        if(resId == ModelToLocalId.size()) {
-            ModelToLocalId.emplace_back(domain, key);
+        if(resId == LocalToModelKD.size()) {
+            LocalToModelKD.emplace_back(domain, key);
         }
 
         result.Id = resId;
@@ -1483,15 +1481,15 @@ std::pair<float, std::variant<PreparedNodeState::Model, PreparedNodeState::Vecto
             auto [domain, key] = parseDomainKey((std::string) js_obj.at("model").as_string(), modid);
         
             uint16_t resId = 0;
-            for(auto& [lDomain, lKey] : ModelToLocalId) {
+            for(auto& [lDomain, lKey] : LocalToModelKD) {
                 if(lDomain == domain && lKey == key)
                     break;
 
                 resId++;
             }
 
-            if(resId == ModelToLocalId.size()) {
-                ModelToLocalId.emplace_back(domain, key);
+            if(resId == LocalToModelKD.size()) {
+                LocalToModelKD.emplace_back(domain, key);
             }
 
             subModel.Id = resId;

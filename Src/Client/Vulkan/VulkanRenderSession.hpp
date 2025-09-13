@@ -386,22 +386,29 @@ public:
     std::vector<AssetsNodestate> onNodestateChanges(std::vector<std::tuple<AssetsNodestate, Resource>> newOrChanged, std::vector<AssetsNodestate> lost, std::vector<AssetsModel> changedModels) {
         std::vector<AssetsNodestate> result;
 
-        
+
 
 
         return result;
     }
 
-    std::vector<Model> getModelsForNode(DefNodeId id, uint8_t meta) {
+    struct StateInfo {
+        std::string Name;
+        std::vector<std::string> Variable;
+        int Variations = 0;
+    };
 
+    // Выдаёт модели в зависимости от состояний
+    // statesInfo - Описание состояний ноды
+    // states     - Текущие значения состояний ноды
+    std::vector<Model> getModelsForNode(AssetsNodestate id, const std::vector<StateInfo>& statesInfo, const std::unordered_map<std::string, int>& states) {
+        
     }
 
 private:
     Logger LOG = "Client>NodestateProvider";
     ModelProvider& MP;
-
-
-
+    std::unordered_map<AssetsNodestate, PreparedNodeState> Nodestates;
 };
 
 /*

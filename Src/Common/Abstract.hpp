@@ -653,7 +653,7 @@ struct PreparedNodeState {
 
     PreparedNodeState(const std::string_view modid, const js::object& profile);
     PreparedNodeState(const std::string_view modid, const sol::table& profile);
-    PreparedNodeState(const std::u8string& data);
+    PreparedNodeState(const std::u8string_view data);
 
     PreparedNodeState() = default;
     PreparedNodeState(const PreparedNodeState&) = default;

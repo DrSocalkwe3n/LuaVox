@@ -136,6 +136,8 @@ public:
         }
         
         for(const auto& [key, resource] : newOrChanged) {
+            result.push_back(key);
+
             makeUnready(key);
             ModelObject model;
             std::string type = "unknown";
@@ -152,7 +154,6 @@ public:
                     for(const PreparedModel::Cuboid& cb : pm.Cuboids) {
                         glm::vec3 min = glm::min(cb.From, cb.To), max = glm::max(cb.From, cb.To);
                         
-
                         for(const auto& [face, params] : cb.Faces) {
                             glm::vec2 from_uv = {params.UV[0], params.UV[1]}, to_uv = {params.UV[2], params.UV[3]};
 
@@ -246,6 +247,7 @@ public:
                 }
             } catch(const std::exception& exc) {
                 LOG.warn() << "Не удалось распарсить модель " << type << ":\n\t" << exc.what();
+                continue;
             }
 
             Models.insert({key, std::move(model)});
@@ -386,8 +388,42 @@ public:
     std::vector<AssetsNodestate> onNodestateChanges(std::vector<std::tuple<AssetsNodestate, Resource>> newOrChanged, std::vector<AssetsNodestate> lost, std::vector<AssetsModel> changedModels) {
         std::vector<AssetsNodestate> result;
 
+        for(ResourceId lostId : lost) {
+            auto iterNodestate = Nodestates.find(lostId);
+            if(iterNodestate == Nodestates.end())
+                continue;
 
+            result.push_back(lostId);
+            Nodestates.erase(iterNodestate);
+        }
+        
+        for(const auto& [key, resource] : newOrChanged) {
+            result.push_back(key);
 
+            PreparedNodeState nodestate;
+            std::string type = "unknown";
+                
+            try {
+                std::u8string_view data((const char8_t*) resource.data(), resource.size());
+                if(data.starts_with((const char8_t*) "bn")) {
+                    type = "InternalBinary";
+                    // Компилированный nodestate внутреннего формата
+                    nodestate = PreparedNodeState(data);
+                } else if(data.starts_with((const char8_t*) "{")) {
+                    type = "InternalJson";
+                    // nodestate в json формате
+                }
+            } catch(const std::exception& exc) {
+                LOG.warn() << "Не удалось распарсить nodestate " << type << ":\n\t" << exc.what();
+                continue;
+            }
+
+            Nodestates.insert({key, std::move(nodestate)});
+        }
+
+        std::sort(result.begin(), result.end());
+        auto eraseIter = std::unique(result.begin(), result.end());
+        result.erase(eraseIter, result.end());
 
         return result;
     }
@@ -402,7 +438,11 @@ public:
     // statesInfo - Описание состояний ноды
     // states     - Текущие значения состояний ноды
     std::vector<Model> getModelsForNode(AssetsNodestate id, const std::vector<StateInfo>& statesInfo, const std::unordered_map<std::string, int>& states) {
-        
+        auto iterNodestate = Nodestates.find(id);
+        if(iterNodestate == Nodestates.end())
+            return {};
+
+        iterNodestate->second;
     }
 
 private:

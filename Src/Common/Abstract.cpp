@@ -868,8 +868,10 @@ PreparedNodeState::PreparedNodeState(const std::string_view modid, const sol::ta
 
 }
 
-PreparedNodeState::PreparedNodeState(const std::u8string& data) {
+PreparedNodeState::PreparedNodeState(const std::u8string_view data) {
     Net::LinearReader lr(data);
+
+    lr.read<uint16_t>();
 
     uint16_t size;
     lr >> size;

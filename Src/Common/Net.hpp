@@ -180,6 +180,10 @@ protected:
             : Pos(pos), Input(input)
         {}
 
+        LinearReader(const std::u8string_view input, size_t pos = 0)
+            : Pos(pos), Input(input)
+        {}
+
         LinearReader(const LinearReader&) = delete;
         LinearReader(LinearReader&&) = delete;
         LinearReader& operator=(const LinearReader&) = delete;
@@ -226,7 +230,7 @@ protected:
 
     private:
         size_t Pos = 0;
-        const std::u8string& Input;
+        const std::u8string_view Input;
     };
 
     class SmartPacket : public Packet {

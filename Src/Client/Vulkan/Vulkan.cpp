@@ -275,10 +275,6 @@ void Vulkan::run()
 		// if(CallBeforeDraw)
 		// 	CallBeforeDraw(this);
 
-		if(Game.RSession) {
-			Game.RSession->beforeDraw();
-		}
-
 		glfwPollEvents();
 
 		VkResult err;
@@ -312,6 +308,10 @@ void Vulkan::run()
 				};
 
 				vkAssert(!vkBeginCommandBuffer(Graphics.CommandBufferRender, &cmd_buf_info));
+			}
+
+			if(Game.RSession) {
+				Game.RSession->beforeDraw();
 			}
 
 			{
@@ -602,6 +602,8 @@ void Vulkan::run()
 				// Насильно ожидаем завершения рендера кадра
 				vkWaitForFences(Graphics.Device, 1, &drawEndFence, true, -1);
 				vkResetFences(Graphics.Device, 1, &drawEndFence);
+				if(Game.RSession)
+					Game.RSession->onGpuFinished();
 			}
 
 			{

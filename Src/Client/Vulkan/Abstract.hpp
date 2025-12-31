@@ -35,12 +35,12 @@ struct VoxelVertexPoint {
 
 struct NodeVertexStatic {
     uint32_t
-        FX : 9, FY : 9, FZ : 9, // Позиция -224 ~ 288; 64 позиций в одной ноде, 7.5 метров в ряд
-        N1 : 4,                 // Не занято
-        LS : 1,                 // Масштаб карты освещения (1м/16 или 1м)
-        Tex : 18,               // Текстура
-        N2 : 14,                // Не занято
-        TU : 16, TV : 16;       // UV на текстуре
+        FX : 11, FY : 11, N1 : 10, // Позиция, 64 позиции на метр, +3.5м запас
+        FZ : 11,                 // Позиция
+        LS : 1,                  // Масштаб карты освещения (1м/16 или 1м)
+        Tex : 18,                // Текстура
+        N2 : 2,                  // Не занято
+        TU : 16, TV : 16;        // UV на текстуре
 
     bool operator==(const NodeVertexStatic& other) const {
         return std::memcmp(this, &other, sizeof(*this)) == 0;

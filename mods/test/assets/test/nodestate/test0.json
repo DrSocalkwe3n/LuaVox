@@ -1,0 +1,14 @@
+{
+    "meta==0": {
+        "model": "node/grass.json"
+    },
+    "meta==1": {
+        "model": "node/oak_planks.json"
+    },
+    "meta==2": {
+        "model": "node/jungle_planks.json"
+    },
+    "meta==3": {
+        "model": "node/acacia_planks.json"
+    }
+}

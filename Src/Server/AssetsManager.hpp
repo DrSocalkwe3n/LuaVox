@@ -258,6 +258,10 @@ public:
     std::tuple<AssetsNodestate, std::vector<AssetsModel>, std::vector<AssetsTexture>>
         getNodeDependency(const std::string& domain, const std::string& key)
     {
+        if(domain == "core" && key == "none") {
+            return {0, {}, {}};
+        }
+
         auto lock = LocalObj.lock();
         AssetsNodestate nodestateId = lock->getId(EnumAssets::Nodestate, domain, key+".json");
 

@@ -1,0 +1,14 @@
+{
+    "meta==0": {
+        "model": "node/grass.json"
+    },
+    "meta==1": {
+        "model": "node/frame.json"
+    },
+    "meta==2": {
+        "model": "node/xnether_purple_wood.json"
+    },
+    "meta==3": {
+        "model": "node/tropical_rainforest_wood.json"
+    }
+}

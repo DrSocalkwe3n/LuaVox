@@ -948,8 +948,11 @@ PreparedNodeState::PreparedNodeState(const std::u8string_view data) {
                     for(int counter4 = 0; counter4 < transformsSize; counter4++) {
                         Transformation tr;
                         tr.Op = Transformation::EnumTransform(lr.read<uint8_t>());
+                        tr.Value = lr.read<float>();
                         mod2.Transforms.push_back(tr);
                     }
+
+                    mod.Models.push_back(std::move(mod2));
                 }
 
                 mod.UVLock = lr.read<uint8_t>();
@@ -961,6 +964,7 @@ PreparedNodeState::PreparedNodeState(const std::u8string_view data) {
                 for(int counter3 = 0; counter3 < transformsSize; counter3++) {
                     Transformation tr;
                     tr.Op = Transformation::EnumTransform(lr.read<uint8_t>());
+                    tr.Value = lr.read<float>();
                     mod.Transforms.push_back(tr);
                 }
 
@@ -976,12 +980,15 @@ PreparedNodeState::PreparedNodeState(const std::u8string_view data) {
                 for(int counter3 = 0; counter3 < transformsSize; counter3++) {
                     Transformation tr;
                     tr.Op = Transformation::EnumTransform(lr.read<uint8_t>());
+                    tr.Value = lr.read<float>();
                     mod.Transforms.push_back(tr);
                 }
 
                 variants.emplace_back(weight, std::move(mod));
             }
         }
+
+        Routes.emplace_back(nodeId, std::move(variants));
     }
 
     lr.checkUnreaded();
@@ -1088,9 +1095,9 @@ uint16_t PreparedNodeState::parseCondition(const std::string_view expression) {
         char c = expression[pos];
 
         // Числа
-        if(std::isdigit(c)) {
+        if(std::isdigit(static_cast<unsigned char>(c))) {
             ssize_t npos = pos;
-            for(; npos < expression.size() && std::isdigit(expression[npos]); npos++);
+            for(; npos < expression.size() && std::isdigit(static_cast<unsigned char>(expression[npos])); npos++);
             int value;
             std::string_view value_view = expression.substr(pos, npos-pos);
             auto [partial_ptr, partial_ec] = std::from_chars(value_view.data(), value_view.data() + value_view.size(), value);
@@ -1102,15 +1109,20 @@ uint16_t PreparedNodeState::parseCondition(const std::string_view expression) {
             }
 
             tokens.push_back(value);
+            pos = npos - 1;
             continue;
         }
 
         // Переменные
-        if(std::isalpha(c) || c == ':') {
+        if(std::isalpha(static_cast<unsigned char>(c)) || c == '_' || c == ':') {
             ssize_t npos = pos;
-            for(; npos < expression.size() && std::isalpha(expression[npos]); npos++);
+            for(; npos < expression.size(); npos++) {
+                char ch = expression[npos];
+                if(!std::isalnum(static_cast<unsigned char>(ch)) && ch != '_' && ch != ':')
+                    break;
+            }
             std::string_view value = expression.substr(pos, npos-pos);
-            pos += value.size();
+            pos = npos - 1;
             if(value == "true")
                 tokens.push_back(1);
             else if(value == "false")
@@ -1121,7 +1133,7 @@ uint16_t PreparedNodeState::parseCondition(const std::string_view expression) {
         }
 
         // Двойные операторы
-        if(pos-1 < expression.size()) {
+        if(pos + 1 < expression.size()) {
             char n = expression[pos+1];
 
             if(c == '<' && n == '=') {
@@ -1145,21 +1157,22 @@ uint16_t PreparedNodeState::parseCondition(const std::string_view expression) {
 
         // Операторы
         switch(c) {
-            case '(': tokens.push_back(EnumTokenKind::LParen);
-            case ')': tokens.push_back(EnumTokenKind::RParen);
-            case '+': tokens.push_back(EnumTokenKind::Plus);
-            case '-': tokens.push_back(EnumTokenKind::Minus);
-            case '*': tokens.push_back(EnumTokenKind::Star);
-            case '/': tokens.push_back(EnumTokenKind::Slash);
-            case '%': tokens.push_back(EnumTokenKind::Percent);
-            case '!': tokens.push_back(EnumTokenKind::Not);
-            case '&': tokens.push_back(EnumTokenKind::And);
-            case '|': tokens.push_back(EnumTokenKind::Or);
-            case '<': tokens.push_back(EnumTokenKind::LT);
-            case '>': tokens.push_back(EnumTokenKind::GT);
+            case '(': tokens.push_back(EnumTokenKind::LParen); break;
+            case ')': tokens.push_back(EnumTokenKind::RParen); break;
+            case '+': tokens.push_back(EnumTokenKind::Plus); break;
+            case '-': tokens.push_back(EnumTokenKind::Minus); break;
+            case '*': tokens.push_back(EnumTokenKind::Star); break;
+            case '/': tokens.push_back(EnumTokenKind::Slash); break;
+            case '%': tokens.push_back(EnumTokenKind::Percent); break;
+            case '!': tokens.push_back(EnumTokenKind::Not); break;
+            case '&': tokens.push_back(EnumTokenKind::And); break;
+            case '|': tokens.push_back(EnumTokenKind::Or); break;
+            case '<': tokens.push_back(EnumTokenKind::LT); break;
+            case '>': tokens.push_back(EnumTokenKind::GT); break;
+            default:
+                MAKE_ERROR("Недопустимый символ: " << c);
         }
-
-        MAKE_ERROR("Недопустимый символ: " << c);
+        continue;
     }
 
 

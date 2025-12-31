@@ -862,7 +862,6 @@ void GameServer::BackingAsyncLua_t::run(int id) {
                             Pos::bvec64u nodePos(x, y, z);
                             auto &node = out.Nodes[Pos::bvec4u(nodePos >> 4).pack()][Pos::bvec16u(nodePos & 0xf).pack()];
                             node.NodeId = id;
-                            node.Meta = 0;
                             
                             if(x == 0 && z == 0)
                                 node.NodeId = 1;
@@ -876,7 +875,7 @@ void GameServer::BackingAsyncLua_t::run(int id) {
                             else if(x == 0 && y == 1)
                                 node.NodeId = 0;
 
-                            // node.Meta = 0;
+                            node.Meta = uint8_t((x + y + z + int(node.NodeId)) & 0x3);
                         }
             } 
             // else {
@@ -1445,12 +1444,7 @@ void GameServer::init(fs::path worldPath) {
 
     {
         sol::table t = LuaMainState.create_table();
-        Content.CM.registerBase(EnumDefContent::Node, "test", "test0", t);
-        Content.CM.registerBase(EnumDefContent::Node, "test", "test1", t);
-        Content.CM.registerBase(EnumDefContent::Node, "test", "test2", t);
-        Content.CM.registerBase(EnumDefContent::Node, "test", "test3", t);
-        Content.CM.registerBase(EnumDefContent::Node, "test", "test4", t);
-        Content.CM.registerBase(EnumDefContent::Node, "test", "test5", t);
+        Content.CM.registerBase(EnumDefContent::Node, "core", "none", t);
         Content.CM.registerBase(EnumDefContent::World, "test", "devel_world", t);
     }
 
@@ -2364,7 +2358,9 @@ void GameServer::stepSyncContent() {
 
             auto region = Expanse.Worlds[0]->Regions.find(rPos);
             if(region != Expanse.Worlds[0]->Regions.end()) {
-                region->second->Nodes[cPos.pack()][nPos.pack()].NodeId = 4;
+                Node& n = region->second->Nodes[cPos.pack()][nPos.pack()];
+                n.NodeId = 4;
+                n.Meta = uint8_t((int(nPos.x) + int(nPos.y) + int(nPos.z)) & 0x3);
                 region->second->IsChunkChanged_Nodes |= 1ull << cPos.pack();
             }
         }
@@ -2379,7 +2375,9 @@ void GameServer::stepSyncContent() {
 
             auto region = Expanse.Worlds[0]->Regions.find(rPos);
             if(region != Expanse.Worlds[0]->Regions.end()) {
-                region->second->Nodes[cPos.pack()][nPos.pack()].NodeId = 0;
+                Node& n = region->second->Nodes[cPos.pack()][nPos.pack()];
+                n.NodeId = 0;
+                n.Meta = 0;
                 region->second->IsChunkChanged_Nodes |= 1ull << cPos.pack();
             }
         }

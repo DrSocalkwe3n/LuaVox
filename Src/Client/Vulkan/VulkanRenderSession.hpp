@@ -7,6 +7,7 @@
 #include <bitset>
 #include <condition_variable>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -18,6 +19,7 @@
 #include <utility>
 #include <variant>
 #include <vulkan/vulkan_core.h>
+#include "Client/Vulkan/AtlasPipeline/PipelinedTextureAtlas.hpp"
 #include "Abstract.hpp"
 #include "TOSLib.hpp"
 #include "VertexPool.hpp"
@@ -243,7 +245,7 @@ public:
                 continue;
             }
 
-            Models.insert({key, std::move(model)});
+            Models.insert_or_assign(key, std::move(model));
         }
 
         std::sort(result.begin(), result.end());
@@ -388,63 +390,11 @@ private:
     Хранить все текстуры в оперативке
 */
 class TextureProvider {
-    // Хедер для атласа перед описанием текстур
-	struct alignas(16) UniformInfo {
-		uint32_t
-            // Количество текстур
-            SubsCount,
-		    // Счётчик времени с разрешением 8 бит в секунду
-		    Counter,
-            // Размер атласа 
-		    Size;
-
-        // Дальше в шейдере массив на описания текстур
-		// std::vector<InfoSubTexture> SubsInfo;
-	};
-
-    // Описание текстуры на стороне шейдера
-	struct alignas(16) InfoSubTexture {
-		uint32_t isExist = 0;
-		uint32_t
-            // Точная позиция в атласе
-            PosX = 0, PosY = 0, PosZ = 0, 
-            // Размер текстуры в атласе
-            Width = 0, Height = 0;
-
-		struct {
-			uint16_t Enabled : 1 = 0, Frames : 15 = 0;
-			uint16_t TimePerFrame = 0;
-		} Animation;
-	};
-
 public:
     TextureProvider(Vulkan* inst, VkDescriptorPool descPool)
         : Inst(inst), DescPool(descPool)
     {
-        {
-            const VkSamplerCreateInfo ciSampler =
-            {
-                .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-                .pNext = nullptr,
-                .flags = 0,
-                .magFilter = VK_FILTER_NEAREST,
-                .minFilter = VK_FILTER_NEAREST,
-                .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
-                .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-                .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-                .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-                .mipLodBias = 0.0f,
-                .anisotropyEnable = VK_FALSE,
-                .maxAnisotropy = 1,
-                .compareEnable = 0,
-                .compareOp = VK_COMPARE_OP_NEVER,
-                .minLod = 0.0f,
-                .maxLod = 0.0f,
-                .borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
-                .unnormalizedCoordinates = VK_FALSE
-            };
-            vkAssert(!vkCreateSampler(inst->Graphics.Device, &ciSampler, nullptr, &Sampler));
-        }
+        assert(inst);
 
         {
             std::vector<VkDescriptorSetLayoutBinding> shaderLayoutBindings =
@@ -476,390 +426,250 @@ public:
             vkAssert(!vkCreateDescriptorSetLayout(
                 Inst->Graphics.Device, &descriptorLayout, nullptr, &DescLayout));
         }
-        
+
         {
-            Atlases.resize(BackupAtlasCount);
-            
             VkDescriptorSetAllocateInfo ciAllocInfo =
             {
                 .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
                 .pNext = nullptr,
-                .descriptorPool = descPool,
-                .descriptorSetCount = (uint32_t) Atlases.size(),
+                .descriptorPool = DescPool,
+                .descriptorSetCount = 1,
                 .pSetLayouts = &DescLayout
             };
 
-            std::vector<VkDescriptorSet> descriptors;
-            descriptors.resize(Atlases.size());
-            vkAssert(!vkAllocateDescriptorSets(inst->Graphics.Device, &ciAllocInfo, descriptors.data()));
-
-            for(auto& atlas : Atlases) {
-                atlas.recreate(Inst, true);
-                atlas.Descriptor = descriptors.back();
-                descriptors.pop_back();
-            }
+            vkAssert(!vkAllocateDescriptorSets(Inst->Graphics.Device, &ciAllocInfo, &Descriptor));
         }
 
         {
-            VkSemaphoreCreateInfo semaphoreCreateInfo = { 
-                .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, 
-                .pNext = nullptr, 
+            TextureAtlas::Config cfg;
+            cfg.MaxTextureId = 1 << 18;
+            AtlasStaging = std::make_shared<SharedStagingBuffer>(
+                Inst->Graphics.Device,
+                Inst->Graphics.PhysicalDevice
+            );
+            Atlas = std::make_unique<PipelinedTextureAtlas>(
+                TextureAtlas(Inst->Graphics.Device, Inst->Graphics.PhysicalDevice, cfg, {}, AtlasStaging)
+            );
+        }
+
+        {
+            const VkFenceCreateInfo info = {
+                .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+                .pNext = nullptr,
                 .flags = 0
             };
 
-            vkAssert(!vkCreateSemaphore(Inst->Graphics.Device, &semaphoreCreateInfo, nullptr, &SendChanges));
+            vkAssert(!vkCreateFence(Inst->Graphics.Device, &info, nullptr, &UpdateFence));
         }
 
-        {
-            const VkCommandBufferAllocateInfo infoCmd =
-            {
-                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-                .pNext = nullptr,
-                .commandPool = Inst->Graphics.Pool,
-                .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                .commandBufferCount = 1
-            };
-
-            vkAssert(!vkAllocateCommandBuffers(Inst->Graphics.Device, &infoCmd, &CMD));
-        }
-
-        Cache.recreate(Inst, false);
-
-        AtlasTextureUnusedId.all();
+        NeedsUpload = true;
     }
 
     ~TextureProvider() {
+        if(UpdateFence)
+            vkDestroyFence(Inst->Graphics.Device, UpdateFence, nullptr);
+
         if(DescLayout)
             vkDestroyDescriptorSetLayout(Inst->Graphics.Device, DescLayout, nullptr);
-    
-        if(Sampler) {
-            vkDestroySampler(Inst->Graphics.Device, Sampler, nullptr);
-            Sampler = nullptr;
-        }
+    }
 
-        for(auto& atlas : Atlases) {
-            atlas.destroy(Inst);
-        }
+    VkDescriptorSetLayout getDescriptorLayout() const {
+        return DescLayout;
+    }
 
-        Atlases.clear();
-
-        Cache.destroy(Inst);
-        Cache.unMap(Inst);
-
-        if(SendChanges) {
-            vkDestroySemaphore(Inst->Graphics.Device, SendChanges, nullptr);
-            SendChanges = nullptr;
-        }
-
-        if(CMD) {
-            vkFreeCommandBuffers(Inst->Graphics.Device, Inst->Graphics.Pool, 1, &CMD);
-            CMD = nullptr;
-        }
+    VkDescriptorSet getDescriptorSet() const {
+        return Descriptor;
     }
 
     uint16_t getTextureId(const TexturePipeline& pipe) {
-        return 0;
-    }
+        std::lock_guard lock(Mutex);
+        auto iter = PipelineToAtlas.find(pipe);
+        if(iter != PipelineToAtlas.end())
+            return iter->second;
 
-    // Устанавливает новый размер единицы в массиве текстур атласа
-    enum class EnumAtlasSize {
-        _2048 = 2048, _4096 = 4096, _8192 = 8192, _16_384 = 16'384
-    };
-    void setAtlasSize(EnumAtlasSize size) {
-        ReferenceSize = size;
-    }
+        ::HashedPipeline hashed = makeHashedPipeline(pipe);
+        uint32_t atlasId = Atlas->getByPipeline(hashed);
 
-    // Максимальный размер выделенный под атласы в памяти устройства
-    void setDeviceMemorySize(size_t size) {
-        std::unreachable();
+        uint16_t result = 0;
+        if(atlasId <= std::numeric_limits<uint16_t>::max())
+            result = static_cast<uint16_t>(atlasId);
+        else
+            LOG.warn() << "Atlas texture id overflow: " << atlasId;
+
+        PipelineToAtlas.emplace(pipe, result);
+        NeedsUpload = true;
+        return result;
     }
 
     // Применяет изменения, возвращая все затронутые модели
     std::vector<AssetsTexture> onTexturesChanges(std::vector<std::tuple<AssetsTexture, Resource>> newOrChanged, std::vector<AssetsTexture> lost) {
+        std::lock_guard lock(Mutex);
         std::vector<AssetsTexture> result;
 
         for(const auto& [key, res] : newOrChanged) {
             result.push_back(key);
-            ChangedOrAdded.push_back(key);
 
-            TextureEntry entry;
             iResource sres((const uint8_t*) res.data(), res.size());
             iBinaryStream stream = sres.makeStream();
             png::image<png::rgba_pixel> img(stream.Stream);
-            entry.Width = img.get_width();
-            entry.Height = img.get_height();
-            entry.RGBA.resize(4*entry.Width*entry.Height);
+            uint32_t width = img.get_width();
+            uint32_t height = img.get_height();
 
-            for(int i = 0; i < entry.Height; i++) {
-                std::copy(
-                    ((const uint32_t*) &img.get_pixbuf().operator [](i)[0]),
-                    ((const uint32_t*) &img.get_pixbuf().operator [](i)[0])+entry.Width,
-                    ((uint32_t*) entry.RGBA.data())+entry.Width*(false ? entry.Height-i-1 : i)
-                );
+            std::vector<uint32_t> pixels;
+            pixels.resize(width*height);
+
+            for(uint32_t y = 0; y < height; y++) {
+                const auto& row = img.get_pixbuf().operator [](y);
+                for(uint32_t x = 0; x < width; x++) {
+                    const auto& px = row[x];
+                    uint32_t rgba = (uint32_t(px.alpha) << 24)
+                        | (uint32_t(px.red) << 16)
+                        | (uint32_t(px.green) << 8)
+                        | uint32_t(px.blue);
+                    pixels[x + y * width] = rgba;
+                }
             }
 
-            Textures[key] = std::move(entry);
+            Atlas->updateTexture(key, StoredTexture(
+                static_cast<uint16_t>(width),
+                static_cast<uint16_t>(height),
+                std::move(pixels)
+            ));
+
+            NeedsUpload = true;
         }
 
         for(AssetsTexture key : lost) {
             result.push_back(key);
-            Lost.push_back(key);
+            Atlas->freeTexture(key);
+            NeedsUpload = true;
         }
 
-        {
-            std::sort(result.begin(), result.end());
-            auto eraseIter = std::unique(result.begin(), result.end());
-            result.erase(eraseIter, result.end());
-        }
-
-        {
-            std::sort(ChangedOrAdded.begin(), ChangedOrAdded.end());
-            auto eraseIter = std::unique(ChangedOrAdded.begin(), ChangedOrAdded.end());
-            ChangedOrAdded.erase(eraseIter, ChangedOrAdded.end());
-        }
-
-        {
-            std::sort(Lost.begin(), Lost.end());
-            auto eraseIter = std::unique(Lost.begin(), Lost.end());
-            Lost.erase(eraseIter, Lost.end());
-        }
+        std::sort(result.begin(), result.end());
+        auto eraseIter = std::unique(result.begin(), result.end());
+        result.erase(eraseIter, result.end());
 
         return result;
     }
 
     void update() {
-        // Подготовить обновления атласа
-        // Если предыдущий освободился, то записать изменения в него
+        std::lock_guard lock(Mutex);
+        if(!NeedsUpload || !Atlas)
+            return;
 
-        // Держать на стороне хоста полную версию атласа и все изменения писать туда
-        // Когерентная память сама разберётся что отсылать на устройство
-        // Синхронизировать всё из внутреннего буфера в атлас
-        // При пересоздании хостового буфера, скопировать всё из старого.
+        Atlas->flushNewPipelines();
 
-        // Оптимизации копирования при указании конкретных изменённых слоёв?
+        VkCommandBufferAllocateInfo allocInfo {
+            VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            nullptr,
+            Inst->Graphics.Pool,
+            VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            1
+        };
 
+        VkCommandBuffer commandBuffer;
+        vkAssert(!vkAllocateCommandBuffers(Inst->Graphics.Device, &allocInfo, &commandBuffer));
 
+        VkCommandBufferBeginInfo beginInfo {
+            VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            nullptr,
+            VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            nullptr
+        };
+
+        vkAssert(!vkBeginCommandBuffer(commandBuffer, &beginInfo));
+
+        TextureAtlas::DescriptorOut desc = Atlas->flushUploadsAndBarriers(commandBuffer);
+
+        vkAssert(!vkEndCommandBuffer(commandBuffer));
+
+        VkSubmitInfo submitInfo {
+            VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            nullptr,
+            0, nullptr,
+            nullptr,
+            1,
+            &commandBuffer,
+            0,
+            nullptr
+        };
+
+        {
+            auto lockQueue = Inst->Graphics.DeviceQueueGraphic.lock();
+            vkAssert(!vkQueueSubmit(*lockQueue, 1, &submitInfo, UpdateFence));
+        }
+
+        vkAssert(!vkWaitForFences(Inst->Graphics.Device, 1, &UpdateFence, VK_TRUE, UINT64_MAX));
+        vkAssert(!vkResetFences(Inst->Graphics.Device, 1, &UpdateFence));
+
+        vkFreeCommandBuffers(Inst->Graphics.Device, Inst->Graphics.Pool, 1, &commandBuffer);
+
+        Atlas->notifyGpuFinished();
+        updateDescriptor(desc);
+
+        NeedsUpload = false;
     }
 
-    VkDescriptorSet getDescriptor() {
-        return Atlases[ActiveAtlas].Descriptor;
+private:
+    ::HashedPipeline makeHashedPipeline(const TexturePipeline& pipe) const {
+        ::Pipeline pipeline;
+
+        if(!pipe.Pipeline.empty() && (pipe.Pipeline.size() % 2u) == 0u) {
+            std::vector<TexturePipelineProgram::Word> words;
+            words.reserve(pipe.Pipeline.size() / 2u);
+            const uint8_t* bytes = reinterpret_cast<const uint8_t*>(pipe.Pipeline.data());
+            for(size_t i = 0; i < pipe.Pipeline.size(); i += 2) {
+                uint16_t lo = bytes[i];
+                uint16_t hi = bytes[i + 1];
+                words.push_back(static_cast<TexturePipelineProgram::Word>(lo | (hi << 8)));
+            }
+            pipeline._Pipeline.assign(words.begin(), words.end());
+        }
+
+        if(pipeline._Pipeline.empty()) {
+            if(!pipe.BinTextures.empty())
+                pipeline = ::Pipeline(pipe.BinTextures.front());
+        }
+
+        return ::HashedPipeline(pipeline);
     }
 
-    void pushFrame() {
-        for(auto& atlas : Atlases)
-            if(atlas.NotUsedFrames < 100)
-                atlas.NotUsedFrames++;
+    void updateDescriptor(const TextureAtlas::DescriptorOut& desc) {
+        VkWriteDescriptorSet writes[2] = {};
 
-        Atlases[ActiveAtlas].NotUsedFrames = 0;
+        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet = Descriptor;
+        writes[0].dstBinding = 0;
+        writes[0].descriptorCount = 1;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[0].pImageInfo = &desc.ImageInfo;
 
-        // Если есть новые текстуры или они поменялись
-        // 
+        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet = Descriptor;
+        writes[1].dstBinding = 1;
+        writes[1].descriptorCount = 1;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[1].pBufferInfo = &desc.EntriesInfo;
+
+        vkUpdateDescriptorSets(Inst->Graphics.Device, 2, writes, 0, nullptr);
     }
-    
+
 private:
     Vulkan* Inst = nullptr;
     VkDescriptorPool DescPool = VK_NULL_HANDLE;
     VkDescriptorSetLayout DescLayout = VK_NULL_HANDLE;
-    // Для всех атласов
-    VkSampler Sampler = VK_NULL_HANDLE;
-    // Ожидание завершения работы с хостовым буфером
-    VkSemaphore SendChanges = VK_NULL_HANDLE;
-    // 
-    VkCommandBuffer CMD = VK_NULL_HANDLE;
+    VkDescriptorSet Descriptor = VK_NULL_HANDLE;
+    VkFence UpdateFence = VK_NULL_HANDLE;
 
-    // Размер, которому должны соответствовать все атласы
-    EnumAtlasSize ReferenceSize = EnumAtlasSize::_2048;
+    std::shared_ptr<SharedStagingBuffer> AtlasStaging;
+    std::unique_ptr<PipelinedTextureAtlas> Atlas;
+    std::unordered_map<TexturePipeline, uint16_t> PipelineToAtlas;
 
-    struct TextureEntry {
-        uint16_t Width, Height;
-        std::vector<glm::i8vec4> RGBA;
-
-        // Идентификатор текстуры в атласе
-        uint16_t InAtlasId = uint16_t(-1);
-    };
-
-    // Текстуры, загруженные с файлов
-    std::unordered_map<AssetsTexture, TextureEntry> Textures;
-
-    struct TextureFromPipeline {
-
-    };
-
-    std::unordered_map<TexturePipeline, TextureFromPipeline> Pipelines;
-    
-    struct AtlasTextureEntry {
-        uint16_t PosX, PosY, PosZ, Width, Height;
-
-    };
-
-    std::bitset<1 << 16> AtlasTextureUnusedId;
-    std::unordered_map<uint16_t, AtlasTextureEntry> AtlasTextureInfo;
-    
-    std::vector<AssetsTexture> ChangedOrAdded, Lost;
-
-    struct VkAtlasInfo {
-        VkImage Image = VK_NULL_HANDLE;
-        VkImageLayout ImageLayout = VK_IMAGE_LAYOUT_MAX_ENUM;
-
-        VkDeviceMemory Memory = VK_NULL_HANDLE;
-        VkImageView View = VK_NULL_HANDLE;
-
-        VkDescriptorSet Descriptor;
-        EnumAtlasSize Size = EnumAtlasSize::_2048;
-        uint16_t Depth = 1;
-
-        // Сколько кадров уже не используется атлас
-        int NotUsedFrames = 0;
-
-        void destroy(Vulkan* inst) {
-			if(View) {
-				vkDestroyImageView(inst->Graphics.Device, View, nullptr);
-                View = nullptr;
-            }
-
-            if(Image) {
-				vkDestroyImage(inst->Graphics.Device, Image, nullptr);
-                Image = nullptr;
-            }
-
-			if(Memory) {
-				vkFreeMemory(inst->Graphics.Device, Memory, nullptr);
-                Memory = nullptr;
-            }
-        }
-
-        void recreate(Vulkan* inst, bool deviceLocal) {
-            // Уничтожаем то, что не понадобится
-			if(View) {
-				vkDestroyImageView(inst->Graphics.Device, View, nullptr);
-                View = nullptr;
-            }
-
-            if(Image) {
-				vkDestroyImage(inst->Graphics.Device, Image, nullptr);
-                Image = nullptr;
-            }
-
-			if(Memory) {
-				vkFreeMemory(inst->Graphics.Device, Memory, nullptr);
-                Memory = nullptr;
-            }
-
-            // Создаём атлас
-            uint32_t size = uint32_t(Size);
-
-            VkImageCreateInfo infoImageCreate =
-            {
-                .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-                .pNext = nullptr,
-                .flags = 0,
-                .imageType = VK_IMAGE_TYPE_2D,
-                .format = VK_FORMAT_B8G8R8A8_UNORM,
-                .extent =  { size, size, 1 },
-                .mipLevels = 1,
-                .arrayLayers = Depth,
-                .samples = VK_SAMPLE_COUNT_1_BIT,
-                .tiling = VK_IMAGE_TILING_MAX_ENUM,
-                .usage = 
-                    static_cast<VkImageUsageFlags>(deviceLocal 
-                    ? VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
-                    : VK_IMAGE_USAGE_TRANSFER_SRC_BIT),
-                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-                .queueFamilyIndexCount = 0,
-                .pQueueFamilyIndices = 0,
-                .initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED
-            };
-
-            VkFormatProperties props;
-            vkGetPhysicalDeviceFormatProperties(inst->Graphics.PhysicalDevice, infoImageCreate.format, &props);
-        
-            if (props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)
-                infoImageCreate.tiling = VK_IMAGE_TILING_OPTIMAL;
-            else if (props.linearTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)
-                infoImageCreate.tiling = VK_IMAGE_TILING_LINEAR;
-            else
-                vkAssert(!"No support for B8G8R8A8_UNORM as texture image format");
-
-            vkAssert(!vkCreateImage(inst->Graphics.Device, &infoImageCreate, nullptr, &Image));
-        
-            // Выделяем память
-            VkMemoryRequirements memoryReqs;
-            vkGetImageMemoryRequirements(inst->Graphics.Device, Image, &memoryReqs);
-
-            VkMemoryAllocateInfo memoryAlloc
-            {
-                .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                .pNext = nullptr,
-                .allocationSize = memoryReqs.size,
-                .memoryTypeIndex = inst->memoryTypeFromProperties(memoryReqs.memoryTypeBits, 
-                    deviceLocal
-                        ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-                        : VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-                )
-            };
-
-            vkAssert(!vkAllocateMemory(inst->Graphics.Device, &memoryAlloc, nullptr, &Memory));
-            vkAssert(!vkBindImageMemory(inst->Graphics.Device, Image, Memory, 0));
-
-            // Порядок пикселей и привязка к картинке
-            VkImageViewCreateInfo ciView =
-            {
-                .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-                .pNext = nullptr,
-                .flags = 0,
-                .image = Image,
-                .viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY,
-                .format = infoImageCreate.format,
-                .components =
-                {
-                    VK_COMPONENT_SWIZZLE_B,
-                    VK_COMPONENT_SWIZZLE_G,
-                    VK_COMPONENT_SWIZZLE_R,
-                    VK_COMPONENT_SWIZZLE_A
-                },
-                .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
-            };
-
-            vkAssert(!vkCreateImageView(inst->Graphics.Device, &ciView, nullptr, &View));
-        }
-    };
-
-    struct HostCache : public VkAtlasInfo {
-        std::vector<uint32_t*> Layers;
-        std::vector<VkSubresourceLayout> Layouts;
-        std::vector<rbp::MaxRectsBinPack> Packs;
-
-        void map(Vulkan* inst) {
-            Layers.resize(Depth);
-            Layouts.resize(Depth);
-
-            for(uint32_t layer = 0; layer < Depth; layer++) {
-                const VkImageSubresource memorySubres = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = 0, .arrayLayer = layer, };
-                vkGetImageSubresourceLayout(inst->Graphics.Device, Image, &memorySubres, &Layouts[layer]);
-
-                vkAssert(!vkMapMemory(inst->Graphics.Device, Memory, Layouts[layer].offset, Layouts[layer].size, 0, (void**) &Layers[layer]));
-            }
-        }
-
-        void unMap(Vulkan* inst) {
-	        vkUnmapMemory(inst->Graphics.Device, Memory);
-
-            Layers.clear();
-            Layouts.clear();
-        }
-    };
-
-    HostCache Cache;
-
-    static constexpr size_t BackupAtlasCount = 2;
-
-    // Атласы, используемые в кадре.
-    // Изменения пишутся в не используемый в данный момент атлас
-    // и изменённый атлас становится активным. Новые изменения
-    // можно писать по прошествии нескольких кадров.
-    std::vector<VkAtlasInfo> Atlases;
-    int ActiveAtlas = 0;
+    bool NeedsUpload = false;
+    Logger LOG = "Client>TextureProvider";
+    mutable std::mutex Mutex;
 };
+
 
 /*
     Хранит информацию о моделях при различных состояниях нод
@@ -904,7 +714,23 @@ public:
                 continue;
             }
 
-            Nodestates.insert({key, std::move(nodestate)});
+            Nodestates.insert_or_assign(key, std::move(nodestate));
+        }
+
+        if(!changedModels.empty()) {
+            std::unordered_set<AssetsModel> changed;
+            changed.reserve(changedModels.size());
+            for(AssetsModel modelId : changedModels)
+                changed.insert(modelId);
+
+            for(const auto& [nodestateId, nodestate] : Nodestates) {
+                for(AssetsModel modelId : nodestate.LocalToModel) {
+                    if(changed.contains(modelId)) {
+                        result.push_back(nodestateId);
+                        break;
+                    }
+                }
+            }
         }
 
         std::sort(result.begin(), result.end());
@@ -922,56 +748,92 @@ public:
         if(iterNodestate == Nodestates.end())
             return {};
 
-        std::vector<uint16_t> routes = iterNodestate->second.getModelsForState(statesInfo, states);
+        PreparedNodeState& nodestate = iterNodestate->second;
+        std::vector<uint16_t> routes = nodestate.getModelsForState(statesInfo, states);
         std::vector<std::vector<std::pair<float, std::unordered_map<EnumFace, std::vector<NodeVertexStatic>>>>> result;
 
         std::unordered_map<TexturePipeline, uint16_t> pipelineResolveCache;
 
-        for(uint16_t routeId : routes) {
-            std::vector<std::pair<float, std::unordered_map<EnumFace, std::vector<NodeVertexStatic>>>> routeModels;
-            const auto& route = iterNodestate->second.Routes[routeId];
-            for(const auto& [w, m] : route.second) {
-                if(const PreparedNodeState::Model* ptr = std::get_if<PreparedNodeState::Model>(&m)) {
-                    ModelProvider::Model model = MP.getModel(ptr->Id);
-                    Transformations trf(ptr->Transforms);
-                    std::unordered_map<EnumFace, std::vector<NodeVertexStatic>> out;
+        auto appendModel = [&](AssetsModel modelId, const std::vector<Transformation>& transforms, std::unordered_map<EnumFace, std::vector<NodeVertexStatic>>& out) {
+            ModelProvider::Model model = MP.getModel(modelId);
+            Transformations trf{transforms};
 
-                    for(auto& [l, r] : model.Vertecies) {
-                        trf.apply(r);
+            for(auto& [l, r] : model.Vertecies) {
+                trf.apply(r);
 
-                        // Позиция -224 ~ 288; 64 позиций в одной ноде, 7.5 метров в ряд
-                        for(const Vertex& v : r) {
-                            NodeVertexStatic vert;
+                // Позиция -224 ~ 288; 64 позиций в одной ноде, 7.5 метров в ряд
+                for(const Vertex& v : r) {
+                    NodeVertexStatic vert;
 
-                            vert.FX = (v.Pos.x+0.5)*64+224;
-                            vert.FY = (v.Pos.y+0.5)*64+224;
-                            vert.FZ = (v.Pos.z+0.5)*64+224;
+                    vert.FX = (v.Pos.x+0.5f)*64+224;
+                    vert.FY = (v.Pos.y+0.5f)*64+224;
+                    vert.FZ = (v.Pos.z+0.5f)*64+224;
 
-                            vert.TU = std::clamp<int32_t>(v.UV.x * (1 << 16), 0, (1 << 16));
-                            vert.TV = std::clamp<int32_t>(v.UV.y * (1 << 16), 0, (1 << 16));
+                    vert.TU = std::clamp<int32_t>(v.UV.x * (1 << 16), 0, (1 << 16) - 1);
+                    vert.TV = std::clamp<int32_t>(v.UV.y * (1 << 16), 0, (1 << 16) - 1);
 
-                            const TexturePipeline& pipe = model.TextureMap[model.TextureKeys[v.TexId]];
-                            if(auto iterPipe = pipelineResolveCache.find(pipe); iterPipe != pipelineResolveCache.end()) {
-                                vert.Tex = iterPipe->second;
-                            } else {
-                                vert.Tex = TP.getTextureId(pipe);
-                                pipelineResolveCache[pipe] = vert.Tex;
-                            }
-
-                            out[l].push_back(vert);
-                        }
+                    const TexturePipeline& pipe = model.TextureMap[model.TextureKeys[v.TexId]];
+                    if(auto iterPipe = pipelineResolveCache.find(pipe); iterPipe != pipelineResolveCache.end()) {
+                        vert.Tex = iterPipe->second;
+                    } else {
+                        vert.Tex = TP.getTextureId(pipe);
+                        pipelineResolveCache[pipe] = vert.Tex;
                     }
 
-                    /// TODO: uvlock
-                    
-                    routeModels.emplace_back(w, std::move(out));
+                    out[l].push_back(vert);
                 }
+            }
+        };
+
+        auto resolveModelId = [&](uint16_t localId, AssetsModel& outId) -> bool {
+            if(localId >= nodestate.LocalToModel.size())
+                return false;
+            outId = nodestate.LocalToModel[localId];
+            return true;
+        };
+
+        for(uint16_t routeId : routes) {
+            if(routeId >= nodestate.Routes.size())
+                continue;
+
+            std::vector<std::pair<float, std::unordered_map<EnumFace, std::vector<NodeVertexStatic>>>> routeModels;
+            const auto& route = nodestate.Routes[routeId];
+            for(const auto& [w, m] : route.second) {
+                std::unordered_map<EnumFace, std::vector<NodeVertexStatic>> out;
+
+                if(const PreparedNodeState::Model* ptr = std::get_if<PreparedNodeState::Model>(&m)) {
+                    AssetsModel modelId;
+                    if(resolveModelId(ptr->Id, modelId))
+                        appendModel(modelId, ptr->Transforms, out);
+                } else if(const PreparedNodeState::VectorModel* ptr = std::get_if<PreparedNodeState::VectorModel>(&m)) {
+                    for(const auto& sub : ptr->Models) {
+                        AssetsModel modelId;
+                        if(!resolveModelId(sub.Id, modelId))
+                            continue;
+
+                        std::vector<Transformation> transforms = sub.Transforms;
+                        transforms.insert(transforms.end(), ptr->Transforms.begin(), ptr->Transforms.end());
+                        appendModel(modelId, transforms, out);
+                    }
+                }
+
+                /// TODO: uvlock
+                routeModels.emplace_back(w, std::move(out));
             }
 
             result.push_back(std::move(routeModels));
         }
 
         return result;
+    }
+
+    uint16_t getTextureId(AssetsTexture texId) {
+        if(texId == 0)
+            return 0;
+
+        TexturePipeline pipe;
+        pipe.BinTextures.push_back(texId);
+        return TP.getTextureId(pipe);
     }
 
 private:
@@ -1027,6 +889,10 @@ public:
     // Меняет количество обрабатывающих потоков
     void changeThreadsCount(uint8_t threads);
 
+    void setNodestateProvider(NodestateProvider* provider) {
+        NSP = provider;
+    }
+
     void prepareTickSync() {
         Sync.Stop = true;
     }
@@ -1051,6 +917,7 @@ private:
     } Sync;
 
     IServerSession *SS;
+    NodestateProvider* NSP = nullptr;
     std::vector<std::thread> Threads;
 
     void run(uint8_t id);
@@ -1083,23 +950,10 @@ public:
         assert(serverSession);
 
         CMG.changeThreadsCount(1);
-
-        const VkCommandPoolCreateInfo infoCmdPool =
-        {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-            .pNext = nullptr,
-            .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-            .queueFamilyIndex = VkInst->getSettings().QueueGraphics
-        };
-
-        vkAssert(!vkCreateCommandPool(VkInst->Graphics.Device, &infoCmdPool, nullptr, &CMDPool));
     }
 
     ~ChunkPreparator() {
         CMG.changeThreadsCount(0);
-
-        if(CMDPool)
-            vkDestroyCommandPool(VkInst->Graphics.Device, CMDPool, nullptr);
     }
 
 
@@ -1111,7 +965,24 @@ public:
         CMG.pushStageTickSync();
     }
 
+    void setNodestateProvider(NodestateProvider* provider) {
+        CMG.setNodestateProvider(provider);
+    }
+
     void tickSync(const TickSyncData& data);
+    void notifyGpuFinished() {
+        resetVertexStaging();
+        VertexPool_Voxels.notifyGpuFinished();
+        VertexPool_Nodes.notifyGpuFinished();
+        IndexPool_Nodes_16.notifyGpuFinished();
+        IndexPool_Nodes_32.notifyGpuFinished();
+    }
+    void flushUploadsAndBarriers(VkCommandBuffer commandBuffer) {
+        VertexPool_Voxels.flushUploadsAndBarriers(commandBuffer);
+        VertexPool_Nodes.flushUploadsAndBarriers(commandBuffer);
+        IndexPool_Nodes_16.flushUploadsAndBarriers(commandBuffer);
+        IndexPool_Nodes_32.flushUploadsAndBarriers(commandBuffer);
+    }
 
     // Готовность кадров определяет когда можно удалять ненужные ресурсы, которые ещё используются в рендере
     void pushFrame();
@@ -1126,7 +997,6 @@ private:
     static constexpr uint8_t FRAME_COUNT_RESOURCE_LATENCY = 6;
 
     Vulkan* VkInst;
-    VkCommandPool CMDPool = nullptr;
 
     // Генератор вершин чанков
     ChunkMeshGenerator CMG;
@@ -1193,8 +1063,10 @@ class VulkanRenderSession : public IRenderSession {
 
     ChunkPreparator CP;
     ModelProvider MP;
+    std::unique_ptr<TextureProvider> TP;
+    std::unique_ptr<NodestateProvider> NSP;
 
-    AtlasImage MainTest, LightDummy;
+    AtlasImage LightDummy;
     Buffer TestQuad;
     std::optional<Buffer> TestVoxel;
 
@@ -1206,8 +1078,6 @@ class VulkanRenderSession : public IRenderSession {
         .binding = 1,
         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,            Данные к атласу
     */
-	VkDescriptorSetLayout MainAtlasDescLayout = VK_NULL_HANDLE;
-    VkDescriptorSet MainAtlasDescriptor = VK_NULL_HANDLE;
     /*
         .binding = 2,
         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,    Воксельная карта освещения
@@ -1232,7 +1102,6 @@ class VulkanRenderSession : public IRenderSession {
         NodeStaticOpaquePipeline = VK_NULL_HANDLE,
         NodeStaticTransparentPipeline = VK_NULL_HANDLE;
 
-    std::map<AssetsTexture, uint16_t> ServerToAtlas;
 
 public:
     WorldPCO PCO;
@@ -1254,13 +1123,13 @@ public:
     }
 
     void beforeDraw();
+    void onGpuFinished();
     void drawWorld(GlobalTime gTime, float dTime, VkCommandBuffer drawCmd);
     void pushStage(EnumRenderStage stage);
 
     static std::vector<VoxelVertexPoint> generateMeshForVoxelChunks(const std::vector<VoxelCube>& cubes);
 
 private:
-    void updateDescriptor_MainAtlas();
     void updateDescriptor_VoxelsLight();
     void updateDescriptor_ChunksLight();
 };

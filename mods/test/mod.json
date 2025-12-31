@@ -1,0 +1,9 @@
+{
+    "id": "test",
+    "name": "Test Mod",
+    "description": "Это тестовый мод",
+    "depends": [],
+    "optional_depends": [],
+    "author": "DrSocalkwe3n",
+    "version": [0, 0, 0, 1]
+}

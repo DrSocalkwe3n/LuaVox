@@ -9,9 +9,19 @@ layout(location = 0) in FragmentObj {
 
 layout(location = 0) out vec4 Frame;
 
+struct AtlasEntry {
+    vec4 UVMinMax;
+    uint Layer;
+    uint Flags;
+    uint _Pad0;
+    uint _Pad1;
+};
+
+const uint ATLAS_ENTRY_VALID = 1u;
+
 uniform layout(set = 0, binding = 0) sampler2DArray MainAtlas;
 layout(set = 0, binding = 1) readonly buffer MainAtlasLayoutObj {
-    vec3 Color;
+    AtlasEntry Entries[];
 } MainAtlasLayout;
 
 uniform layout(set = 1, binding = 0) sampler2DArray LightMap;
@@ -19,6 +29,19 @@ layout(set = 1, binding = 1) readonly buffer LightMapLayoutObj {
     vec3 Color;
 } LightMapLayout;
 
+vec4 atlasColor(uint texId, vec2 uv)
+{
+    AtlasEntry entry = MainAtlasLayout.Entries[texId];
+    if((entry.Flags & ATLAS_ENTRY_VALID) == 0u)
+        return vec4(((int(gl_FragCoord.x / 128) + int(gl_FragCoord.y / 128)) % 2) * vec3(1, 0, 1), 1);
+
+    vec2 baseUV = vec2(uv.x, 1.0f - uv.y);
+    vec2 atlasUV = mix(entry.UVMinMax.xy, entry.UVMinMax.zw, baseUV);
+    atlasUV = clamp(atlasUV, entry.UVMinMax.xy, entry.UVMinMax.zw);
+    return texture(MainAtlas, vec3(atlasUV, entry.Layer));
+}
+
 void main() {
-    Frame = vec4(Fragment.GeoPos, 1);
+    Frame = atlasColor(Fragment.Texture, Fragment.UV);
+    Frame.xyz *= max(0.2f, dot(Fragment.Normal, normalize(vec3(0.5, 1, 0.8))));
 }

@@ -211,7 +211,7 @@ void ChunkMeshGenerator::run(uint8_t id) {
                 } else {
                     for(int z = 0; z < 16; z++)
                         for(int y = 0; y < 16; y++)
-                            fullNodes[17][y+1][z+1] = 1;
+                            fullNodes[17][y+1][z+1] = 0;
                 }
 
                 if(chunks[1]) {
@@ -223,7 +223,7 @@ void ChunkMeshGenerator::run(uint8_t id) {
                 } else {
                     for(int z = 0; z < 16; z++)
                         for(int y = 0; y < 16; y++)
-                            fullNodes[0][y+1][z+1] = 1;
+                            fullNodes[0][y+1][z+1] = 0;
                 }
 
                 if(chunks[2]) {
@@ -235,7 +235,7 @@ void ChunkMeshGenerator::run(uint8_t id) {
                 } else {
                     for(int z = 0; z < 16; z++)
                         for(int x = 0; x < 16; x++)
-                            fullNodes[x+1][17][z+1] = 1;
+                            fullNodes[x+1][17][z+1] = 0;
                 }
 
                 if(chunks[3]) {
@@ -247,7 +247,7 @@ void ChunkMeshGenerator::run(uint8_t id) {
                 } else {
                     for(int z = 0; z < 16; z++)
                         for(int x = 0; x < 16; x++)
-                            fullNodes[x+1][0][z+1] = 1;
+                            fullNodes[x+1][0][z+1] = 0;
                 }
 
                 if(chunks[4]) {
@@ -259,7 +259,7 @@ void ChunkMeshGenerator::run(uint8_t id) {
                 } else {
                     for(int y = 0; y < 16; y++)
                         for(int x = 0; x < 16; x++)
-                            fullNodes[x+1][y+1][17] = 1;
+                            fullNodes[x+1][y+1][17] = 0;
                 }
 
                 if(chunks[5]) {
@@ -271,7 +271,7 @@ void ChunkMeshGenerator::run(uint8_t id) {
                 } else {
                     for(int y = 0; y < 16; y++)
                         for(int x = 0; x < 16; x++)
-                            fullNodes[x+0][y+1][0] = 1;
+                            fullNodes[x+0][y+1][0] = 0;
                 }
             } else 
                 goto end;
@@ -307,6 +307,72 @@ void ChunkMeshGenerator::run(uint8_t id) {
                 NodeVertexStatic v;
                 std::memset(&v, 0, sizeof(v));
 
+                struct ModelCacheEntry {
+                    std::vector<std::vector<std::pair<float, std::unordered_map<EnumFace, std::vector<NodeVertexStatic>>>>> Routes;
+                };
+
+                std::unordered_map<uint32_t, ModelCacheEntry> modelCache;
+                std::unordered_map<AssetsTexture, uint16_t> baseTextureCache;
+
+                std::vector<NodeStateInfo> metaStatesInfo;
+                {
+                    NodeStateInfo info;
+                    info.Name = "meta";
+                    info.Variations = 256;
+                    metaStatesInfo.push_back(std::move(info));
+                }
+
+                auto isFaceCovered = [&](EnumFace face, int covered) -> bool {
+                    switch(face) {
+                    case EnumFace::Up: return covered & (1 << 2);
+                    case EnumFace::Down: return covered & (1 << 3);
+                    case EnumFace::East: return covered & (1 << 0);
+                    case EnumFace::West: return covered & (1 << 1);
+                    case EnumFace::South: return covered & (1 << 4);
+                    case EnumFace::North: return covered & (1 << 5);
+                    default: return false;
+                    }
+                };
+
+                auto pickVariant = [&](const std::vector<std::pair<float, std::unordered_map<EnumFace, std::vector<NodeVertexStatic>>>>& variants, uint32_t seed)
+                    -> const std::unordered_map<EnumFace, std::vector<NodeVertexStatic>>*
+                {
+                    if(variants.empty())
+                        return nullptr;
+
+                    float total = 0.0f;
+                    for(const auto& entry : variants)
+                        total += std::max(0.0f, entry.first);
+
+                    if(total <= 0.0f)
+                        return &variants.front().second;
+
+                    float r = (seed % 10000u) / 10000.0f * total;
+                    float accum = 0.0f;
+                    for(const auto& entry : variants) {
+                        accum += std::max(0.0f, entry.first);
+                        if(r <= accum)
+                            return &entry.second;
+                    }
+
+                    return &variants.back().second;
+                };
+
+                auto appendModel = [&](const std::unordered_map<EnumFace, std::vector<NodeVertexStatic>>& faces, int covered, int x, int y, int z) {
+                    for(const auto& [face, verts] : faces) {
+                        if(face != EnumFace::None && isFaceCovered(face, covered))
+                            continue;
+
+                        for(const NodeVertexStatic& baseVert : verts) {
+                            NodeVertexStatic vert = baseVert;
+                            vert.FX = uint32_t(vert.FX + x * 64);
+                            vert.FY = uint32_t(vert.FY + y * 64);
+                            vert.FZ = uint32_t(vert.FZ + z * 64);
+                            result.NodeVertexs.push_back(vert);
+                        }
+                    }
+                };
+
                 // Сбор вершин
                 for(int z = 0; z < 16; z++)
                 for(int y = 0; y < 16; y++)
@@ -323,208 +389,259 @@ void ChunkMeshGenerator::run(uint8_t id) {
                     if(fullCovered == 0b111111)
                         continue;
 
-                    const DefNode_t* node = getNodeProfile((*chunk)[x+y*16+z*16*16].NodeId);
+                    const Node& nodeData = (*chunk)[x+y*16+z*16*16];
+                    const DefNode_t* node = getNodeProfile(nodeData.NodeId);
 
-                    v.Tex = node->TexId;
+                    bool usedModel = false;
+
+                    if(NSP && node->NodestateId != 0) {
+                        auto iterCache = modelCache.find(nodeData.Data);
+                        if(iterCache == modelCache.end()) {
+                            std::unordered_map<std::string, int32_t> states;
+                            states.emplace("meta", nodeData.Meta);
+
+                            ModelCacheEntry entry;
+                            entry.Routes = NSP->getModelsForNode(node->NodestateId, metaStatesInfo, states);
+                            iterCache = modelCache.emplace(nodeData.Data, std::move(entry)).first;
+                        }
+
+                        if(!iterCache->second.Routes.empty()) {
+                            uint32_t seed = uint32_t(nodeData.Data) * 2654435761u;
+                            seed ^= uint32_t(x) * 73856093u;
+                            seed ^= uint32_t(y) * 19349663u;
+                            seed ^= uint32_t(z) * 83492791u;
+
+                            for(size_t routeIndex = 0; routeIndex < iterCache->second.Routes.size(); routeIndex++) {
+                                const auto& variants = iterCache->second.Routes[routeIndex];
+                                const auto* faces = pickVariant(variants, seed + uint32_t(routeIndex) * 374761393u);
+                                if(faces)
+                                    appendModel(*faces, fullCovered, x, y, z);
+                            }
+
+                            usedModel = true;
+                        }
+                    }
+
+                    if(usedModel)
+                        continue;
+
+                    if(NSP && node->TexId != 0) {
+                        auto iterTex = baseTextureCache.find(node->TexId);
+                        if(iterTex != baseTextureCache.end()) {
+                            v.Tex = iterTex->second;
+                        } else {
+                            uint16_t resolvedTex = NSP->getTextureId(node->TexId);
+                            v.Tex = resolvedTex;
+                            baseTextureCache.emplace(node->TexId, resolvedTex);
+                        }
+                    } else {
+                        v.Tex = node->TexId;
+                    }
 
                     if(v.Tex == 0)
                         continue;
 
                     // Рендерим обычный кубоид
+                    // XZ+Y
                     if(!(fullCovered & 0b000100)) {
-                        v.FX = 224+x*16;
-                        v.FY = 224+y*16+16;
-                        v.FZ = 224+z*16+16;
+                        v.FX = 224+x*64;
+                        v.FY = 224+y*64+64;
+                        v.FZ = 224+z*64+64;
                         v.TU = 0;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
 
-                        v.FX += 16;
+                        v.FX += 64;
                         v.TU = 65535;
                         result.NodeVertexs.push_back(v);
 
-                        v.FZ -= 16;
+                        v.FZ -= 64;
                         v.TV = 65535;
                         result.NodeVertexs.push_back(v);
 
-                        v.FX = 224+x*16;
-                        v.FZ = 224+z*16+16;
+                        v.FX = 224+x*64;
+                        v.FZ = 224+z*64+64;
                         v.TU = 0;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
 
-                        v.FX += 16;
-                        v.FZ -= 16;
+                        v.FX += 64;
+                        v.FZ -= 64;
                         v.TV = 65535;
                         v.TU = 65535;
                         result.NodeVertexs.push_back(v);
 
-                        v.FX -= 16;
+                        v.FX -= 64;
                         v.TU = 0;
                         result.NodeVertexs.push_back(v);
                     }
 
+                    // XZ-Y
                     if(!(fullCovered & 0b001000)) {
-                        v.FX = 224+x*16;
-                        v.FY = 224+y*16;
-                        v.FZ = 224+z*16+16;
+                        v.FX = 224+x*64;
+                        v.FY = 224+y*64;
+                        v.FZ = 224+z*64+64;
                         v.TU = 0;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
 
-                        v.FZ -= 16;
+                        v.FZ -= 64;
                         v.TV = 65535;
                         result.NodeVertexs.push_back(v);
 
-                        v.FX += 16;
+                        v.FX += 64;
                         v.TU = 65535;
                         result.NodeVertexs.push_back(v);
 
-                        v.FX = 224+x*16;
-                        v.FZ = 224+z*16+16;
+                        v.FX = 224+x*64;
+                        v.FZ = 224+z*64+64;
                         v.TU = 0;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
 
-                        v.FX += 16;
-                        v.FZ -= 16;
+                        v.FX += 64;
+                        v.FZ -= 64;
                         v.TV = 65535;
                         v.TU = 65535;
                         result.NodeVertexs.push_back(v);
 
-                        v.FZ += 16;
+                        v.FZ += 64;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
                     }
 
+                    //YZ+X
                     if(!(fullCovered & 0b000001)) {
-                        v.FX = 224+x*16+16;
-                        v.FY = 224+y*16;
-                        v.FZ = 224+z*16+16;
+                        v.FX = 224+x*64+64;
+                        v.FY = 224+y*64;
+                        v.FZ = 224+z*64+64;
                         v.TU = 0;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
 
-                        v.FZ -= 16;
+                        v.FZ -= 64;
                         v.TV = 65535;
                         result.NodeVertexs.push_back(v);
 
-                        v.FY += 16;
+                        v.FY += 64;
                         v.TU = 65535;
                         result.NodeVertexs.push_back(v);
 
-                        v.FY = 224+y*16;
-                        v.FZ = 224+z*16+16;
+                        v.FY = 224+y*64;
+                        v.FZ = 224+z*64+64;
                         v.TU = 0;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
 
-                        v.FY += 16;
-                        v.FZ -= 16;
+                        v.FY += 64;
+                        v.FZ -= 64;
                         v.TV = 65535;
                         v.TU = 65535;
                         result.NodeVertexs.push_back(v);
 
-                        v.FZ += 16;
+                        v.FZ += 64;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
                     }
 
+                    //YZ-X
                     if(!(fullCovered & 0b000010)) {
-                        v.FX = 224+x*16;
-                        v.FY = 224+y*16;
-                        v.FZ = 224+z*16+16;
+                        v.FX = 224+x*64;
+                        v.FY = 224+y*64;
+                        v.FZ = 224+z*64+64;
                         v.TU = 0;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
 
-                        v.FY += 16;
+                        v.FY += 64;
                         v.TU = 65535;
                         result.NodeVertexs.push_back(v);
 
-                        v.FZ -= 16;
+                        v.FZ -= 64;
                         v.TV = 65535;
                         result.NodeVertexs.push_back(v);
 
-                        v.FY = 224+y*16;
-                        v.FZ = 224+z*16+16;
+                        v.FY = 224+y*64;
+                        v.FZ = 224+z*64+64;
                         v.TU = 0;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
 
-                        v.FY += 16;
-                        v.FZ -= 16;
+                        v.FY += 64;
+                        v.FZ -= 64;
                         v.TV = 65535;
                         v.TU = 65535;
                         result.NodeVertexs.push_back(v);
 
-                        v.FY -= 16;
+                        v.FY -= 64;
                         v.TU = 0;
                         result.NodeVertexs.push_back(v);
                     }
 
+                    //XY+Z
                     if(!(fullCovered & 0b010000)) {
-                        v.FX = 224+x*16;
-                        v.FY = 224+y*16;
-                        v.FZ = 224+z*16+16;
+                        v.FX = 224+x*64;
+                        v.FY = 224+y*64;
+                        v.FZ = 224+z*64+64;
                         v.TU = 0;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
 
-                        v.FX += 16;
+                        v.FX += 64;
                         v.TU = 65535;
                         result.NodeVertexs.push_back(v);
 
-                        v.FY += 16;
+                        v.FY += 64;
                         v.TV = 65535;
                         result.NodeVertexs.push_back(v);
 
-                        v.FX = 224+x*16;
-                        v.FY = 224+y*16;
+                        v.FX = 224+x*64;
+                        v.FY = 224+y*64;
                         v.TU = 0;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
 
-                        v.FX += 16;
-                        v.FY += 16;
+                        v.FX += 64;
+                        v.FY += 64;
                         v.TV = 65535;
                         v.TU = 65535;
                         result.NodeVertexs.push_back(v);
 
-                        v.FX -= 16;
+                        v.FX -= 64;
                         v.TU = 0;
                         result.NodeVertexs.push_back(v);
                     }
 
+                    // XY-Z
                     if(!(fullCovered & 0b100000)) {
-                        v.FX = 224+x*16;
-                        v.FY = 224+y*16;
-                        v.FZ = 224+z*16;
+                        v.FX = 224+x*64;
+                        v.FY = 224+y*64;
+                        v.FZ = 224+z*64;
                         v.TU = 0;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
 
-                        v.FY += 16;
+                        v.FY += 64;
                         v.TV = 65535;
                         result.NodeVertexs.push_back(v);
 
-                        v.FX += 16;
+                        v.FX += 64;
                         v.TU = 65535;
                         result.NodeVertexs.push_back(v);
 
-                        v.FX = 224+x*16;
-                        v.FY = 224+y*16;
+                        v.FX = 224+x*64;
+                        v.FY = 224+y*64;
                         v.TU = 0;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
 
-                        v.FX += 16;
-                        v.FY += 16;
+                        v.FX += 64;
+                        v.FY += 64;
                         v.TV = 65535;
                         v.TU = 65535;
                         result.NodeVertexs.push_back(v);
 
-                        v.FY -= 16;
+                        v.FY -= 64;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
                     }
@@ -563,7 +680,6 @@ void ChunkMeshGenerator::run(uint8_t id) {
                     }
                 }
             }
-
             end:
             Output.lock()->emplace_back(std::move(result));
 
@@ -588,10 +704,74 @@ void ChunkPreparator::tickSync(const TickSyncData& data) {
     // Пересчёт соседних чанков
     // Проверить необходимость пересчёта чанков при изменении профилей
 
+    std::unordered_map<WorldId_t, std::vector<Pos::GlobalChunk>> changedChunks = data.ChangedChunks;
+
+    if(!data.ChangedNodes.empty()) {
+        std::unordered_set<DefNodeId> changedNodes(data.ChangedNodes.begin(), data.ChangedNodes.end());
+
+        for(const auto& [wId, regions] : ChunksMesh) {
+            for(const auto& [rPos, chunks] : regions) {
+                Pos::GlobalChunk base = Pos::GlobalChunk(rPos) << 2;
+
+                for(size_t index = 0; index < chunks.size(); index++) {
+                    const ChunkObj_t& chunk = chunks[index];
+                    if(chunk.Nodes.empty())
+                        continue;
+
+                    bool hit = false;
+                    for(DefNodeId nodeId : chunk.Nodes) {
+                        if(changedNodes.contains(nodeId)) {
+                            hit = true;
+                            break;
+                        }
+                    }
+
+                    if(!hit)
+                        continue;
+
+                    Pos::bvec4u localPos;
+                    localPos.unpack(index);
+                    changedChunks[wId].push_back(base + Pos::GlobalChunk(localPos));
+                }
+            }
+        }
+    }
+
+    if(!data.ChangedVoxels.empty()) {
+        std::unordered_set<DefVoxelId> changedVoxels(data.ChangedVoxels.begin(), data.ChangedVoxels.end());
+
+        for(const auto& [wId, regions] : ChunksMesh) {
+            for(const auto& [rPos, chunks] : regions) {
+                Pos::GlobalChunk base = Pos::GlobalChunk(rPos) << 2;
+
+                for(size_t index = 0; index < chunks.size(); index++) {
+                    const ChunkObj_t& chunk = chunks[index];
+                    if(chunk.Voxels.empty())
+                        continue;
+
+                    bool hit = false;
+                    for(DefVoxelId voxelId : chunk.Voxels) {
+                        if(changedVoxels.contains(voxelId)) {
+                            hit = true;
+                            break;
+                        }
+                    }
+
+                    if(!hit)
+                        continue;
+
+                    Pos::bvec4u localPos;
+                    localPos.unpack(index);
+                    changedChunks[wId].push_back(base + Pos::GlobalChunk(localPos));
+                }
+            }
+        }
+    }
+
     // Добавляем к изменёным чанкам пересчёт соседей
     {
         std::vector<std::tuple<WorldId_t, Pos::GlobalChunk, uint32_t>> toBuild;
-        for(auto& [wId, chunks] : data.ChangedChunks) {
+        for(auto& [wId, chunks] : changedChunks) {
             std::vector<Pos::GlobalChunk> list;
             for(const Pos::GlobalChunk& pos : chunks) {
                 list.push_back(pos);
@@ -682,11 +862,6 @@ void ChunkPreparator::tickSync(const TickSyncData& data) {
             }
         }
     }
-
-    VertexPool_Voxels.update(CMDPool);
-    VertexPool_Nodes.update(CMDPool);
-    IndexPool_Nodes_16.update(CMDPool);
-    IndexPool_Nodes_32.update(CMDPool);
 
     CMG.endTickSync();
 }
@@ -824,7 +999,7 @@ VulkanRenderSession::VulkanRenderSession(Vulkan *vkInst, IServerSession *serverS
     :   VkInst(vkInst),
         ServerSession(serverSession),
         CP(vkInst, serverSession),
-        MainTest(vkInst), LightDummy(vkInst),
+        LightDummy(vkInst),
         TestQuad(vkInst, sizeof(NodeVertexStatic)*6*3*2)
 {
     assert(vkInst);
@@ -849,49 +1024,9 @@ VulkanRenderSession::VulkanRenderSession(Vulkan *vkInst, IServerSession *serverS
                                         &DescriptorPool));
     }
 
-    {
-	    std::vector<VkDescriptorSetLayoutBinding> shaderLayoutBindings =
-        {
-            {
-                .binding = 0,
-                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                .descriptorCount = 1,
-                .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-                .pImmutableSamplers = nullptr
-            }, {
-                .binding = 1,
-                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .descriptorCount = 1,
-                .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-                .pImmutableSamplers = nullptr
-            }
-        };
-
-        const VkDescriptorSetLayoutCreateInfo descriptorLayout =
-		{
-			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-			.pNext = nullptr,
-			.flags = 0,
-			.bindingCount = (uint32_t) shaderLayoutBindings.size(),
-			.pBindings = shaderLayoutBindings.data()
-		};
-
-        vkAssert(!vkCreateDescriptorSetLayout(
-            VkInst->Graphics.Device, &descriptorLayout, nullptr, &MainAtlasDescLayout));
-    }
-
-    {
-        VkDescriptorSetAllocateInfo ciAllocInfo =
-        {
-                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-                .pNext = nullptr,
-                .descriptorPool = DescriptorPool,
-                .descriptorSetCount = 1,
-                .pSetLayouts = &MainAtlasDescLayout
-        };
-
-        vkAssert(!vkAllocateDescriptorSets(VkInst->Graphics.Device, &ciAllocInfo, &MainAtlasDescriptor));
-    }
+    TP = std::make_unique<TextureProvider>(VkInst, DescriptorPool);
+    NSP = std::make_unique<NodestateProvider>(MP, *TP);
+    CP.setNodestateProvider(NSP.get());
 
     {
 	    std::vector<VkDescriptorSetLayoutBinding> shaderLayoutBindings =
@@ -937,38 +1072,10 @@ VulkanRenderSession::VulkanRenderSession(Vulkan *vkInst, IServerSession *serverS
     }
 
     
-    MainTest.atlasAddCallbackOnUniformChange([this]() -> bool {
-        updateDescriptor_MainAtlas();
-        return true;
-    });
-
     LightDummy.atlasAddCallbackOnUniformChange([this]() -> bool {
         updateDescriptor_VoxelsLight();
         return true;
     });
-
-    {
-        uint16_t texId = MainTest.atlasAddTexture(2, 2);
-        uint32_t colors[4] = {0xfffffffful, 0x00fffffful, 0xffffff00ul, 0xff00fffful};
-        MainTest.atlasChangeTextureData(texId, (const uint32_t*) colors);
-    }
-
-    {
-        int width, height;
-        bool hasAlpha;
-        for(const char *path : {
-                "grass.png",
-                "willow_wood.png",
-                "tropical_rainforest_wood.png",
-                "xnether_blue_wood.png",
-                "xnether_purple_wood.png",
-                "frame.png"
-        }) {
-            ByteBuffer image = VK::loadPNG(getResource(std::string("textures/") + path)->makeStream().Stream, width, height, hasAlpha);
-            uint16_t texId = MainTest.atlasAddTexture(width, height);
-            MainTest.atlasChangeTextureData(texId, (const uint32_t*) image.data());
-        }
-    }
 
     /*
     x left -1 ~ right 1
@@ -981,47 +1088,47 @@ VulkanRenderSession::VulkanRenderSession(Vulkan *vkInst, IServerSession *serverS
 
     {
         NodeVertexStatic *array = (NodeVertexStatic*) TestQuad.mapMemory();
-        array[0] = {135,    135,    135, 0, 0, 0, 0, 65535,      0};
-        array[1] = {135,    135+16,   135, 0, 0, 0, 0, 0,  65535};
-        array[2] = {135+16, 135+16, 135, 0, 0, 0, 0, 0,  65535};
-        array[3] = {135,    135,    135, 0, 0, 0, 0, 65535,      0};
-        array[4] = {135+16, 135+16, 135, 0, 0, 0, 0, 0,  65535};
-        array[5] = {135+16, 135, 135, 0, 0, 0, 0, 0,      0};
+        array[0] = {224, 224, 0, 224, 0, 0, 0, 65535, 0};
+        array[1] = {224, 224+64, 0, 224, 0, 0, 0, 0, 65535};
+        array[2] = {224+64, 224+64, 0, 224, 0, 0, 0, 0, 65535};
+        array[3] = {224, 224, 0, 224, 0, 0, 0, 65535, 0};
+        array[4] = {224+64, 224+64, 0, 224, 0, 0, 0, 0, 65535};
+        array[5] = {224+64, 224, 0, 224, 0, 0, 0, 0, 0};
 
-        array[6] = {135,    135,    135+16, 0, 0, 0, 0, 0,      0};
-        array[7] = {135+16,    135,   135+16, 0, 0, 0, 0, 65535,  0};
-        array[8] = {135+16, 135+16, 135+16, 0, 0, 0, 0, 65535,  65535};
-        array[9] = {135,    135,    135+16, 0, 0, 0, 0, 0,      0};
-        array[10] = {135+16, 135+16, 135+16, 0, 0, 0, 0, 65535,  65535};
-        array[11] = {135, 135+16, 135+16, 0, 0, 0, 0, 0,      65535};
+        array[6] = {224, 224, 0, 224+64, 0, 0, 0, 0, 0};
+        array[7] = {224+64, 224, 0, 224+64, 0, 0, 0, 65535, 0};
+        array[8] = {224+64, 224+64, 0, 224+64, 0, 0, 0, 65535, 65535};
+        array[9] = {224, 224, 0, 224+64, 0, 0, 0, 0, 0};
+        array[10] = {224+64, 224+64, 0, 224+64, 0, 0, 0, 65535, 65535};
+        array[11] = {224, 224+64, 0, 224+64, 0, 0, 0, 0, 65535};
 
-        array[12] = {135,    135,    135, 0, 0, 0, 0, 0,      0};
-        array[13] = {135,    135,   135+16, 0, 0, 0, 0, 65535,  0};
-        array[14] = {135, 135+16, 135+16, 0, 0, 0, 0, 65535,  65535};
-        array[15] = {135,    135,    135, 0, 0, 0, 0, 0,      0};
-        array[16] = {135, 135+16, 135+16, 0, 0, 0, 0, 65535,  65535};
-        array[17] = {135, 135+16, 135, 0, 0, 0, 0, 0,      65535};
+        array[12] = {224, 224, 0, 224, 0, 0, 0, 0, 0};
+        array[13] = {224, 224, 0, 224+64, 0, 0, 0, 65535, 0};
+        array[14] = {224, 224+64, 0, 224+64, 0, 0, 0, 65535, 65535};
+        array[15] = {224, 224, 0, 224, 0, 0, 0, 0, 0};
+        array[16] = {224, 224+64, 0, 224+64, 0, 0, 0, 65535, 65535};
+        array[17] = {224, 224+64, 0, 224, 0, 0, 0, 0, 65535};
 
-        array[18] = {135+16,    135,    135+16, 0, 0, 0, 0, 0,      0};
-        array[19] = {135+16,    135,   135, 0, 0, 0, 0, 65535,  0};
-        array[20] = {135+16, 135+16, 135, 0, 0, 0, 0, 65535,  65535};
-        array[21] = {135+16,    135,    135+16, 0, 0, 0, 0, 0,      0};
-        array[22] = {135+16, 135+16, 135, 0, 0, 0, 0, 65535,  65535};
-        array[23] = {135+16, 135+16, 135+16, 0, 0, 0, 0, 0,      65535};
+        array[18] = {224+64, 224, 0, 224+64, 0, 0, 0, 0, 0};
+        array[19] = {224+64, 224, 0, 224, 0, 0, 0, 65535, 0};
+        array[20] = {224+64, 224+64, 0, 224, 0, 0, 0, 65535, 65535};
+        array[21] = {224+64, 224, 0, 224+64, 0, 0, 0, 0, 0};
+        array[22] = {224+64, 224+64, 0, 224, 0, 0, 0, 65535, 65535};
+        array[23] = {224+64, 224+64, 0, 224+64, 0, 0, 0, 0, 65535};
 
-        array[24] = {135,    135,    135, 0, 0, 0, 0, 0,      0};
-        array[25] = {135+16,    135,   135, 0, 0, 0, 0, 65535,  0};
-        array[26] = {135+16, 135, 135+16, 0, 0, 0, 0, 65535,  65535};
-        array[27] = {135,    135,    135, 0, 0, 0, 0, 0,      0};
-        array[28] = {135+16, 135, 135+16, 0, 0, 0, 0, 65535,  65535};
-        array[29] = {135, 135, 135+16, 0, 0, 0, 0, 0,      65535};
+        array[24] = {224, 224, 0, 224, 0, 0, 0, 0, 0};
+        array[25] = {224+64, 224, 0, 224, 0, 0, 0, 65535, 0};
+        array[26] = {224+64, 224, 0, 224+64, 0, 0, 0, 65535, 65535};
+        array[27] = {224, 224, 0, 224, 0, 0, 0, 0, 0};
+        array[28] = {224+64, 224, 0, 224+64, 0, 0, 0, 65535, 65535};
+        array[29] = {224, 224, 0, 224+64, 0, 0, 0, 0, 65535};
 
-        array[30] = {135,    135+16,    135+16, 0, 0, 0, 0, 0,      0};
-        array[31] = {135+16,    135+16,   135+16, 0, 0, 0, 0, 65535,  0};
-        array[32] = {135+16, 135+16, 135, 0, 0, 0, 0, 65535,  65535};
-        array[33] = {135,    135+16,    135+16, 0, 0, 0, 0, 0,      0};
-        array[34] = {135+16, 135+16, 135, 0, 0, 0, 0, 65535,  65535};
-        array[35] = {135, 135+16, 135, 0, 0, 0, 0, 0,      65535};
+        array[30] = {224, 224+64, 0, 224+64, 0, 0, 0, 0, 0};
+        array[31] = {224+64, 224+64, 0, 224+64, 0, 0, 0, 65535, 0};
+        array[32] = {224+64, 224+64, 0, 224, 0, 0, 0, 65535, 65535};
+        array[33] = {224, 224+64, 0, 224+64, 0, 0, 0, 0, 0};
+        array[34] = {224+64, 224+64, 0, 224, 0, 0, 0, 65535, 65535};
+        array[35] = {224, 224+64, 0, 224, 0, 0, 0, 0, 65535};
 
         for(int iter = 0; iter < 36; iter++) {
             array[iter].Tex = 6;
@@ -1067,7 +1174,6 @@ VulkanRenderSession::VulkanRenderSession(Vulkan *vkInst, IServerSession *serverS
         }
     }
 
-    updateDescriptor_MainAtlas();
     updateDescriptor_VoxelsLight();
     updateDescriptor_ChunksLight();
 
@@ -1084,7 +1190,7 @@ VulkanRenderSession::VulkanRenderSession(Vulkan *vkInst, IServerSession *serverS
 
         std::vector<VkDescriptorSetLayout> layouts =
         {
-            MainAtlasDescLayout,
+            TP ? TP->getDescriptorLayout() : VK_NULL_HANDLE,
             VoxelLightMapDescLayout
         };
 
@@ -1433,9 +1539,7 @@ VulkanRenderSession::~VulkanRenderSession() {
 
     if(MainAtlas_LightMap_PipelineLayout)
         vkDestroyPipelineLayout(VkInst->Graphics.Device, MainAtlas_LightMap_PipelineLayout, nullptr);
-        
-    if(MainAtlasDescLayout)
-        vkDestroyDescriptorSetLayout(VkInst->Graphics.Device, MainAtlasDescLayout, nullptr);
+
     if(VoxelLightMapDescLayout)
         vkDestroyDescriptorSetLayout(VkInst->Graphics.Device, VoxelLightMapDescLayout, nullptr);
 
@@ -1459,36 +1563,93 @@ void VulkanRenderSession::tickSync(const TickSyncData& data) {
     ChunkPreparator::TickSyncData mcpData;
     mcpData.ChangedChunks = data.Chunks_ChangeOrAdd;
     mcpData.LostRegions = data.Chunks_Lost;
-    CP.tickSync(mcpData);
 
-    {
-        std::vector<std::tuple<ResourceId, Resource>> resources;
-        std::vector<ResourceId> lost;
+    if(auto iter = data.Profiles_ChangeOrAdd.find(EnumDefContent::Node); iter != data.Profiles_ChangeOrAdd.end())
+        mcpData.ChangedNodes.insert(mcpData.ChangedNodes.end(), iter->second.begin(), iter->second.end());
+    if(auto iter = data.Profiles_Lost.find(EnumDefContent::Node); iter != data.Profiles_Lost.end())
+        mcpData.ChangedNodes.insert(mcpData.ChangedNodes.end(), iter->second.begin(), iter->second.end());
+    if(auto iter = data.Profiles_ChangeOrAdd.find(EnumDefContent::Voxel); iter != data.Profiles_ChangeOrAdd.end())
+        mcpData.ChangedVoxels.insert(mcpData.ChangedVoxels.end(), iter->second.begin(), iter->second.end());
+    if(auto iter = data.Profiles_Lost.find(EnumDefContent::Voxel); iter != data.Profiles_Lost.end())
+        mcpData.ChangedVoxels.insert(mcpData.ChangedVoxels.end(), iter->second.begin(), iter->second.end());
 
-        for(const auto& [type, ids] : data.Assets_ChangeOrAdd) {
-            if(type != EnumAssets::Model)
+    std::vector<std::tuple<AssetsModel, Resource>> modelResources;
+    std::vector<AssetsModel> modelLost;
+    if(auto iter = data.Assets_ChangeOrAdd.find(EnumAssets::Model); iter != data.Assets_ChangeOrAdd.end()) {
+        const auto& list = ServerSession->Assets[EnumAssets::Model];
+        for(ResourceId id : iter->second) {
+            auto entryIter = list.find(id);
+            if(entryIter == list.end())
                 continue;
 
-            const auto& list = ServerSession->Assets[type];
-            for(ResourceId id : ids) {
-                auto iter = list.find(id);
-                if(iter == list.end())
+            modelResources.emplace_back(id, entryIter->second.Res);
+        }
+    }
+    if(auto iter = data.Assets_Lost.find(EnumAssets::Model); iter != data.Assets_Lost.end())
+        modelLost.insert(modelLost.end(), iter->second.begin(), iter->second.end());
+
+    std::vector<AssetsModel> changedModels;
+    if(!modelResources.empty() || !modelLost.empty())
+        changedModels = MP.onModelChanges(std::move(modelResources), std::move(modelLost));
+
+    if(TP) {
+        std::vector<std::tuple<AssetsTexture, Resource>> textureResources;
+        std::vector<AssetsTexture> textureLost;
+
+        if(auto iter = data.Assets_ChangeOrAdd.find(EnumAssets::Texture); iter != data.Assets_ChangeOrAdd.end()) {
+            const auto& list = ServerSession->Assets[EnumAssets::Texture];
+            for(ResourceId id : iter->second) {
+                auto entryIter = list.find(id);
+                if(entryIter == list.end())
                     continue;
 
-                resources.emplace_back(id, iter->second.Res);
+                textureResources.emplace_back(id, entryIter->second.Res);
             }
         }
 
-        for(const auto& [type, ids] : data.Assets_Lost) {
-            if(type != EnumAssets::Model)
-                continue;
+        if(auto iter = data.Assets_Lost.find(EnumAssets::Texture); iter != data.Assets_Lost.end())
+            textureLost.insert(textureLost.end(), iter->second.begin(), iter->second.end());
 
-            lost.append_range(ids);
+        if(!textureResources.empty() || !textureLost.empty())
+            TP->onTexturesChanges(std::move(textureResources), std::move(textureLost));
+    }
+
+    std::vector<AssetsNodestate> changedNodestates;
+    if(NSP) {
+        std::vector<std::tuple<AssetsNodestate, Resource>> nodestateResources;
+        std::vector<AssetsNodestate> nodestateLost;
+
+        if(auto iter = data.Assets_ChangeOrAdd.find(EnumAssets::Nodestate); iter != data.Assets_ChangeOrAdd.end()) {
+            const auto& list = ServerSession->Assets[EnumAssets::Nodestate];
+            for(ResourceId id : iter->second) {
+                auto entryIter = list.find(id);
+                if(entryIter == list.end())
+                    continue;
+
+                nodestateResources.emplace_back(id, entryIter->second.Res);
+            }
         }
 
-        if(!resources.empty() || !lost.empty())
-            MP.onModelChanges(std::move(resources), std::move(lost));
+        if(auto iter = data.Assets_Lost.find(EnumAssets::Nodestate); iter != data.Assets_Lost.end())
+            nodestateLost.insert(nodestateLost.end(), iter->second.begin(), iter->second.end());
+
+        if(!nodestateResources.empty() || !nodestateLost.empty() || !changedModels.empty())
+            changedNodestates = NSP->onNodestateChanges(std::move(nodestateResources), std::move(nodestateLost), changedModels);
     }
+
+    if(!changedNodestates.empty()) {
+        std::unordered_set<AssetsNodestate> changed;
+        changed.reserve(changedNodestates.size());
+        for(AssetsNodestate id : changedNodestates)
+            changed.insert(id);
+
+        for(const auto& [nodeId, def] : ServerSession->Profiles.DefNode) {
+            if(changed.contains(def.NodestateId))
+                mcpData.ChangedNodes.push_back(nodeId);
+        }
+    }
+
+    CP.tickSync(mcpData);
 }
 
 void VulkanRenderSession::setCameraPos(WorldId_t worldId, Pos::Object pos, glm::quat quat) {
@@ -1502,8 +1663,14 @@ void VulkanRenderSession::setCameraPos(WorldId_t worldId, Pos::Object pos, glm::
 }
 
 void VulkanRenderSession::beforeDraw() {
-    MainTest.atlasUpdateDynamicData();
+    if(TP)
+        TP->update();
     LightDummy.atlasUpdateDynamicData();
+    CP.flushUploadsAndBarriers(VkInst->Graphics.CommandBufferRender);
+}
+
+void VulkanRenderSession::onGpuFinished() {
+    CP.notifyGpuFinished();
 }
 
 void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuffer drawCmd) {
@@ -1643,7 +1810,7 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, 0, sizeof(WorldPCO), &PCO);
     vkCmdBindDescriptorSets(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, 
         MainAtlas_LightMap_PipelineLayout,  0, 2, 
-        (const VkDescriptorSet[]) {MainAtlasDescriptor, VoxelLightMapDescriptor}, 0, nullptr);
+        (const VkDescriptorSet[]) {TP ? TP->getDescriptorSet() : VK_NULL_HANDLE, VoxelLightMapDescriptor}, 0, nullptr);
 
     {
         // glm::vec4 offset = glm::inverse(Quat)*glm::vec4(0, 0, -64, 1);
@@ -1662,13 +1829,13 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
 
         auto [voxelVertexs, nodeVertexs] = CP.getChunksForRender(WorldId, Pos, 1, PCO.ProjView, x64offset_region);
 
-        {
-            static uint32_t l = TOS::Time::getSeconds();
-            if(l != TOS::Time::getSeconds()) {
-                l = TOS::Time::getSeconds();
-                TOS::Logger("Test").debug() << nodeVertexs.size();
-            }
-        }
+        // {
+        //     static uint32_t l = TOS::Time::getSeconds();
+        //     if(l != TOS::Time::getSeconds()) {
+        //         l = TOS::Time::getSeconds();
+        //         TOS::Logger("Test").debug() << nodeVertexs.size();
+        //     }
+        // }
 
         size_t count = 0;
 
@@ -1787,36 +1954,6 @@ std::vector<VoxelVertexPoint> VulkanRenderSession::generateMeshForVoxelChunks(co
     }
 
     return out;
-}
-
-void VulkanRenderSession::updateDescriptor_MainAtlas() {
-    VkDescriptorBufferInfo bufferInfo = MainTest;
-    VkDescriptorImageInfo imageInfo = MainTest;
-
-    std::vector<VkWriteDescriptorSet> ciDescriptorSet =
-    {
-        {
-                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .pNext = nullptr,
-                .dstSet = MainAtlasDescriptor,
-                .dstBinding = 0,
-                .dstArrayElement = 0,
-                .descriptorCount = 1,
-                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                .pImageInfo = &imageInfo
-        }, {
-                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .pNext = nullptr,
-                .dstSet = MainAtlasDescriptor,
-                .dstBinding = 1,
-                .dstArrayElement = 0,
-                .descriptorCount = 1,
-                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .pBufferInfo = &bufferInfo
-        }
-    };
-
-    vkUpdateDescriptorSets(VkInst->Graphics.Device, ciDescriptorSet.size(), ciDescriptorSet.data(), 0, nullptr);
 }
 
 void VulkanRenderSession::updateDescriptor_VoxelsLight() {

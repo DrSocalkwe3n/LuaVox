@@ -499,15 +499,15 @@ AssetsManager::Out_applyResourceChange AssetsManager::applyResourceChange(const 
                 PreparedNodeState nodestate = _nodestate;
 
                 // Ресолвим модели
-                for(const auto& [lKey, lDomain] : nodestate.LocalToModelKD) {
-                    nodestate.LocalToModel.push_back(lock->getId(EnumAssets::Nodestate, lDomain, lKey));
+                for(const auto& [lDomain, lKey] : nodestate.LocalToModelKD) {
+                    nodestate.LocalToModel.push_back(lock->getId(EnumAssets::Model, lDomain, lKey));
                 }
 
                 // Сдампим для отправки клиенту (Кеш в пролёте?)
                 Resource res(nodestate.dump());
 
                 // На оповещение
-                result.NewOrChange[(int) EnumAssets::Model].push_back({resId, res});
+                result.NewOrChange[(int) EnumAssets::Nodestate].push_back({resId, res});
 
                 // Запись в таблице ресурсов
                 data.emplace(ftt, res, domain, key);

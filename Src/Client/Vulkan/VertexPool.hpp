@@ -1,11 +1,42 @@
 #pragma once
 
 #include "Vulkan.hpp"
+#include "Client/Vulkan/AtlasPipeline/SharedStagingBuffer.hpp"
+#include <algorithm>
 #include <bitset>
+#include <cstring>
+#include <memory>
+#include <optional>
+#include <queue>
+#include <vector>
 #include <vulkan/vulkan_core.h>
 
 
 namespace LV::Client::VK {
+
+inline std::weak_ptr<SharedStagingBuffer>& globalVertexStaging() {
+    static std::weak_ptr<SharedStagingBuffer> staging;
+    return staging;
+}
+
+inline std::shared_ptr<SharedStagingBuffer> getOrCreateVertexStaging(Vulkan* inst) {
+    auto& staging = globalVertexStaging();
+    std::shared_ptr<SharedStagingBuffer> shared = staging.lock();
+    if(!shared) {
+        shared = std::make_shared<SharedStagingBuffer>(
+            inst->Graphics.Device,
+            inst->Graphics.PhysicalDevice
+        );
+        staging = shared;
+    }
+    return shared;
+}
+
+inline void resetVertexStaging() {
+    auto& staging = globalVertexStaging();
+    if(auto shared = staging.lock())
+        shared->Reset();
+}
 
 /*
     Память на устройстве выделяется пулами
@@ -22,10 +53,8 @@ class VertexPool {
     Vulkan *Inst;
 
     // Память, доступная для обмена с устройством
-    Buffer HostCoherent;
-    Vertex *HCPtr = nullptr;
-    VkFence Fence = nullptr;
-    size_t WritePos = 0;
+    std::shared_ptr<SharedStagingBuffer> Staging;
+    VkDeviceSize CopyOffsetAlignment = 4;
 
     struct Pool {
         // Память на устройстве
@@ -47,7 +76,6 @@ class VertexPool {
 
     struct Task {
         std::vector<Vertex> Data;
-        size_t Pos = -1; // Если данные уже записаны, то будет указана позиция в буфере общения
         uint8_t PoolId; // Куда потом направить
         uint16_t BlockId; // И в какой блок
     };
@@ -61,46 +89,21 @@ class VertexPool {
 
 private:
     void pushData(std::vector<Vertex>&& data, uint8_t poolId, uint16_t blockId) {
-        if(HC_Buffer_Size-WritePos >= data.size()) {
-            // Пишем в общий буфер, TasksWait
-            Vertex *ptr = HCPtr+WritePos;
-            std::copy(data.begin(), data.end(), ptr);
-            size_t count = data.size();
-            TasksWait.push({std::move(data), WritePos, poolId, blockId});
-            WritePos += count;
-        } else {
-            // Отложим запись на следующий такт
-            TasksPostponed.push(Task(std::move(data), -1, poolId, blockId));
-        }
+        TasksWait.push({std::move(data), poolId, blockId});
     }
 
 public:
     VertexPool(Vulkan* inst)
-        : Inst(inst), 
-        HostCoherent(inst, 
-                sizeof(Vertex)*HC_Buffer_Size+4 /* Для vkCmdFillBuffer */, 
-                VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+        : Inst(inst)
     {
         Pools.reserve(16);
-        HCPtr = (Vertex*) HostCoherent.mapMemory();
-
-        const VkFenceCreateInfo info = {
-            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-            .pNext = nullptr,
-            .flags = 0
-        };
-
-        vkAssert(!vkCreateFence(inst->Graphics.Device, &info, nullptr, &Fence));
+        Staging = getOrCreateVertexStaging(inst);
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(inst->Graphics.PhysicalDevice, &props);
+        CopyOffsetAlignment = std::max<VkDeviceSize>(4, props.limits.optimalBufferCopyOffsetAlignment);
     }
 
     ~VertexPool() {
-        if(HCPtr)
-            HostCoherent.unMapMemory();
-
-        if(Fence) {
-            vkDestroyFence(Inst->Graphics.Device, Fence, nullptr);
-        }
     }
 
 
@@ -229,44 +232,65 @@ public:
     }
 
     /*
-        Должно вызываться после приёма всех данных и перед рендером
+        Должно вызываться после приёма всех данных, до начала рендера в командном буфере
     */
-    void update(VkCommandPool commandPool) {
+    void flushUploadsAndBarriers(VkCommandBuffer commandBuffer) {
         if(TasksWait.empty())
             return;
 
-        assert(WritePos);
-                
-        VkCommandBufferAllocateInfo allocInfo {
-            VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            nullptr,
-            commandPool,
-            VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            1
+        struct CopyTask {
+            VkBuffer DstBuffer;
+            VkDeviceSize SrcOffset;
+            VkDeviceSize DstOffset;
+            VkDeviceSize Size;
+            uint8_t PoolId;
         };
 
-        VkCommandBuffer commandBuffer;
-        vkAllocateCommandBuffers(Inst->Graphics.Device, &allocInfo, &commandBuffer);
+        std::vector<CopyTask> copies;
+        copies.reserve(TasksWait.size());
+        std::vector<uint8_t> touchedPools(Pools.size(), 0);
 
-        VkCommandBufferBeginInfo beginInfo {
-            VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-            nullptr,
-            VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-            nullptr
-        };
+        while(!TasksWait.empty()) {
+            Task task = std::move(TasksWait.front());
+            TasksWait.pop();
 
-        vkBeginCommandBuffer(commandBuffer, &beginInfo);
+            VkDeviceSize bytes = task.Data.size()*sizeof(Vertex);
+            std::optional<VkDeviceSize> stagingOffset = Staging->Allocate(bytes, CopyOffsetAlignment);
+            if(!stagingOffset) {
+                TasksPostponed.push(std::move(task));
+                while(!TasksWait.empty()) {
+                    TasksPostponed.push(std::move(TasksWait.front()));
+                    TasksWait.pop();
+                }
+                break;
+            }
 
-        VkBufferMemoryBarrier barrier = {
+            std::memcpy(static_cast<uint8_t*>(Staging->Mapped()) + *stagingOffset,
+                task.Data.data(), bytes);
+
+            copies.push_back({
+                Pools[task.PoolId].DeviceBuff.getBuffer(),
+                *stagingOffset,
+                task.BlockId*sizeof(Vertex)*size_t(PerBlock),
+                bytes,
+                task.PoolId
+            });
+            touchedPools[task.PoolId] = 1;
+        }
+
+        if(copies.empty())
+            return;
+
+        VkBufferMemoryBarrier stagingBarrier = {
             VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
             nullptr,
             VK_ACCESS_HOST_WRITE_BIT,
             VK_ACCESS_TRANSFER_READ_BIT,
             VK_QUEUE_FAMILY_IGNORED,
             VK_QUEUE_FAMILY_IGNORED,
-            HostCoherent.getBuffer(),
+            Staging->Buffer(),
             0,
-            WritePos*sizeof(Vertex)
+            Staging->Size()
         };
 
         vkCmdPipelineBarrier(
@@ -275,53 +299,60 @@ public:
             VK_PIPELINE_STAGE_TRANSFER_BIT,
             0,
             0, nullptr,
-            1, &barrier,
+            1, &stagingBarrier,
             0, nullptr
         );
 
-        while(!TasksWait.empty()) {
-            Task& task = TasksWait.front();
-
+        for(const CopyTask& copy : copies) {
             VkBufferCopy copyRegion {
-                task.Pos*sizeof(Vertex),
-                task.BlockId*sizeof(Vertex)*size_t(PerBlock),
-                task.Data.size()*sizeof(Vertex)
+                copy.SrcOffset,
+                copy.DstOffset,
+                copy.Size
             };
 
-            assert(copyRegion.dstOffset+copyRegion.size < sizeof(Vertex)*PerBlock*PerPool);
+            assert(copyRegion.dstOffset+copyRegion.size <= Pools[copy.PoolId].DeviceBuff.getSize());
 
-            vkCmdCopyBuffer(commandBuffer, HostCoherent.getBuffer(), Pools[task.PoolId].DeviceBuff.getBuffer(),
-                 1, &copyRegion);
-
-            TasksWait.pop();
+            vkCmdCopyBuffer(commandBuffer, Staging->Buffer(), copy.DstBuffer, 1, &copyRegion);
         }
 
-        vkEndCommandBuffer(commandBuffer);
+        std::vector<VkBufferMemoryBarrier> dstBarriers;
+        dstBarriers.reserve(Pools.size());
+        for(size_t poolId = 0; poolId < Pools.size(); poolId++) {
+            if(!touchedPools[poolId])
+                continue;
 
-        VkSubmitInfo submitInfo {
-            VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            nullptr,
-            0, nullptr,
-            nullptr,
-            1,
-            &commandBuffer,
-            0,
-            nullptr
-        };
-        {
-            auto lockQueue = Inst->Graphics.DeviceQueueGraphic.lock();
-            vkAssert(!vkQueueSubmit(*lockQueue, 1, &submitInfo, Fence));
+            VkBufferMemoryBarrier barrier = {
+                VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+                nullptr,
+                VK_ACCESS_TRANSFER_WRITE_BIT,
+                IsIndex ? VK_ACCESS_INDEX_READ_BIT : VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT,
+                VK_QUEUE_FAMILY_IGNORED,
+                VK_QUEUE_FAMILY_IGNORED,
+                Pools[poolId].DeviceBuff.getBuffer(),
+                0,
+                Pools[poolId].DeviceBuff.getSize()
+            };
+            dstBarriers.push_back(barrier);
         }
-        vkAssert(!vkWaitForFences(Inst->Graphics.Device, 1, &Fence, VK_TRUE, UINT64_MAX));
-        vkAssert(!vkResetFences(Inst->Graphics.Device, 1, &Fence));
-        vkFreeCommandBuffers(Inst->Graphics.Device, commandPool, 1, &commandBuffer);
 
+        if(!dstBarriers.empty()) {
+            vkCmdPipelineBarrier(
+                commandBuffer,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+                0,
+                0, nullptr,
+                static_cast<uint32_t>(dstBarriers.size()),
+                dstBarriers.data(),
+                0, nullptr
+            );
+        }
+    }
+
+    void notifyGpuFinished() {
         std::queue<Task> postponed = std::move(TasksPostponed);
-        WritePos = 0;
-            
         while(!postponed.empty()) {
-            Task& task = postponed.front();
-            pushData(std::move(task.Data), task.PoolId, task.BlockId);
+            TasksWait.push(std::move(postponed.front()));
             postponed.pop();
         }
     }

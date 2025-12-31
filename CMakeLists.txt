@@ -156,6 +156,14 @@ FetchContent_Declare(sqlite3 GIT_REPOSITORY https://github.com/sjinks/sqlite3-cm
 FetchContent_MakeAvailable(sqlite3)
 target_link_libraries(luavox_common INTERFACE SQLite::SQLite3)
 
+FetchContent_Declare(
+  RectangleBinPack
+  GIT_REPOSITORY https://github.com/juj/RectangleBinPack.git
+  GIT_TAG 83e7e1132d93777e3732dfaae26b0f3703be2036
+)
+FetchContent_MakeAvailable(RectangleBinPack)
+target_link_libraries(luavox_common INTERFACE RectangleBinPack)
+
 # Static Assets
 find_package(Python3 REQUIRED)
 set(ASSETS_DIR "${PROJECT_SOURCE_DIR}/assets")

@@ -4,6 +4,7 @@
 #include "Common/Abstract.hpp"
 #include <Client/Vulkan/Vulkan.hpp>
 #include <algorithm>
+#include <bitset>
 #include <condition_variable>
 #include <functional>
 #include <memory>
@@ -14,16 +15,20 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <variant>
 #include <vulkan/vulkan_core.h>
 #include "Abstract.hpp"
 #include "TOSLib.hpp"
 #include "VertexPool.hpp"
+#include "assets.hpp"
 #include "glm/common.hpp"
 #include "glm/fwd.hpp"
 #include "../FrustumCull.h"
 #include "glm/geometric.hpp"
+#include "png++/image.hpp"
 #include <execution>
+#include <MaxRectsBinPack.h>
 
 /*
     У движка есть один текстурный атлас VK_IMAGE_VIEW_TYPE_2D_ARRAY(RGBA_UINT) и к нему Storage с инфой о положении текстур
@@ -57,6 +62,7 @@ static_assert(sizeof(WorldPCO) == 128);
     Хранит модели и предоставляет их конечные варианты
 */
 class ModelProvider {
+public:
     struct Model {
         // В вершинах текущей модели TexId ссылается на локальный текстурный ключ
         // 0 -> default_texture -> luavox:grass.png
@@ -67,19 +73,6 @@ class ModelProvider {
         std::unordered_map<EnumFace, std::vector<Vertex>> Vertecies;
         // Текстуры этой модели не будут переписаны вышестоящими
         bool UniqueTextures = false;
-    };
-
-    struct ModelObject : public Model {
-        // Зависимости, их трансформации (здесь может повторятся одна и таже модель)
-        // и перезаписи идентификаторов текстур
-        std::vector<std::tuple<ResourceId, Transformations>> Depends;
-
-        // Те кто использовали модель как зависимость в ней отметятся
-        std::vector<ResourceId> UpUse;
-        // При изменении/удалении модели убрать метки с зависимостей
-        std::vector<ResourceId> DownUse;
-        // Для постройки зависимостей
-        bool Ready = false;
     };
 
 public:
@@ -260,6 +253,19 @@ public:
     }
 
 private:
+    struct ModelObject : public Model {
+        // Зависимости, их трансформации (здесь может повторятся одна и таже модель)
+        // и перезаписи идентификаторов текстур
+        std::vector<std::tuple<ResourceId, Transformations>> Depends;
+
+        // Те кто использовали модель как зависимость в ней отметятся
+        std::vector<ResourceId> UpUse;
+        // При изменении/удалении модели убрать метки с зависимостей
+        std::vector<ResourceId> DownUse;
+        // Для постройки зависимостей
+        bool Ready = false;
+    };
+
     Logger LOG = "Client>ModelProvider";
     // Таблица моделей
     std::unordered_map<ResourceId, ModelObject> Models;
@@ -364,24 +370,504 @@ private:
     }
 };
 
+/**
+    Обработчик текстурных атласов для моделей
+
+    Функция выделения места в полном объёме.
+
+    Перед отрисовкой кадра выставить команды ожидания завершения передачи данных на GPU, до вызова стадии FRAGMENT_STAGE
+
+
+    Одновременно может проходить два рендера (двойные копии ресурсов)
+    Когда одна копия освободилась, в неё начинается запись
+
+    Два атласа, постоянно редактируются меж кадрами
+    2D_ARRAY и одну текстуру на стороне хоста для обмена информацией
+    Ужатие hd текстур
+
+    Хранить все текстуры в оперативке
+*/
+class TextureProvider {
+    // Хедер для атласа перед описанием текстур
+	struct alignas(16) UniformInfo {
+		uint32_t
+            // Количество текстур
+            SubsCount,
+		    // Счётчик времени с разрешением 8 бит в секунду
+		    Counter,
+            // Размер атласа 
+		    Size;
+
+        // Дальше в шейдере массив на описания текстур
+		// std::vector<InfoSubTexture> SubsInfo;
+	};
+
+    // Описание текстуры на стороне шейдера
+	struct alignas(16) InfoSubTexture {
+		uint32_t isExist = 0;
+		uint32_t
+            // Точная позиция в атласе
+            PosX = 0, PosY = 0, PosZ = 0, 
+            // Размер текстуры в атласе
+            Width = 0, Height = 0;
+
+		struct {
+			uint16_t Enabled : 1 = 0, Frames : 15 = 0;
+			uint16_t TimePerFrame = 0;
+		} Animation;
+	};
+
+public:
+    TextureProvider(Vulkan* inst, VkDescriptorPool descPool)
+        : Inst(inst), DescPool(descPool)
+    {
+        {
+            const VkSamplerCreateInfo ciSampler =
+            {
+                .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .magFilter = VK_FILTER_NEAREST,
+                .minFilter = VK_FILTER_NEAREST,
+                .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+                .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+                .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+                .mipLodBias = 0.0f,
+                .anisotropyEnable = VK_FALSE,
+                .maxAnisotropy = 1,
+                .compareEnable = 0,
+                .compareOp = VK_COMPARE_OP_NEVER,
+                .minLod = 0.0f,
+                .maxLod = 0.0f,
+                .borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
+                .unnormalizedCoordinates = VK_FALSE
+            };
+            vkAssert(!vkCreateSampler(inst->Graphics.Device, &ciSampler, nullptr, &Sampler));
+        }
+
+        {
+            std::vector<VkDescriptorSetLayoutBinding> shaderLayoutBindings =
+            {
+                {
+                    .binding = 0,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    .descriptorCount = 1,
+                    .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+                    .pImmutableSamplers = nullptr
+                }, {
+                    .binding = 1,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    .descriptorCount = 1,
+                    .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+                    .pImmutableSamplers = nullptr
+                }
+            };
+
+            const VkDescriptorSetLayoutCreateInfo descriptorLayout =
+            {
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .bindingCount = (uint32_t) shaderLayoutBindings.size(),
+                .pBindings = shaderLayoutBindings.data()
+            };
+
+            vkAssert(!vkCreateDescriptorSetLayout(
+                Inst->Graphics.Device, &descriptorLayout, nullptr, &DescLayout));
+        }
+        
+        {
+            Atlases.resize(BackupAtlasCount);
+            
+            VkDescriptorSetAllocateInfo ciAllocInfo =
+            {
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                .pNext = nullptr,
+                .descriptorPool = descPool,
+                .descriptorSetCount = (uint32_t) Atlases.size(),
+                .pSetLayouts = &DescLayout
+            };
+
+            std::vector<VkDescriptorSet> descriptors;
+            descriptors.resize(Atlases.size());
+            vkAssert(!vkAllocateDescriptorSets(inst->Graphics.Device, &ciAllocInfo, descriptors.data()));
+
+            for(auto& atlas : Atlases) {
+                atlas.recreate(Inst, true);
+                atlas.Descriptor = descriptors.back();
+                descriptors.pop_back();
+            }
+        }
+
+        {
+            VkSemaphoreCreateInfo semaphoreCreateInfo = { 
+                .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, 
+                .pNext = nullptr, 
+                .flags = 0
+            };
+
+            vkAssert(!vkCreateSemaphore(Inst->Graphics.Device, &semaphoreCreateInfo, nullptr, &SendChanges));
+        }
+
+        {
+            const VkCommandBufferAllocateInfo infoCmd =
+            {
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                .pNext = nullptr,
+                .commandPool = Inst->Graphics.Pool,
+                .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                .commandBufferCount = 1
+            };
+
+            vkAssert(!vkAllocateCommandBuffers(Inst->Graphics.Device, &infoCmd, &CMD));
+        }
+
+        Cache.recreate(Inst, false);
+
+        AtlasTextureUnusedId.all();
+    }
+
+    ~TextureProvider() {
+        if(DescLayout)
+            vkDestroyDescriptorSetLayout(Inst->Graphics.Device, DescLayout, nullptr);
+    
+        if(Sampler) {
+            vkDestroySampler(Inst->Graphics.Device, Sampler, nullptr);
+            Sampler = nullptr;
+        }
+
+        for(auto& atlas : Atlases) {
+            atlas.destroy(Inst);
+        }
+
+        Atlases.clear();
+
+        Cache.destroy(Inst);
+        Cache.unMap(Inst);
+
+        if(SendChanges) {
+            vkDestroySemaphore(Inst->Graphics.Device, SendChanges, nullptr);
+            SendChanges = nullptr;
+        }
+
+        if(CMD) {
+            vkFreeCommandBuffers(Inst->Graphics.Device, Inst->Graphics.Pool, 1, &CMD);
+            CMD = nullptr;
+        }
+    }
+
+    uint16_t getTextureId(const TexturePipeline& pipe) {
+        return 0;
+    }
+
+    // Устанавливает новый размер единицы в массиве текстур атласа
+    enum class EnumAtlasSize {
+        _2048 = 2048, _4096 = 4096, _8192 = 8192, _16_384 = 16'384
+    };
+    void setAtlasSize(EnumAtlasSize size) {
+        ReferenceSize = size;
+    }
+
+    // Максимальный размер выделенный под атласы в памяти устройства
+    void setDeviceMemorySize(size_t size) {
+        std::unreachable();
+    }
+
+    // Применяет изменения, возвращая все затронутые модели
+    std::vector<AssetsTexture> onTexturesChanges(std::vector<std::tuple<AssetsTexture, Resource>> newOrChanged, std::vector<AssetsTexture> lost) {
+        std::vector<AssetsTexture> result;
+
+        for(const auto& [key, res] : newOrChanged) {
+            result.push_back(key);
+            ChangedOrAdded.push_back(key);
+
+            TextureEntry entry;
+            iResource sres((const uint8_t*) res.data(), res.size());
+            iBinaryStream stream = sres.makeStream();
+            png::image<png::rgba_pixel> img(stream.Stream);
+            entry.Width = img.get_width();
+            entry.Height = img.get_height();
+            entry.RGBA.resize(4*entry.Width*entry.Height);
+
+            for(int i = 0; i < entry.Height; i++) {
+                std::copy(
+                    ((const uint32_t*) &img.get_pixbuf().operator [](i)[0]),
+                    ((const uint32_t*) &img.get_pixbuf().operator [](i)[0])+entry.Width,
+                    ((uint32_t*) entry.RGBA.data())+entry.Width*(false ? entry.Height-i-1 : i)
+                );
+            }
+
+            Textures[key] = std::move(entry);
+        }
+
+        for(AssetsTexture key : lost) {
+            result.push_back(key);
+            Lost.push_back(key);
+        }
+
+        {
+            std::sort(result.begin(), result.end());
+            auto eraseIter = std::unique(result.begin(), result.end());
+            result.erase(eraseIter, result.end());
+        }
+
+        {
+            std::sort(ChangedOrAdded.begin(), ChangedOrAdded.end());
+            auto eraseIter = std::unique(ChangedOrAdded.begin(), ChangedOrAdded.end());
+            ChangedOrAdded.erase(eraseIter, ChangedOrAdded.end());
+        }
+
+        {
+            std::sort(Lost.begin(), Lost.end());
+            auto eraseIter = std::unique(Lost.begin(), Lost.end());
+            Lost.erase(eraseIter, Lost.end());
+        }
+
+        return result;
+    }
+
+    void update() {
+        // Подготовить обновления атласа
+        // Если предыдущий освободился, то записать изменения в него
+
+        // Держать на стороне хоста полную версию атласа и все изменения писать туда
+        // Когерентная память сама разберётся что отсылать на устройство
+        // Синхронизировать всё из внутреннего буфера в атлас
+        // При пересоздании хостового буфера, скопировать всё из старого.
+
+        // Оптимизации копирования при указании конкретных изменённых слоёв?
+
+
+    }
+
+    VkDescriptorSet getDescriptor() {
+        return Atlases[ActiveAtlas].Descriptor;
+    }
+
+    void pushFrame() {
+        for(auto& atlas : Atlases)
+            if(atlas.NotUsedFrames < 100)
+                atlas.NotUsedFrames++;
+
+        Atlases[ActiveAtlas].NotUsedFrames = 0;
+
+        // Если есть новые текстуры или они поменялись
+        // 
+    }
+    
+private:
+    Vulkan* Inst = nullptr;
+    VkDescriptorPool DescPool = VK_NULL_HANDLE;
+    VkDescriptorSetLayout DescLayout = VK_NULL_HANDLE;
+    // Для всех атласов
+    VkSampler Sampler = VK_NULL_HANDLE;
+    // Ожидание завершения работы с хостовым буфером
+    VkSemaphore SendChanges = VK_NULL_HANDLE;
+    // 
+    VkCommandBuffer CMD = VK_NULL_HANDLE;
+
+    // Размер, которому должны соответствовать все атласы
+    EnumAtlasSize ReferenceSize = EnumAtlasSize::_2048;
+
+    struct TextureEntry {
+        uint16_t Width, Height;
+        std::vector<glm::i8vec4> RGBA;
+
+        // Идентификатор текстуры в атласе
+        uint16_t InAtlasId = uint16_t(-1);
+    };
+
+    // Текстуры, загруженные с файлов
+    std::unordered_map<AssetsTexture, TextureEntry> Textures;
+
+    struct TextureFromPipeline {
+
+    };
+
+    std::unordered_map<TexturePipeline, TextureFromPipeline> Pipelines;
+    
+    struct AtlasTextureEntry {
+        uint16_t PosX, PosY, PosZ, Width, Height;
+
+    };
+
+    std::bitset<1 << 16> AtlasTextureUnusedId;
+    std::unordered_map<uint16_t, AtlasTextureEntry> AtlasTextureInfo;
+    
+    std::vector<AssetsTexture> ChangedOrAdded, Lost;
+
+    struct VkAtlasInfo {
+        VkImage Image = VK_NULL_HANDLE;
+        VkImageLayout ImageLayout = VK_IMAGE_LAYOUT_MAX_ENUM;
+
+        VkDeviceMemory Memory = VK_NULL_HANDLE;
+        VkImageView View = VK_NULL_HANDLE;
+
+        VkDescriptorSet Descriptor;
+        EnumAtlasSize Size = EnumAtlasSize::_2048;
+        uint16_t Depth = 1;
+
+        // Сколько кадров уже не используется атлас
+        int NotUsedFrames = 0;
+
+        void destroy(Vulkan* inst) {
+			if(View) {
+				vkDestroyImageView(inst->Graphics.Device, View, nullptr);
+                View = nullptr;
+            }
+
+            if(Image) {
+				vkDestroyImage(inst->Graphics.Device, Image, nullptr);
+                Image = nullptr;
+            }
+
+			if(Memory) {
+				vkFreeMemory(inst->Graphics.Device, Memory, nullptr);
+                Memory = nullptr;
+            }
+        }
+
+        void recreate(Vulkan* inst, bool deviceLocal) {
+            // Уничтожаем то, что не понадобится
+			if(View) {
+				vkDestroyImageView(inst->Graphics.Device, View, nullptr);
+                View = nullptr;
+            }
+
+            if(Image) {
+				vkDestroyImage(inst->Graphics.Device, Image, nullptr);
+                Image = nullptr;
+            }
+
+			if(Memory) {
+				vkFreeMemory(inst->Graphics.Device, Memory, nullptr);
+                Memory = nullptr;
+            }
+
+            // Создаём атлас
+            uint32_t size = uint32_t(Size);
+
+            VkImageCreateInfo infoImageCreate =
+            {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .imageType = VK_IMAGE_TYPE_2D,
+                .format = VK_FORMAT_B8G8R8A8_UNORM,
+                .extent =  { size, size, 1 },
+                .mipLevels = 1,
+                .arrayLayers = Depth,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .tiling = VK_IMAGE_TILING_MAX_ENUM,
+                .usage = 
+                    static_cast<VkImageUsageFlags>(deviceLocal 
+                    ? VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+                    : VK_IMAGE_USAGE_TRANSFER_SRC_BIT),
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                .queueFamilyIndexCount = 0,
+                .pQueueFamilyIndices = 0,
+                .initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED
+            };
+
+            VkFormatProperties props;
+            vkGetPhysicalDeviceFormatProperties(inst->Graphics.PhysicalDevice, infoImageCreate.format, &props);
+        
+            if (props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)
+                infoImageCreate.tiling = VK_IMAGE_TILING_OPTIMAL;
+            else if (props.linearTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)
+                infoImageCreate.tiling = VK_IMAGE_TILING_LINEAR;
+            else
+                vkAssert(!"No support for B8G8R8A8_UNORM as texture image format");
+
+            vkAssert(!vkCreateImage(inst->Graphics.Device, &infoImageCreate, nullptr, &Image));
+        
+            // Выделяем память
+            VkMemoryRequirements memoryReqs;
+            vkGetImageMemoryRequirements(inst->Graphics.Device, Image, &memoryReqs);
+
+            VkMemoryAllocateInfo memoryAlloc
+            {
+                .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                .pNext = nullptr,
+                .allocationSize = memoryReqs.size,
+                .memoryTypeIndex = inst->memoryTypeFromProperties(memoryReqs.memoryTypeBits, 
+                    deviceLocal
+                        ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+                        : VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+                )
+            };
+
+            vkAssert(!vkAllocateMemory(inst->Graphics.Device, &memoryAlloc, nullptr, &Memory));
+            vkAssert(!vkBindImageMemory(inst->Graphics.Device, Image, Memory, 0));
+
+            // Порядок пикселей и привязка к картинке
+            VkImageViewCreateInfo ciView =
+            {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .image = Image,
+                .viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY,
+                .format = infoImageCreate.format,
+                .components =
+                {
+                    VK_COMPONENT_SWIZZLE_B,
+                    VK_COMPONENT_SWIZZLE_G,
+                    VK_COMPONENT_SWIZZLE_R,
+                    VK_COMPONENT_SWIZZLE_A
+                },
+                .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+            };
+
+            vkAssert(!vkCreateImageView(inst->Graphics.Device, &ciView, nullptr, &View));
+        }
+    };
+
+    struct HostCache : public VkAtlasInfo {
+        std::vector<uint32_t*> Layers;
+        std::vector<VkSubresourceLayout> Layouts;
+        std::vector<rbp::MaxRectsBinPack> Packs;
+
+        void map(Vulkan* inst) {
+            Layers.resize(Depth);
+            Layouts.resize(Depth);
+
+            for(uint32_t layer = 0; layer < Depth; layer++) {
+                const VkImageSubresource memorySubres = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = 0, .arrayLayer = layer, };
+                vkGetImageSubresourceLayout(inst->Graphics.Device, Image, &memorySubres, &Layouts[layer]);
+
+                vkAssert(!vkMapMemory(inst->Graphics.Device, Memory, Layouts[layer].offset, Layouts[layer].size, 0, (void**) &Layers[layer]));
+            }
+        }
+
+        void unMap(Vulkan* inst) {
+	        vkUnmapMemory(inst->Graphics.Device, Memory);
+
+            Layers.clear();
+            Layouts.clear();
+        }
+    };
+
+    HostCache Cache;
+
+    static constexpr size_t BackupAtlasCount = 2;
+
+    // Атласы, используемые в кадре.
+    // Изменения пишутся в не используемый в данный момент атлас
+    // и изменённый атлас становится активным. Новые изменения
+    // можно писать по прошествии нескольких кадров.
+    std::vector<VkAtlasInfo> Atlases;
+    int ActiveAtlas = 0;
+};
+
 /*
     Хранит информацию о моделях при различных состояниях нод
 */
 class NodestateProvider {
 public:
-    struct Model {
-        // В вершинах текущей модели TexId ссылается на локальный текстурный ключ
-        // 0 -> default_texture -> luavox:grass.png
-        std::vector<std::string> TextureKeys;
-        // Привязка локальных ключей к глобальным
-        std::unordered_map<std::string, TexturePipeline> TextureMap;
-        // Вершины со всеми применёнными трансформациями, с CullFace
-        std::unordered_map<EnumFace, std::vector<NodeVertexStatic>> Vertecies;
-    };
-
-public:
-    NodestateProvider(ModelProvider& mp)
-        : MP(mp)
+    NodestateProvider(ModelProvider& mp, TextureProvider& tp)
+        : MP(mp), TP(tp)
     {}
 
     // Применяет изменения, возвращает изменённые описания состояний
@@ -428,26 +914,70 @@ public:
         return result;
     }
 
-    struct StateInfo {
-        std::string Name;
-        std::vector<std::string> Variable;
-        int Variations = 0;
-    };
-
     // Выдаёт модели в зависимости от состояний
     // statesInfo - Описание состояний ноды
     // states     - Текущие значения состояний ноды
-    std::vector<Model> getModelsForNode(AssetsNodestate id, const std::vector<StateInfo>& statesInfo, const std::unordered_map<std::string, int>& states) {
+    std::vector<std::vector<std::pair<float, std::unordered_map<EnumFace, std::vector<NodeVertexStatic>>>>> getModelsForNode(AssetsNodestate id, const std::vector<NodeStateInfo>& statesInfo, const std::unordered_map<std::string, int32_t>& states) {
         auto iterNodestate = Nodestates.find(id);
         if(iterNodestate == Nodestates.end())
             return {};
 
-        iterNodestate->second;
+        std::vector<uint16_t> routes = iterNodestate->second.getModelsForState(statesInfo, states);
+        std::vector<std::vector<std::pair<float, std::unordered_map<EnumFace, std::vector<NodeVertexStatic>>>>> result;
+
+        std::unordered_map<TexturePipeline, uint16_t> pipelineResolveCache;
+
+        for(uint16_t routeId : routes) {
+            std::vector<std::pair<float, std::unordered_map<EnumFace, std::vector<NodeVertexStatic>>>> routeModels;
+            const auto& route = iterNodestate->second.Routes[routeId];
+            for(const auto& [w, m] : route.second) {
+                if(const PreparedNodeState::Model* ptr = std::get_if<PreparedNodeState::Model>(&m)) {
+                    ModelProvider::Model model = MP.getModel(ptr->Id);
+                    Transformations trf(ptr->Transforms);
+                    std::unordered_map<EnumFace, std::vector<NodeVertexStatic>> out;
+
+                    for(auto& [l, r] : model.Vertecies) {
+                        trf.apply(r);
+
+                        // Позиция -224 ~ 288; 64 позиций в одной ноде, 7.5 метров в ряд
+                        for(const Vertex& v : r) {
+                            NodeVertexStatic vert;
+
+                            vert.FX = (v.Pos.x+0.5)*64+224;
+                            vert.FY = (v.Pos.y+0.5)*64+224;
+                            vert.FZ = (v.Pos.z+0.5)*64+224;
+
+                            vert.TU = std::clamp<int32_t>(v.UV.x * (1 << 16), 0, (1 << 16));
+                            vert.TV = std::clamp<int32_t>(v.UV.y * (1 << 16), 0, (1 << 16));
+
+                            const TexturePipeline& pipe = model.TextureMap[model.TextureKeys[v.TexId]];
+                            if(auto iterPipe = pipelineResolveCache.find(pipe); iterPipe != pipelineResolveCache.end()) {
+                                vert.Tex = iterPipe->second;
+                            } else {
+                                vert.Tex = TP.getTextureId(pipe);
+                                pipelineResolveCache[pipe] = vert.Tex;
+                            }
+
+                            out[l].push_back(vert);
+                        }
+                    }
+
+                    /// TODO: uvlock
+                    
+                    routeModels.emplace_back(w, std::move(out));
+                }
+            }
+
+            result.push_back(std::move(routeModels));
+        }
+
+        return result;
     }
 
 private:
     Logger LOG = "Client>NodestateProvider";
     ModelProvider& MP;
+    TextureProvider& TP;
     std::unordered_map<AssetsNodestate, PreparedNodeState> Nodestates;
 };
 
@@ -676,8 +1206,8 @@ class VulkanRenderSession : public IRenderSession {
         .binding = 1,
         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,            Данные к атласу
     */
-	VkDescriptorSetLayout MainAtlasDescLayout = VK_NULL_HANDLE;
-    VkDescriptorSet MainAtlasDescriptor = VK_NULL_HANDLE;
+	// VkDescriptorSetLayout MainAtlasDescLayout = VK_NULL_HANDLE;
+    // VkDescriptorSet MainAtlasDescriptor = VK_NULL_HANDLE;
     /*
         .binding = 2,
         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,    Воксельная карта освещения

@@ -2,11 +2,13 @@
 
 #include "TOSLib.hpp"
 #include "boost/json/array.hpp"
+#include <algorithm>
 #include <cstdint>
 #include <glm/ext.hpp>
 #include <memory>
 #include <sol/forward.hpp>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
@@ -602,6 +604,12 @@ struct Transformations {
     }
 };
 
+struct NodeStateInfo {
+    std::string Name;
+    std::vector<std::string> Variable;
+    int Variations = 0;
+};
+
 /*
     Хранит распаршенное определение состояний нод.
     Не привязано ни к какому окружению.
@@ -668,6 +676,172 @@ struct PreparedNodeState {
     // Если зависит от случайного распределения по миру
     bool hasVariability() const {
         return HasVariability;
+    }
+
+    // Возвращает идентификаторы routes прошедшии по состояниям
+    std::vector<uint16_t> getModelsForState(const std::vector<NodeStateInfo>& statesInfo, const std::unordered_map<std::string, int32_t>& states) {
+        std::unordered_map<std::string, int32_t> values;
+        std::vector<uint16_t> upUse;
+        
+        // Проверить какие переменные упоминаются для составления таблицы быстрых значений (без обозначения <имя состояния>:<вариант состояния>)
+        {
+            std::vector<std::string> variables;
+            std::move_only_function<void(uint16_t nodeId)> lambda;
+
+            lambda = [&](uint16_t nodeId) {
+                Node& node = Nodes.at(nodeId);
+
+                if(std::find(upUse.begin(), upUse.end(), nodeId) != upUse.end()) {
+                    MAKE_ERROR("Циклическая зависимость нод");
+                }
+
+                if(Node::Var* ptr = std::get_if<Node::Var>(&node.v)) {
+                    variables.push_back(ptr->name);
+                } else if(Node::Unary* ptr = std::get_if<Node::Unary>(&node.v)) {
+                    upUse.push_back(nodeId);
+                    lambda(ptr->rhs);
+                    upUse.pop_back();
+                } else if(Node::Binary* ptr = std::get_if<Node::Binary>(&node.v)) {
+                    upUse.push_back(nodeId);
+                    lambda(ptr->lhs);
+                    lambda(ptr->rhs);
+                    upUse.pop_back();
+                }
+            };
+
+            std::sort(variables.begin(), variables.end());
+            auto eraseIter = std::unique(variables.begin(), variables.end());
+            variables.erase(eraseIter, variables.end());
+
+            bool ok = false;
+
+            for(const std::string_view key : variables) {
+                if(size_t pos = key.find(':'); pos != std::string::npos) {
+                    std::string_view state, value;
+                    state = key.substr(0, pos);
+                    value = key.substr(pos+1);
+
+                    for(const NodeStateInfo& info : statesInfo) {
+                        if(info.Name != state)
+                            continue;
+
+                        for(size_t iter = 0; iter < info.Variable.size(); iter++) {
+                            if(info.Variable[iter] == value) {
+                                ok = true;
+                                values[(const std::string) key] = iter;
+                                break;
+                            } 
+                        }
+
+                        break;
+                    }
+                } else {
+                    for(const NodeStateInfo& info : statesInfo) {
+                        if(info.Name == key) {
+                            ok = true;
+                            values[(const std::string) key] = states.at((std::string) key);
+                            break;
+                        }
+
+                        for(size_t iter = 0; iter < info.Variable.size(); iter++) {
+                            if(info.Variable[iter] == key) {
+                                ok = true;
+                                values[(const std::string) key] = iter;
+                                break;
+                            } 
+                        }
+                        
+                        if(ok)
+                            break;
+                    }
+                }
+
+                if(!ok)
+                    values[(const std::string) key] = 0;
+            }
+        }
+
+        
+        std::move_only_function<int32_t(uint16_t nodeId)> calcNode;
+
+        calcNode = [&](uint16_t nodeId) -> int32_t {
+            if(std::find(upUse.begin(), upUse.end(), nodeId) != upUse.end()) {
+                MAKE_ERROR("Циклическая зависимость нод");
+            }
+
+            int32_t result;
+            Node& node = Nodes.at(nodeId);
+
+            if(Node::Num* ptr = std::get_if<Node::Num>(&node.v)) {
+                result = ptr->v;
+            } else if(Node::Var* ptr = std::get_if<Node::Var>(&node.v)) {
+                result = values.at(ptr->name);
+            } else if(Node::Unary* ptr = std::get_if<Node::Unary>(&node.v)) {
+                int32_t rhs;
+
+                upUse.push_back(nodeId);
+                rhs = calcNode(ptr->rhs);
+                upUse.pop_back();
+
+                if(ptr->op == Op::Not) {
+                    result = !rhs;
+                } else if(ptr->op == Op::Pos) {
+                    result = +rhs;
+                } else if(ptr->op == Op::Neg) {
+                    result = -rhs;
+                } else 
+                    MAKE_ERROR("Ошибка в данных");
+            } else if(Node::Binary* ptr = std::get_if<Node::Binary>(&node.v)) {
+                int32_t lhs, rhs;
+
+                upUse.push_back(nodeId);
+                lhs = calcNode(ptr->lhs);
+                rhs = calcNode(ptr->rhs);
+                upUse.pop_back();
+
+                if(ptr->op == Op::Add) {
+                    result = lhs+rhs;
+                } else if(ptr->op == Op::Sub) {
+                    result = lhs-rhs;
+                } else if(ptr->op == Op::Mul) {
+                    result = lhs*rhs;
+                } else if(ptr->op == Op::Div) {
+                    result = lhs/rhs;
+                } else if(ptr->op == Op::Mod) {
+                    result = lhs%rhs;
+                } else if(ptr->op == Op::And) {
+                    result = lhs && rhs;
+                } else if(ptr->op == Op::Or) {
+                    result = lhs || rhs;
+                } else if(ptr->op == Op::LT) {
+                    result = lhs < rhs;
+                } else if(ptr->op == Op::LE) {
+                    result = lhs <= rhs;
+                } else if(ptr->op == Op::GT) {
+                    result = lhs > rhs;
+                } else if(ptr->op == Op::GE) {
+                    result = lhs >= rhs;
+                } else if(ptr->op == Op::EQ) {
+                    result = lhs == rhs;
+                } else if(ptr->op == Op::NE) {
+                    result = lhs != rhs;
+                } else {
+                    MAKE_ERROR("Ошибка в данных");
+                }
+            }
+
+            return result;
+        };
+
+        std::vector<uint16_t> out;
+
+        for(size_t iter = 0; iter < Routes.size(); iter++) {
+            if(calcNode(Routes[iter].first)) {
+                out.push_back(iter);
+            }
+        }
+
+        return out;
     }
 
 private:
@@ -851,4 +1025,18 @@ struct hash<LV::Hash_t> {
     }
 };
 
+template <>
+struct hash<LV::TexturePipeline> {
+    std::size_t operator()(const LV::TexturePipeline& tp) const noexcept {
+        size_t seed = 0;
+
+        for (const auto& tex : tp.BinTextures)
+            seed ^= std::hash<LV::AssetsTexture>{}(tex) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+
+        std::string_view sv(reinterpret_cast<const char*>(tp.Pipeline.data()), tp.Pipeline.size());
+        seed ^= std::hash<std::string_view>{}(sv) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+
+        return seed;
+    }
+};
 }

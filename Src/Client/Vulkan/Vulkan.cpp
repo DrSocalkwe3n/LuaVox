@@ -286,7 +286,7 @@ void Vulkan::run()
 		err = vkAcquireNextImageKHR(Graphics.Device, Graphics.Swapchain, 1000000000ULL/20, SemaphoreImageAcquired[semNext], (VkFence) 0, &Graphics.DrawBufferCurrent);
 		GlobalTime gTime = glfwGetTime();
 
-		if (err == VK_ERROR_OUT_OF_DATE_KHR)
+		if(err == VK_ERROR_OUT_OF_DATE_KHR)
 		{
 			if(Game.RSession)
 				Game.RSession->pushStage(EnumRenderStage::WorldUpdate);

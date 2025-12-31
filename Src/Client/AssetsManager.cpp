@@ -310,14 +310,14 @@ void AssetsManager::readWriteThread(AsyncUseControl::Lock lock) {
                     sqlite3_reset(STMT_DISK_CONTAINS);
 
                     if(finded) {
-                        sqlite3_bind_blob(STMT_DISK_CONTAINS, 1, (const void*) rk.Hash.data(), 32, SQLITE_STATIC);
-                        sqlite3_bind_int(STMT_DISK_CONTAINS, 2, time(nullptr));
-                        if(sqlite3_step(STMT_DISK_CONTAINS) != SQLITE_DONE) {
-                            sqlite3_reset(STMT_DISK_CONTAINS);
-                            MAKE_ERROR("Не удалось выполнить подготовленный запрос STMT_DISK_CONTAINS: " << sqlite3_errmsg(DB));
+                        sqlite3_bind_int(STMT_DISK_UPDATE_TIME, 1, time(nullptr));
+                        sqlite3_bind_blob(STMT_DISK_UPDATE_TIME, 2, (const void*) rk.Hash.data(), 32, SQLITE_STATIC);
+                        if(sqlite3_step(STMT_DISK_UPDATE_TIME) != SQLITE_DONE) {
+                            sqlite3_reset(STMT_DISK_UPDATE_TIME);
+                            MAKE_ERROR("Не удалось выполнить подготовленный запрос STMT_DISK_UPDATE_TIME: " << sqlite3_errmsg(DB));
                         }
-                        
-                        sqlite3_reset(STMT_DISK_CONTAINS);
+
+                        sqlite3_reset(STMT_DISK_UPDATE_TIME);
                     }
                 }
 
@@ -372,6 +372,7 @@ void AssetsManager::readWriteThread(AsyncUseControl::Lock lock) {
                     }
                     
                     fs::path end = PathFiles / hashKey.substr(0, 2) / hashKey.substr(2);
+                    fs::create_directories(end.parent_path());
                     std::ofstream fd(end, std::ios::binary);
                     fd.write((const char*) res.data(), res.size());
 

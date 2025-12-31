@@ -1100,6 +1100,10 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
                 );
 
                 AsyncContext.AssetsLoading.erase(AsyncContext.AssetsLoading.find(hash));
+
+                auto iter = std::lower_bound(AsyncContext.AlreadyLoading.begin(), AsyncContext.AlreadyLoading.end(), hash);
+                if(iter != AsyncContext.AlreadyLoading.end() && *iter == hash)
+                    AsyncContext.AlreadyLoading.erase(iter);
             }
         } catch(const std::exception& exc) {
             std::string err = exc.what();

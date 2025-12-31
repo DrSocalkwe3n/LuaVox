@@ -523,6 +523,10 @@ struct TexturePipeline {
     std::vector<AssetsTexture> BinTextures;
     // Чистый код текстурных преобразований, локальные идентификаторы связаны с BinTextures
     std::u8string Pipeline;
+
+    bool operator==(const TexturePipeline& other) const {
+        return BinTextures == other.BinTextures && Pipeline == other.Pipeline;
+    }
 };
 
 // Компилятор текстурных потоков

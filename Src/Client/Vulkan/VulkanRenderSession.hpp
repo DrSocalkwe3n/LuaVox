@@ -1206,8 +1206,8 @@ class VulkanRenderSession : public IRenderSession {
         .binding = 1,
         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,            Данные к атласу
     */
-	// VkDescriptorSetLayout MainAtlasDescLayout = VK_NULL_HANDLE;
-    // VkDescriptorSet MainAtlasDescriptor = VK_NULL_HANDLE;
+	VkDescriptorSetLayout MainAtlasDescLayout = VK_NULL_HANDLE;
+    VkDescriptorSet MainAtlasDescriptor = VK_NULL_HANDLE;
     /*
         .binding = 2,
         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,    Воксельная карта освещения

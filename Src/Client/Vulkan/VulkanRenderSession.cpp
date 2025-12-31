@@ -849,49 +849,49 @@ VulkanRenderSession::VulkanRenderSession(Vulkan *vkInst, IServerSession *serverS
                                         &DescriptorPool));
     }
 
-    // {
-	//     std::vector<VkDescriptorSetLayoutBinding> shaderLayoutBindings =
-    //     {
-    //         {
-    //             .binding = 0,
-    //             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-    //             .descriptorCount = 1,
-    //             .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-    //             .pImmutableSamplers = nullptr
-    //         }, {
-    //             .binding = 1,
-    //             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-    //             .descriptorCount = 1,
-    //             .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-    //             .pImmutableSamplers = nullptr
-    //         }
-    //     };
+    {
+	    std::vector<VkDescriptorSetLayoutBinding> shaderLayoutBindings =
+        {
+            {
+                .binding = 0,
+                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+                .pImmutableSamplers = nullptr
+            }, {
+                .binding = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+                .pImmutableSamplers = nullptr
+            }
+        };
 
-    //     const VkDescriptorSetLayoutCreateInfo descriptorLayout =
-	// 	{
-	// 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-	// 		.pNext = nullptr,
-	// 		.flags = 0,
-	// 		.bindingCount = (uint32_t) shaderLayoutBindings.size(),
-	// 		.pBindings = shaderLayoutBindings.data()
-	// 	};
+        const VkDescriptorSetLayoutCreateInfo descriptorLayout =
+		{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+			.pNext = nullptr,
+			.flags = 0,
+			.bindingCount = (uint32_t) shaderLayoutBindings.size(),
+			.pBindings = shaderLayoutBindings.data()
+		};
 
-    //     vkAssert(!vkCreateDescriptorSetLayout(
-    //         VkInst->Graphics.Device, &descriptorLayout, nullptr, &MainAtlasDescLayout));
-    // }
+        vkAssert(!vkCreateDescriptorSetLayout(
+            VkInst->Graphics.Device, &descriptorLayout, nullptr, &MainAtlasDescLayout));
+    }
 
-    // {
-    //     VkDescriptorSetAllocateInfo ciAllocInfo =
-    //     {
-    //             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-    //             .pNext = nullptr,
-    //             .descriptorPool = DescriptorPool,
-    //             .descriptorSetCount = 1,
-    //             .pSetLayouts = &MainAtlasDescLayout
-    //     };
+    {
+        VkDescriptorSetAllocateInfo ciAllocInfo =
+        {
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                .pNext = nullptr,
+                .descriptorPool = DescriptorPool,
+                .descriptorSetCount = 1,
+                .pSetLayouts = &MainAtlasDescLayout
+        };
 
-    //     vkAssert(!vkAllocateDescriptorSets(VkInst->Graphics.Device, &ciAllocInfo, &MainAtlasDescriptor));
-    // }
+        vkAssert(!vkAllocateDescriptorSets(VkInst->Graphics.Device, &ciAllocInfo, &MainAtlasDescriptor));
+    }
 
     {
 	    std::vector<VkDescriptorSetLayoutBinding> shaderLayoutBindings =
@@ -1434,8 +1434,8 @@ VulkanRenderSession::~VulkanRenderSession() {
     if(MainAtlas_LightMap_PipelineLayout)
         vkDestroyPipelineLayout(VkInst->Graphics.Device, MainAtlas_LightMap_PipelineLayout, nullptr);
         
-    // if(MainAtlasDescLayout)
-    //     vkDestroyDescriptorSetLayout(VkInst->Graphics.Device, MainAtlasDescLayout, nullptr);
+    if(MainAtlasDescLayout)
+        vkDestroyDescriptorSetLayout(VkInst->Graphics.Device, MainAtlasDescLayout, nullptr);
     if(VoxelLightMapDescLayout)
         vkDestroyDescriptorSetLayout(VkInst->Graphics.Device, VoxelLightMapDescLayout, nullptr);
 

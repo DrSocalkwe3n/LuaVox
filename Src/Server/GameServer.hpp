@@ -5,6 +5,7 @@
 
 #include <Common/Net.hpp>
 #include <Common/Lockable.hpp>
+#include <atomic>
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/io_context.hpp>
 #include <condition_variable>
@@ -58,6 +59,7 @@ class GameServer : public AsyncObject {
 
     bool IsAlive = true, IsGoingShutdown = false;
     std::string ShutdownReason;
+    std::atomic<bool> ModsReloadRequested = false;
     static constexpr float
         PerTickDuration = 1/30.f,   // Минимальная и стартовая длина такта
         PerTickAdjustment = 1/60.f; // Подгонка длительности такта в случае провисаний
@@ -283,6 +285,7 @@ public:
     void waitShutdown() {
         UseLock.wait_no_use();
     }
+    void requestModsReload();
 
     // Подключение tcp сокета
     coro<> pushSocketConnect(tcp::socket socket);
@@ -315,6 +318,7 @@ private:
     */
 
     void stepModInitializations();
+    void reloadMods();
 
     /*
         Пересчёт зон видимости игроков, если необходимо

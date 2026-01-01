@@ -36,6 +36,7 @@ public:
     static coro<std::unique_ptr<Net::AsyncSocket>> asyncInitGameProtocol(asio::io_context &ioc, tcp::socket &&socket, std::function<void(const std::string&)> onProgress = nullptr);
 
     void shutdown(EnumDisconnect type);
+    void requestModsReload();
 
     bool isConnected() {
         return Socket->isAlive() && IsConnected; 
@@ -182,6 +183,7 @@ private:
     ServerSession(asio::io_context &ioc, std::unique_ptr<Net::AsyncSocket> &&socket);
 
     virtual coro<> asyncDestructor() override;
+    void resetResourceSyncState();
 };
 
 }

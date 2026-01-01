@@ -77,7 +77,8 @@ enum struct L2System : uint8_t {
     Disconnect,
     Test_CAM_PYR_POS,
     BlockChange,
-    ResourceRequest
+    ResourceRequest,
+    ReloadMods
 };
 
 }

@@ -17,6 +17,7 @@
 namespace LV::Server {
 
 class World;
+class GameServer;
 
 template<typename ServerKey, typename ClientKey, std::enable_if_t<sizeof(ServerKey) >= sizeof(ClientKey), int> = 0>
 class CSChunkedMapper {
@@ -316,6 +317,7 @@ class RemoteClient {
         // Тип, домен, ключ, идентификатор, ресурс, количество отправленных байт
         std::vector<std::tuple<EnumAssets, std::string, std::string, ResourceId, Resource, size_t>> ToSend;
         // Пакет с ресурсами
+        std::vector<Net::Packet> AssetsPackets;
         Net::Packet AssetsPacket;
     } AssetsInWork;
 
@@ -336,8 +338,8 @@ public:
     std::queue<Pos::GlobalNode> Build, Break;
 
 public:
-    RemoteClient(asio::io_context &ioc, tcp::socket socket, const std::string username)
-        : LOG("RemoteClient " + username), Socket(ioc, std::move(socket)), Username(username)
+    RemoteClient(asio::io_context &ioc, tcp::socket socket, const std::string username, GameServer* server)
+        : LOG("RemoteClient " + username), Socket(ioc, std::move(socket)), Username(username), Server(server)
     {}
 
     ~RemoteClient();
@@ -434,6 +436,7 @@ public:
     void onUpdate();
 
 private:
+    GameServer* Server = nullptr;
     void protocolError();
     coro<> readPacket(Net::AsyncSocket &sock);
     coro<> rP_System(Net::AsyncSocket &sock);

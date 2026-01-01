@@ -997,6 +997,9 @@ PreparedNodeState::PreparedNodeState(const std::u8string_view data) {
 std::u8string PreparedNodeState::dump() const {
     Net::Packet result;
 
+    const char magic[] = "bn";
+    result.write(reinterpret_cast<const std::byte*>(magic), 2);
+
     // ResourceToLocalId
     assert(LocalToModelKD.size() < (1 << 16));
     assert(LocalToModelKD.size() == LocalToModel.size());
@@ -1357,6 +1360,7 @@ uint16_t PreparedNodeState::parseCondition(const std::string_view expression) {
                         bin.rhs = *nodeId;
                     }
 
+                    node.v = bin;
                     Nodes.emplace_back(std::move(node));
                     assert(Nodes.size() < std::pow(2, 16)-64);
                     leftToken = uint16_t(Nodes.size()-1);
@@ -1753,6 +1757,29 @@ PreparedModel::PreparedModel(const std::string_view modid, const js::object& pro
             }
 
             Cuboids.emplace_back(std::move(result));
+        }
+    }
+
+    if(boost::system::result<const js::value&> submodels_val = profile.try_at("sub_models")) {
+        const js::array& submodels = submodels_val->as_array();
+        SubModels.reserve(submodels.size());
+
+        for(const js::value& value : submodels) {
+            if(const auto model_key = value.try_as_string()) {
+                auto [domain, key] = parseDomainKey((std::string) *model_key, modid);
+                SubModels.push_back({std::move(domain), std::move(key), std::nullopt});
+            } else {
+                const js::object& obj = value.as_object();
+                const std::string model_key_str = (std::string) obj.at("model").as_string();
+                auto [domain, key] = parseDomainKey(model_key_str, modid);
+
+                std::optional<uint16_t> scene;
+                if(const auto scene_val = obj.try_at("scene")) {
+                    scene = static_cast<uint16_t>(scene_val->to_number<int>());
+                }
+
+                SubModels.push_back({std::move(domain), std::move(key), scene});
+            }
         }
     }
 

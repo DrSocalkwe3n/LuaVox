@@ -48,7 +48,7 @@ class ContentManager {
 
 
     // Следующие идентификаторы регистрации контента
-    ResourceId NextId[(int) EnumDefContent::MAX_ENUM] = {0};
+    ResourceId NextId[(int) EnumDefContent::MAX_ENUM] = {};
     // Домен -> {ключ -> идентификатор}
     std::unordered_map<std::string, std::unordered_map<std::string, ResourceId>> ContentKeyToId[(int) EnumDefContent::MAX_ENUM];
 
@@ -143,6 +143,10 @@ public:
     // Регистрация модификатора предмета модом
     void registerModifier(EnumDefContent type, const std::string& mod, const std::string& domain, const std::string& key, const sol::table& profile);
     void unRegisterModifier(EnumDefContent type, const std::string& mod, const std::string& domain, const std::string& key);
+    // Пометить все профили типа как изменённые (например, после перезагрузки ассетов)
+    void markAllProfilesDirty(EnumDefContent type);
+    // Список всех зарегистрированных профилей выбранного типа
+    std::vector<ResourceId> collectProfileIds(EnumDefContent type) const;
     // Компилирует изменённые профили
     struct Out_buildEndProfiles {
         std::vector<ResourceId> ChangedProfiles[(int) EnumDefContent::MAX_ENUM]; 

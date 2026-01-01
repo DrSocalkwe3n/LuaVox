@@ -7,7 +7,7 @@ namespace LV::Server {
 ContentManager::ContentManager(AssetsManager &am)
     : AM(am)
 {
-
+    std::fill(std::begin(NextId), std::end(NextId), 1);
 }
 
 ContentManager::~ContentManager() = default;
@@ -109,6 +109,31 @@ void ContentManager::unRegisterModifier(EnumDefContent type, const std::string& 
 {
     ResourceId id = getId(type, domain, key);
     ProfileChanges[(int) type].push_back(id);
+}
+
+void ContentManager::markAllProfilesDirty(EnumDefContent type) {
+    const auto &table = ContentKeyToId[(int) type];
+    for(const auto& domainPair : table) {
+        for(const auto& keyPair : domainPair.second) {
+            ProfileChanges[(int) type].push_back(keyPair.second);
+        }
+    }
+}
+
+std::vector<ResourceId> ContentManager::collectProfileIds(EnumDefContent type) const {
+    std::vector<ResourceId> ids;
+    const auto &table = ContentKeyToId[(int) type];
+
+    for(const auto& domainPair : table) {
+        for(const auto& keyPair : domainPair.second) {
+            ids.push_back(keyPair.second);
+        }
+    }
+
+    std::sort(ids.begin(), ids.end());
+    auto last = std::unique(ids.begin(), ids.end());
+    ids.erase(last, ids.end());
+    return ids;
 }
 
 ContentManager::Out_buildEndProfiles ContentManager::buildEndProfiles() {

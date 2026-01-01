@@ -8,6 +8,7 @@
 #include "glm/ext/quaternion_geometric.hpp"
 #include <GLFW/glfw3.h>
 #include <algorithm>
+#include <atomic>
 #include <boost/asio/deadline_timer.hpp>
 #include <boost/asio/this_coro.hpp>
 #include <boost/date_time/posix_time/posix_time_duration.hpp>
@@ -15,11 +16,92 @@
 #include <memory>
 #include <Common/Packets.hpp>
 #include <glm/ext.hpp>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 
 
 namespace LV::Client {
+
+namespace {
+
+const char* assetTypeName(EnumAssets type) {
+    switch(type) {
+    case EnumAssets::Nodestate: return "nodestate";
+    case EnumAssets::Model: return "model";
+    case EnumAssets::Texture: return "texture";
+    case EnumAssets::Particle: return "particle";
+    case EnumAssets::Animation: return "animation";
+    case EnumAssets::Sound: return "sound";
+    case EnumAssets::Font: return "font";
+    default: return "unknown";
+    }
+}
+
+std::optional<DefNodeId> debugExpectedGeneratedNodeId(int rx, int ry, int rz) {
+    if(ry == 1 && rz == 0)
+        return DefNodeId(0);
+    if(rx == 0 && ry == 1)
+        return DefNodeId(0);
+    if(rx == 0 && rz == 0)
+        return DefNodeId(1);
+    if(ry == 0 && rz == 0)
+        return DefNodeId(2);
+    if(rx == 0 && ry == 0)
+        return DefNodeId(3);
+    return std::nullopt;
+}
+
+void debugCheckGeneratedChunkNodes(WorldId_t worldId,
+    Pos::GlobalChunk chunkPos,
+    const std::array<Node, 16 * 16 * 16>& chunk)
+{
+    if(chunkPos[0] != 0 && chunkPos[1] != 0 && chunkPos[2] != 0)
+        return;
+
+    static std::atomic<uint32_t> warnCount = 0;
+    if(warnCount.load() >= 16)
+        return;
+
+    Pos::bvec4u localChunk = chunkPos & 0x3;
+    const int baseX = int(localChunk[0]) * 16;
+    const int baseY = int(localChunk[1]) * 16;
+    const int baseZ = int(localChunk[2]) * 16;
+    const int globalBaseX = int(chunkPos[0]) * 16;
+    const int globalBaseY = int(chunkPos[1]) * 16;
+    const int globalBaseZ = int(chunkPos[2]) * 16;
+
+    for(int z = 0; z < 16; z++)
+        for(int y = 0; y < 16; y++)
+            for(int x = 0; x < 16; x++) {
+                int rx = baseX + x;
+                int ry = baseY + y;
+                int rz = baseZ + z;
+                int gx = globalBaseX + x;
+                int gy = globalBaseY + y;
+                int gz = globalBaseZ + z;
+                std::optional<DefNodeId> expected = debugExpectedGeneratedNodeId(rx, ry, rz);
+                if(!expected)
+                    continue;
+
+                const Node& node = chunk[x + y * 16 + z * 16 * 16];
+                if(node.NodeId != *expected) {
+                    uint32_t index = warnCount.fetch_add(1);
+                    if(index < 16) {
+                        TOS::Logger("Client>WorldDebug").warn()
+                            << "Generated node mismatch world " << worldId
+                            << " chunk " << int(chunkPos[0]) << ',' << int(chunkPos[1]) << ',' << int(chunkPos[2])
+                            << " at local " << rx << ',' << ry << ',' << rz
+                            << " global " << gx << ',' << gy << ',' << gz
+                            << " expected " << *expected
+                            << " got " << node.NodeId;
+                    }
+                    return;
+                }
+            }
+}
+
+}
 
 ServerSession::ServerSession(asio::io_context &ioc, std::unique_ptr<Net::AsyncSocket>&& socket)
     : IAsyncDestructible(ioc), Socket(std::move(socket)) //, NetInputPackets(1024)
@@ -170,6 +252,18 @@ void ServerSession::shutdown(EnumDisconnect type) {
     LOG.info() << "Отключение от сервера: " << reason;
 }
 
+void ServerSession::requestModsReload() {
+    if(!Socket || !isConnected())
+        return;
+
+    Net::Packet packet;
+    packet << (uint8_t) ToServer::L1::System
+        << (uint8_t) ToServer::L2System::ReloadMods;
+
+    Socket->pushPacket(std::move(packet));
+    LOG.info() << "Запрос на перезагрузку модов отправлен";
+}
+
 void ServerSession::onResize(uint32_t width, uint32_t height) {
 
 }
@@ -284,10 +378,50 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
 
     // Получить ресурсы с AssetsManager
     {
+        static std::atomic<uint32_t> debugAssetReadLogCount = 0;
         std::vector<std::pair<AssetsManager::ResourceKey, std::optional<Resource>>> resources = AM->pullReads();
         std::vector<Hash_t> needRequest;
 
         for(auto& [key, res] : resources) {
+            {
+                auto& waitingByDomain = AsyncContext.ResourceWait[(int) key.Type];
+                auto iterDomain = waitingByDomain.find(key.Domain);
+                if(iterDomain != waitingByDomain.end()) {
+                    auto& entries = iterDomain->second;
+                    entries.erase(std::remove_if(entries.begin(), entries.end(),
+                        [&](const std::pair<std::string, Hash_t>& entry) {
+                            return entry.first == key.Key && entry.second == key.Hash;
+                        }),
+                        entries.end());
+                    if(entries.empty())
+                        waitingByDomain.erase(iterDomain);
+                }
+            }
+
+            if(key.Domain == "test"
+                && (key.Type == EnumAssets::Nodestate
+                    || key.Type == EnumAssets::Model
+                    || key.Type == EnumAssets::Texture))
+            {
+                uint32_t idx = debugAssetReadLogCount.fetch_add(1);
+                if(idx < 128) {
+                    if(res) {
+                        LOG.debug() << "Cache hit type=" << assetTypeName(key.Type)
+                            << " id=" << key.Id
+                            << " key=" << key.Domain << ':' << key.Key
+                            << " size=" << res->size();
+                    } else {
+                        LOG.debug() << "Cache miss type=" << assetTypeName(key.Type)
+                            << " id=" << key.Id
+                            << " key=" << key.Domain << ':' << key.Key
+                            << " hash=" << int(key.Hash[0]) << '.'
+                            << int(key.Hash[1]) << '.'
+                            << int(key.Hash[2]) << '.'
+                            << int(key.Hash[3]);
+                    }
+                }
+            }
+
             if(!res) {
                 // Проверить не был ли уже отправлен запрос на получение этого хеша
                 auto iter = std::lower_bound(AsyncContext.AlreadyLoading.begin(), AsyncContext.AlreadyLoading.end(), key.Hash);
@@ -310,6 +444,11 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
 
         if(!needRequest.empty()) {
             assert(needRequest.size() < (1 << 16));
+
+            uint32_t idx = debugAssetReadLogCount.fetch_add(1);
+            if(idx < 128) {
+                LOG.debug() << "Send ResourceRequest count=" << needRequest.size();
+            }
 
             Net::Packet p;
             p << (uint8_t) ToServer::L1::System << (uint8_t) ToServer::L2System::ResourceRequest;
@@ -416,8 +555,33 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
         }
 
         // Отправляем запрос на получение ресурсов
-        if(!needToLoad.empty())
+        if(!needToLoad.empty()) {
+            static std::atomic<uint32_t> debugReadRequestLogCount = 0;
+            AssetsManager::ResourceKey firstDebug;
+            bool hasDebug = false;
+            for(const auto& entry : needToLoad) {
+                if(entry.Domain == "test"
+                    && (entry.Type == EnumAssets::Nodestate
+                        || entry.Type == EnumAssets::Model
+                        || entry.Type == EnumAssets::Texture))
+                {
+                    firstDebug = entry;
+                    hasDebug = true;
+                    break;
+                }
+            }
+            if(hasDebug && debugReadRequestLogCount.fetch_add(1) < 64) {
+                LOG.debug() << "Queue asset read count=" << needToLoad.size()
+                    << " type=" << assetTypeName(firstDebug.Type)
+                    << " id=" << firstDebug.Id
+                    << " key=" << firstDebug.Domain << ':' << firstDebug.Key
+                    << " hash=" << int(firstDebug.Hash[0]) << '.'
+                    << int(firstDebug.Hash[1]) << '.'
+                    << int(firstDebug.Hash[2]) << '.'
+                    << int(firstDebug.Hash[3]);
+            }
             AM->pushReads(std::move(needToLoad));
+        }
 
         AsyncContext.Binds.push_back(std::move(abc));
     }
@@ -675,7 +839,9 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                 auto& c = chunks_Changed[wId];
 
                 for(auto& [pos, val] : list) {
-                    unCompressNodes(val, caocvr[pos].data());
+                    auto& chunkNodes = caocvr[pos];
+                    unCompressNodes(val, chunkNodes.data());
+                    debugCheckGeneratedChunkNodes(wId, pos, chunkNodes);
                     c.push_back(pos);
                 }
             }
@@ -940,6 +1106,19 @@ void ServerSession::setRenderSession(IRenderSession* session) {
     RS = session;
 }
 
+void ServerSession::resetResourceSyncState() {
+    AsyncContext.AssetsLoading.clear();
+    AsyncContext.AlreadyLoading.clear();
+    for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++)
+        AsyncContext.ResourceWait[type].clear();
+    AsyncContext.Binds.clear();
+    AsyncContext.LoadedResources.clear();
+    AsyncContext.ThisTickEntry = {};
+    AsyncContext.LoadedAssets.lock()->clear();
+    AsyncContext.AssetsBinds.lock()->clear();
+    AsyncContext.TickSequence.lock()->clear();
+}
+
 coro<> ServerSession::run(AsyncUseControl::Lock) {
     try {
         while(!IsGoingShutdown && IsConnected) {
@@ -950,6 +1129,7 @@ coro<> ServerSession::run(AsyncUseControl::Lock) {
     }
 
     IsConnected = false;
+    resetResourceSyncState();
 
     co_return;
 }
@@ -1009,6 +1189,7 @@ coro<> ServerSession::rP_System(Net::AsyncSocket &sock) {
 }
 
 coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
+    static std::atomic<uint32_t> debugResourceLogCount = 0;
     uint8_t second = co_await sock.read<uint8_t>();
 
     switch((ToClient::L2Resource) second) {
@@ -1035,6 +1216,23 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
                 (EnumAssets) type, (ResourceId) id, std::move(domain),
                 std::move(key), hash
             );
+
+            if(binds.back().Domain == "test"
+                && (binds.back().Type == EnumAssets::Nodestate
+                    || binds.back().Type == EnumAssets::Model
+                    || binds.back().Type == EnumAssets::Texture))
+            {
+                uint32_t idx = debugResourceLogCount.fetch_add(1);
+                if(idx < 128) {
+                    LOG.debug() << "Bind asset type=" << assetTypeName(binds.back().Type)
+                        << " id=" << binds.back().Id
+                        << " key=" << binds.back().Domain << ':' << binds.back().Key
+                        << " hash=" << int(binds.back().Hash[0]) << '.'
+                        << int(binds.back().Hash[1]) << '.'
+                        << int(binds.back().Hash[2]) << '.'
+                        << int(binds.back().Hash[3]);
+                }
+            }
         }
 
         AsyncContext.AssetsBinds.lock()->push_back(AssetsBindsChange(binds, {}));
@@ -1072,6 +1270,20 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
         std::string domain = co_await sock.read<std::string>();
         std::string key = co_await sock.read<std::string>();
 
+        if(domain == "test"
+            && (type == EnumAssets::Nodestate
+                || type == EnumAssets::Model
+                || type == EnumAssets::Texture))
+        {
+            uint32_t idx = debugResourceLogCount.fetch_add(1);
+            if(idx < 128) {
+                LOG.debug() << "InitResSend type=" << assetTypeName(type)
+                    << " id=" << id
+                    << " key=" << domain << ':' << key
+                    << " size=" << size;
+            }
+        }
+
         AsyncContext.AssetsLoading[hash] = AssetLoading{
             type, id, std::move(domain), std::move(key), 
             std::u8string(size, '\0'), 0
@@ -1095,6 +1307,20 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
 
             if(al.Offset == al.Data.size()) {
                 // Ресурс полностью загружен
+                if(al.Domain == "test"
+                    && (al.Type == EnumAssets::Nodestate
+                        || al.Type == EnumAssets::Model
+                        || al.Type == EnumAssets::Texture))
+                {
+                    uint32_t idx = debugResourceLogCount.fetch_add(1);
+                    if(idx < 128) {
+                        LOG.debug() << "Resource loaded type=" << assetTypeName(al.Type)
+                            << " id=" << al.Id
+                            << " key=" << al.Domain << ':' << al.Key
+                            << " size=" << al.Data.size();
+                    }
+                }
+
                 AsyncContext.LoadedAssets.lock()->emplace_back(
                     al.Type, al.Id, std::move(al.Domain), std::move(al.Key), std::move(al.Data)
                 );
@@ -1118,6 +1344,7 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
 }
 
 coro<> ServerSession::rP_Definition(Net::AsyncSocket &sock) {
+    static std::atomic<uint32_t> debugDefLogCount = 0;
     uint8_t second = co_await sock.read<uint8_t>();
 
     switch((ToClient::L2Definition) second) {
@@ -1147,6 +1374,15 @@ coro<> ServerSession::rP_Definition(Net::AsyncSocket &sock) {
         DefNodeId id = co_await sock.read<DefNodeId>();
         def.NodestateId = co_await sock.read<uint32_t>();
         def.TexId = id;
+
+        if(id < 32) {
+            uint32_t idx = debugDefLogCount.fetch_add(1);
+            if(idx < 64) {
+                LOG.debug() << "DefNode id=" << id
+                    << " nodestate=" << def.NodestateId
+                    << " tex=" << def.TexId;
+            }
+        }
 
         AsyncContext.ThisTickEntry.Profile_Node_AddOrChange.emplace_back(id, def);
 

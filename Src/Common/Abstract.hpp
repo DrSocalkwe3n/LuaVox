@@ -713,13 +713,15 @@ struct PreparedNodeState {
                 }
             };
 
+            for(const auto& route : Routes)
+                lambda(route.first);
+
             std::sort(variables.begin(), variables.end());
             auto eraseIter = std::unique(variables.begin(), variables.end());
             variables.erase(eraseIter, variables.end());
 
-            bool ok = false;
-
             for(const std::string_view key : variables) {
+                bool ok = false;
                 if(size_t pos = key.find(':'); pos != std::string::npos) {
                     std::string_view state, value;
                     state = key.substr(0, pos);

@@ -221,11 +221,18 @@ std::tuple<ResourceId, std::optional<AssetsManager::DataEntry>&> AssetsManager::
 
     for(size_t index = 0; index < table.size(); index++) {
         auto& entry = *table[index];
+        if(index == 0 && entry.Empty.test(0)) {
+            entry.Empty.reset(0);
+        }
 
         if(entry.IsFull)
             continue;
 
         uint32_t pos = entry.Empty._Find_first();
+        if(pos == entry.Empty.size()) {
+            entry.IsFull = true;
+            continue;
+        }
         entry.Empty.reset(pos);
 
         if(entry.Empty._Find_next(pos) == entry.Empty.size())
@@ -233,13 +240,23 @@ std::tuple<ResourceId, std::optional<AssetsManager::DataEntry>&> AssetsManager::
 
         id = index*TableEntry<DataEntry>::ChunkSize + pos;
         data = &entry.Entries[pos];
+        break;
     }
 
     if(!data) {
         table.emplace_back(std::make_unique<TableEntry<DataEntry>>());
-        id = (table.size()-1)*TableEntry<DataEntry>::ChunkSize;
-        data = &table.back()->Entries[0];
-        table.back()->Empty.reset(0);
+        auto& entry = *table.back();
+        if(table.size() == 1 && entry.Empty.test(0)) {
+            entry.Empty.reset(0);
+        }
+
+        uint32_t pos = entry.Empty._Find_first();
+        entry.Empty.reset(pos);
+        if(entry.Empty._Find_next(pos) == entry.Empty.size())
+            entry.IsFull = true;
+
+        id = (table.size()-1)*TableEntry<DataEntry>::ChunkSize + pos;
+        data = &entry.Entries[pos];
 
         // Расширяем таблицу с ресурсами, если необходимо
         if(type == EnumAssets::Nodestate)

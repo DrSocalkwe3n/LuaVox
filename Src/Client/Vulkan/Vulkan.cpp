@@ -2305,6 +2305,10 @@ void Vulkan::gui_ConnectedToServer() {
 			if(ImGui::Button("Delimeter"))
 				LOG.debug();
 
+			if(ImGui::Button("Перезагрузить моды")) {
+				Game.Session->requestModsReload();
+			}
+
 			if(ImGui::Button("Выйти")) {
 				Game.Выйти = true;
 				Game.ImGuiInterfaces.pop_back();

@@ -3,8 +3,10 @@
 #include "Common/Abstract.hpp"
 #include "Common/Net.hpp"
 #include "Server/Abstract.hpp"
+#include "Server/GameServer.hpp"
 #include "Server/World.hpp"
 #include <algorithm>
+#include <atomic>
 #include <boost/asio/error.hpp>
 #include <boost/system/system_error.hpp>
 #include <exception>
@@ -12,6 +14,23 @@
 
 
 namespace LV::Server {
+
+namespace {
+
+const char* assetTypeName(EnumAssets type) {
+    switch(type) {
+    case EnumAssets::Nodestate: return "nodestate";
+    case EnumAssets::Model: return "model";
+    case EnumAssets::Texture: return "texture";
+    case EnumAssets::Particle: return "particle";
+    case EnumAssets::Animation: return "animation";
+    case EnumAssets::Sound: return "sound";
+    case EnumAssets::Font: return "font";
+    default: return "unknown";
+    }
+}
+
+}
 
 RemoteClient::~RemoteClient() {
     shutdown(EnumDisconnect::ByInterface, "~RemoteClient()");
@@ -487,9 +506,13 @@ ResourceRequest RemoteClient::pushPreparedPackets() {
         nextRequest = std::move(lock->NextRequest);
     }
 
-    if(AssetsInWork.AssetsPacket.size()) {
-        toSend.push_back(std::move(AssetsInWork.AssetsPacket));
+    if(!AssetsInWork.AssetsPackets.empty()) {
+        for(Net::Packet& packet : AssetsInWork.AssetsPackets)
+            toSend.push_back(std::move(packet));
+        AssetsInWork.AssetsPackets.clear();
     }
+    if(AssetsInWork.AssetsPacket.size())
+        toSend.push_back(std::move(AssetsInWork.AssetsPacket));
 
     {
         Net::Packet p;
@@ -508,6 +531,7 @@ ResourceRequest RemoteClient::pushPreparedPackets() {
 void RemoteClient::informateAssets(const std::vector<std::tuple<EnumAssets, ResourceId, const std::string, const std::string, Resource>>& resources)
 {
     std::vector<std::tuple<EnumAssets, ResourceId, const std::string, const std::string, Hash_t, size_t>> newForClient;
+    static std::atomic<uint32_t> debugSendLogCount = 0;
 
     for(auto& [type, resId, domain, key, resource] : resources) {
         auto hash = resource.hash();
@@ -526,6 +550,22 @@ void RemoteClient::informateAssets(const std::vector<std::tuple<EnumAssets, Reso
                 if(it == AssetsInWork.OnClient.end() || *it != hash) {
                     AssetsInWork.OnClient.insert(it, hash);
                     AssetsInWork.ToSend.emplace_back(type, domain, key, resId, resource, 0);
+                    if(domain == "test"
+                        && (type == EnumAssets::Nodestate
+                            || type == EnumAssets::Model
+                            || type == EnumAssets::Texture))
+                    {
+                        if(debugSendLogCount.fetch_add(1) < 64) {
+                            LOG.debug() << "Queue resource send type=" << assetTypeName(type)
+                                << " id=" << resId
+                                << " key=" << domain << ':' << key
+                                << " size=" << resource.size()
+                                << " hash=" << int(hash[0]) << '.'
+                                << int(hash[1]) << '.'
+                                << int(hash[2]) << '.'
+                                << int(hash[3]);
+                        }
+                    }
                 } else {
                     LOG.warn() << "Клиент повторно запросил имеющийся у него ресурс";
                 }
@@ -720,6 +760,7 @@ coro<> RemoteClient::rP_System(Net::AsyncSocket &sock) {
     }
     case ToServer::L2System::ResourceRequest:
     {
+        static std::atomic<uint32_t> debugRequestLogCount = 0;
         uint16_t count = co_await sock.read<uint16_t>();
         std::vector<Hash_t> hashes;
         hashes.reserve(count);
@@ -733,6 +774,29 @@ coro<> RemoteClient::rP_System(Net::AsyncSocket &sock) {
         auto lock = NetworkAndResource.lock();
         lock->NextRequest.Hashes.append_range(hashes);
         lock->ClientRequested.append_range(hashes);
+
+        if(debugRequestLogCount.fetch_add(1) < 64) {
+            if(!hashes.empty()) {
+                const auto& h = hashes.front();
+                LOG.debug() << "ResourceRequest count=" << count
+                    << " first=" << int(h[0]) << '.'
+                    << int(h[1]) << '.'
+                    << int(h[2]) << '.'
+                    << int(h[3]);
+            } else {
+                LOG.debug() << "ResourceRequest count=" << count;
+            }
+        }
+        co_return;
+    }
+    case ToServer::L2System::ReloadMods:
+    {
+        if(Server) {
+            Server->requestModsReload();
+            LOG.info() << "Запрос на перезагрузку модов";
+        } else {
+            LOG.warn() << "Запрос на перезагрузку модов отклонён: сервер не назначен";
+        }
         co_return;
     }
     default:
@@ -818,24 +882,59 @@ void RemoteClient::onUpdate() {
     // Отправка ресурсов
     if(!AssetsInWork.ToSend.empty()) {
         auto& toSend = AssetsInWork.ToSend;
+        constexpr uint16_t kMaxAssetPacketSize = 64000;
+        const size_t maxChunkPayload = std::max<size_t>(1, kMaxAssetPacketSize - 1 - 1 - 32 - 4);
         size_t chunkSize = std::max<size_t>(1'024'000 / toSend.size(), 4096);
+        chunkSize = std::min(chunkSize, maxChunkPayload);
+        static std::atomic<uint32_t> debugInitSendLogCount = 0;
 
         Net::Packet& p = AssetsInWork.AssetsPacket;
+
+        auto flushAssetsPacket = [&]() {
+            if(p.size() == 0)
+                return;
+            AssetsInWork.AssetsPackets.push_back(std::move(p));
+        };
 
         bool hasFullSended = false;
 
         for(auto& [type, domain, key, id, res, sended] : toSend) {
             if(sended == 0) {
                 // Оповещаем о начале отправки ресурса
+                const size_t initSize = 1 + 1 + 4 + 32 + 4 + 1
+                    + 2 + domain.size()
+                    + 2 + key.size();
+                if(p.size() + initSize > kMaxAssetPacketSize)
+                    flushAssetsPacket();
                 p << (uint8_t) ToClient::L1::Resource
                     << (uint8_t) ToClient::L2Resource::InitResSend
                     << uint32_t(res.size());
                 p.write((const std::byte*) res.hash().data(), 32);
                 p << uint32_t(id) << uint8_t(type) << domain << key;
+                if(domain == "test"
+                    && (type == EnumAssets::Nodestate
+                        || type == EnumAssets::Model
+                        || type == EnumAssets::Texture))
+                {
+                    if(debugInitSendLogCount.fetch_add(1) < 64) {
+                        const auto hash = res.hash();
+                        LOG.debug() << "Send InitResSend type=" << assetTypeName(type)
+                            << " id=" << id
+                            << " key=" << domain << ':' << key
+                            << " size=" << res.size()
+                            << " hash=" << int(hash[0]) << '.'
+                            << int(hash[1]) << '.'
+                            << int(hash[2]) << '.'
+                            << int(hash[3]);
+                    }
+                }
             }
 
             // Отправляем чанк
             size_t willSend = std::min(chunkSize, res.size()-sended);
+            const size_t chunkMsgSize = 1 + 1 + 32 + 4 + willSend;
+            if(p.size() + chunkMsgSize > kMaxAssetPacketSize)
+                flushAssetsPacket();
             p << (uint8_t) ToClient::L1::Resource
                 << (uint8_t) ToClient::L2Resource::ChunkSend;
             p.write((const std::byte*) res.hash().data(), 32);

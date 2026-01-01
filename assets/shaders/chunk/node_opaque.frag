@@ -58,6 +58,7 @@ void main() {
     Frame = atlasColor(Fragment.Texture, Fragment.UV);
     Frame.xyz *= max(0.2f, dot(Fragment.Normal, normalize(vec3(0.5, 1, 0.8))));
     // Frame = vec4(blendOverlay(vec3(Frame), vec3(Fragment.GeoPos/64.f)), Frame.w);
+    
     if(Frame.w == 0)
         discard;
 }

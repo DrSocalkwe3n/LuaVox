@@ -9,11 +9,13 @@
 #include "glm/ext/scalar_constants.hpp"
 #include "glm/matrix.hpp"
 #include "glm/trigonometric.hpp"
+#include <atomic>
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <memory>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -307,6 +309,15 @@ void ChunkMeshGenerator::run(uint8_t id) {
                 NodeVertexStatic v;
                 std::memset(&v, 0, sizeof(v));
 
+                static std::atomic<uint32_t> debugMeshWarnCount = 0;
+                const bool debugMeshEnabled = debugMeshWarnCount.load() < 16;
+                std::array<uint8_t, 16> expectedColumnX = {};
+                std::array<uint8_t, 16> expectedColumnY = {};
+                std::array<uint8_t, 16> expectedColumnZ = {};
+                std::array<uint8_t, 16> generatedColumnX = {};
+                std::array<uint8_t, 16> generatedColumnY = {};
+                std::array<uint8_t, 16> generatedColumnZ = {};
+
                 struct ModelCacheEntry {
                     std::vector<std::vector<std::pair<float, std::unordered_map<EnumFace, std::vector<NodeVertexStatic>>>>> Routes;
                 };
@@ -377,6 +388,7 @@ void ChunkMeshGenerator::run(uint8_t id) {
                 for(int z = 0; z < 16; z++)
                 for(int y = 0; y < 16; y++)
                 for(int x = 0; x < 16; x++) {
+                    const size_t vertexStart = result.NodeVertexs.size();
                     int fullCovered = 0;
 
                     fullCovered |= fullNodes[x+1+1][y+1][z+1];
@@ -392,9 +404,18 @@ void ChunkMeshGenerator::run(uint8_t id) {
                     const Node& nodeData = (*chunk)[x+y*16+z*16*16];
                     const DefNode_t* node = getNodeProfile(nodeData.NodeId);
 
+                    if(debugMeshEnabled) {
+                        const bool hasRenderable = (node->NodestateId != 0) || (node->TexId != 0);
+                        if(hasRenderable && fullCovered != 0b111111) {
+                            expectedColumnX[x] = 1;
+                            expectedColumnY[y] = 1;
+                            expectedColumnZ[z] = 1;
+                        }
+                    }
+
                     bool usedModel = false;
 
-                    if(NSP && node->NodestateId != 0) {
+                    if(NSP && (node->NodestateId != 0 || NSP->hasNodestate(node->NodestateId))) {
                         auto iterCache = modelCache.find(nodeData.Data);
                         if(iterCache == modelCache.end()) {
                             std::unordered_map<std::string, int32_t> states;
@@ -423,7 +444,7 @@ void ChunkMeshGenerator::run(uint8_t id) {
                     }
 
                     if(usedModel)
-                        continue;
+                        goto node_done;
 
                     if(NSP && node->TexId != 0) {
                         auto iterTex = baseTextureCache.find(node->TexId);
@@ -439,7 +460,7 @@ void ChunkMeshGenerator::run(uint8_t id) {
                     }
 
                     if(v.Tex == 0)
-                        continue;
+                        goto node_done;
 
                     // Рендерим обычный кубоид
                     // XZ+Y
@@ -644,6 +665,60 @@ void ChunkMeshGenerator::run(uint8_t id) {
                         v.FY -= 64;
                         v.TV = 0;
                         result.NodeVertexs.push_back(v);
+                    }
+
+                    node_done:
+                    if(debugMeshEnabled) {
+                        const bool emitted = result.NodeVertexs.size() > vertexStart;
+                        if(emitted) {
+                            generatedColumnX[x] = 1;
+                            generatedColumnY[y] = 1;
+                            generatedColumnZ[z] = 1;
+                        } else {
+                            const bool hasRenderable = (node->NodestateId != 0) || (node->TexId != 0);
+                            if(hasRenderable && fullCovered != 0b111111) {
+                                uint32_t warnIndex = debugMeshWarnCount.fetch_add(1);
+                                if(warnIndex < 16) {
+                                    LOG.warn() << "Missing node geometry at chunk " << int(pos[0]) << ','
+                                        << int(pos[1]) << ',' << int(pos[2])
+                                        << " local " << x << ',' << y << ',' << z
+                                        << " nodeId " << nodeData.NodeId
+                                        << " meta " << int(nodeData.Meta)
+                                        << " covered " << fullCovered
+                                        << " tex " << node->TexId
+                                        << " nodestate " << node->NodestateId;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if(debugMeshEnabled) {
+                    auto collectMissing = [](const std::array<uint8_t, 16>& expected,
+                        const std::array<uint8_t, 16>& generated) {
+                        std::string res;
+                        for(int i = 0; i < 16; i++) {
+                            if(expected[i] && !generated[i]) {
+                                if(!res.empty())
+                                    res += ',';
+                                res += std::to_string(i);
+                            }
+                        }
+                        return res;
+                    };
+
+                    std::string missingX = collectMissing(expectedColumnX, generatedColumnX);
+                    std::string missingY = collectMissing(expectedColumnY, generatedColumnY);
+                    std::string missingZ = collectMissing(expectedColumnZ, generatedColumnZ);
+                    if(!missingX.empty() || !missingY.empty() || !missingZ.empty()) {
+                        uint32_t warnIndex = debugMeshWarnCount.fetch_add(1);
+                        if(warnIndex < 16) {
+                            LOG.warn() << "Missing mesh columns at chunk " << int(pos[0]) << ','
+                                << int(pos[1]) << ',' << int(pos[2])
+                                << " missingX[" << missingX << "]"
+                                << " missingY[" << missingY << "]"
+                                << " missingZ[" << missingZ << "]";
+                        }
                     }
                 }
 
@@ -1589,8 +1664,10 @@ void VulkanRenderSession::tickSync(const TickSyncData& data) {
         modelLost.insert(modelLost.end(), iter->second.begin(), iter->second.end());
 
     std::vector<AssetsModel> changedModels;
-    if(!modelResources.empty() || !modelLost.empty())
-        changedModels = MP.onModelChanges(std::move(modelResources), std::move(modelLost));
+    if(!modelResources.empty() || !modelLost.empty()) {
+        const auto& modelAssets = ServerSession->Assets[EnumAssets::Model];
+        changedModels = MP.onModelChanges(std::move(modelResources), std::move(modelLost), &modelAssets);
+    }
 
     if(TP) {
         std::vector<std::tuple<AssetsTexture, Resource>> textureResources;

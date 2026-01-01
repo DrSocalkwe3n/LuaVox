@@ -17,6 +17,7 @@
 #include <iterator>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <sol/forward.hpp>
 #include <sol/protected_function_result.hpp>
 #include <sstream>
@@ -1107,7 +1108,7 @@ coro<> GameServer::pushSocketGameProtocol(tcp::socket socket, const std::string 
             co_await Net::AsyncSocket::write<uint8_t>(socket, 0);
 
             External.NewConnectedPlayers.lock_write()
-               ->push_back(std::make_shared<RemoteClient>(IOC, std::move(socket), username));
+               ->push_back(std::make_shared<RemoteClient>(IOC, std::move(socket), username, this));
         }
     }
 }
@@ -1444,7 +1445,7 @@ void GameServer::init(fs::path worldPath) {
 
     {
         sol::table t = LuaMainState.create_table();
-        Content.CM.registerBase(EnumDefContent::Node, "core", "none", t);
+        // Content.CM.registerBase(EnumDefContent::Node, "core", "none", t);
         Content.CM.registerBase(EnumDefContent::World, "test", "devel_world", t);
     }
 
@@ -1453,10 +1454,10 @@ void GameServer::init(fs::path worldPath) {
 
     // TODO: регистрация контента из mod/content/*
 
-    Content.CM.buildEndProfiles();
-
     pushEvent("preInit");
     pushEvent("highPreInit");
+
+    Content.CM.buildEndProfiles();
 
 
     LOG.info() << "Инициализация";
@@ -1674,6 +1675,13 @@ void GameServer::initLuaPost() {
     
 }
 
+void GameServer::requestModsReload() {
+    bool expected = false;
+    if(ModsReloadRequested.compare_exchange_strong(expected, true)) {
+        LOG.info() << "Запрошена перезагрузка модов";
+    }
+}
+
 void GameServer::stepConnections() {
     // Подключить новых игроков
     if(!External.NewConnectedPlayers.no_lock_readable().empty()) {
@@ -1715,7 +1723,40 @@ void GameServer::stepConnections() {
 }
 
 void GameServer::stepModInitializations() {
+    if(ModsReloadRequested.exchange(false)) {
+        reloadMods();
+    }
     BackingChunkPressure.endWithResults();
+}
+
+void GameServer::reloadMods() {
+    LOG.info() << "Перезагрузка модов: ассеты и зависимости";
+
+    AssetsManager::ResourceChangeObj changes = Content.AM.recheckResources(AssetsInit);
+    AssetsManager::Out_applyResourceChange applied = Content.AM.applyResourceChange(changes);
+
+    size_t changedCount = 0;
+    size_t lostCount = 0;
+    for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++) {
+        for(const auto& entry : applied.NewOrChange[type]) {
+            Content.OnContentChanges.AssetsInfo[type].push_back(entry.first);
+            changedCount++;
+        }
+
+        lostCount += applied.Lost[type].size();
+    }
+
+    Content.CM.markAllProfilesDirty(EnumDefContent::Node);
+    Content.CM.buildEndProfiles();
+
+    std::vector<ResourceId> nodeIds = Content.CM.collectProfileIds(EnumDefContent::Node);
+    if(!nodeIds.empty()) {
+        Content.OnContentChanges.Node.append_range(nodeIds);
+    }
+
+    LOG.info() << "Перезагрузка завершена: обновлено ассетов=" << changedCount
+        << " удалено=" << lostCount
+        << " нод=" << nodeIds.size();
 }
 
 IWorldSaveBackend::TickSyncInfo_Out GameServer::stepDatabaseSync() {

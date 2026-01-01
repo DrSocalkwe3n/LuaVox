@@ -85,7 +85,9 @@ public:
     }
 
     // Применяет изменения, возвращая все затронутые модели
-    std::vector<AssetsModel> onModelChanges(std::vector<std::tuple<AssetsModel, Resource>> newOrChanged, std::vector<AssetsModel> lost) {
+    std::vector<AssetsModel> onModelChanges(std::vector<std::tuple<AssetsModel, Resource>> newOrChanged,
+        std::vector<AssetsModel> lost,
+        const std::unordered_map<ResourceId, AssetEntry>* modelAssets) {
         std::vector<AssetsModel> result;
 
         std::move_only_function<void(ResourceId)> makeUnready;
@@ -130,6 +132,14 @@ public:
             Models.erase(iterModel);
         }
         
+        std::unordered_map<std::string, ResourceId> modelKeyToId;
+        if(modelAssets) {
+            modelKeyToId.reserve(modelAssets->size());
+            for(const auto& [id, entry] : *modelAssets) {
+                modelKeyToId.emplace(entry.Domain + ':' + entry.Key, id);
+            }
+        }
+
         for(const auto& [key, resource] : newOrChanged) {
             result.push_back(key);
 
@@ -164,62 +174,75 @@ public:
                             }
 
                             std::vector<Vertex> v;
-                            
+
+                            auto addQuad = [&](const glm::vec3& p0,
+                                const glm::vec3& p1,
+                                const glm::vec3& p2,
+                                const glm::vec3& p3,
+                                const glm::vec2& uv0,
+                                const glm::vec2& uv1,
+                                const glm::vec2& uv2,
+                                const glm::vec2& uv3) {
+                                v.emplace_back(p0, uv0, texId);
+                                v.emplace_back(p1, uv1, texId);
+                                v.emplace_back(p2, uv2, texId);
+                                v.emplace_back(p0, uv0, texId);
+                                v.emplace_back(p2, uv2, texId);
+                                v.emplace_back(p3, uv3, texId);
+                            };
+
+                            const float x0 = min.x;
+                            const float x1 = max.x;
+                            const float y0 = min.y;
+                            const float y1 = max.y;
+                            const float z0 = min.z;
+                            const float z1 = max.z;
+                            const float u0 = from_uv.x;
+                            const float v0 = from_uv.y;
+                            const float u1 = to_uv.x;
+                            const float v1 = to_uv.y;
+
                             switch(face) {
-                            case EnumFace::Down:
-                                v.emplace_back(glm::vec3{min.x, min.y, min.z}, from_uv, texId);
-                                v.emplace_back(glm::vec3{max.x, min.y, max.z}, glm::vec2{from_uv.x, to_uv.y}, texId);
-                                v.emplace_back(glm::vec3{max.x, min.y, min.z}, to_uv, texId);
-                                v.emplace_back(glm::vec3{min.x, min.y, min.z}, from_uv, texId);
-                                v.emplace_back(glm::vec3{min.x, min.y, max.z}, to_uv, texId);
-                                v.emplace_back(glm::vec3{max.x, min.y, max.z}, glm::vec2{to_uv.x, from_uv.y}, texId);
-                            break;
                             case EnumFace::Up:
-                                v.emplace_back(glm::vec3{min.x, max.y, min.z}, from_uv, texId);
-                                v.emplace_back(glm::vec3{max.x, max.y, min.z}, glm::vec2{from_uv.x, to_uv.y}, texId);
-                                v.emplace_back(glm::vec3{max.x, max.y, max.z}, to_uv, texId);
-                                v.emplace_back(glm::vec3{min.x, max.y, min.z}, from_uv, texId);
-                                v.emplace_back(glm::vec3{max.x, max.y, max.z}, to_uv, texId);
-                                v.emplace_back(glm::vec3{min.x, max.y, max.z}, glm::vec2{to_uv.x, from_uv.y}, texId);
-                            break;
-                            case EnumFace::North:
-                                v.emplace_back(glm::vec3{min.x, min.y, min.z}, from_uv, texId);
-                                v.emplace_back(glm::vec3{max.x, min.y, min.z}, glm::vec2{from_uv.x, to_uv.y}, texId);
-                                v.emplace_back(glm::vec3{max.x, max.y, min.z}, to_uv, texId);
-                                v.emplace_back(glm::vec3{min.x, min.y, min.z}, from_uv, texId);
-                                v.emplace_back(glm::vec3{max.x, max.y, min.z}, to_uv, texId);
-                                v.emplace_back(glm::vec3{min.x, max.y, min.z}, glm::vec2{to_uv.x, from_uv.y}, texId);
-                            break;
-                            case EnumFace::South:
-                                v.emplace_back(glm::vec3{min.x, min.y, max.z}, from_uv, texId);
-                                v.emplace_back(glm::vec3{max.x, min.y, max.z}, glm::vec2{from_uv.x, to_uv.y}, texId);
-                                v.emplace_back(glm::vec3{max.x, max.y, max.z}, to_uv, texId);
-                                v.emplace_back(glm::vec3{min.x, min.y, max.z}, from_uv, texId);
-                                v.emplace_back(glm::vec3{max.x, max.y, max.z}, to_uv, texId);
-                                v.emplace_back(glm::vec3{min.x, max.y, max.z}, glm::vec2{to_uv.x, from_uv.y}, texId);
-                            break;
-                            case EnumFace::West:
-                                v.emplace_back(glm::vec3{min.x, min.y, min.z}, from_uv, texId);
-                                v.emplace_back(glm::vec3{min.x, min.y, max.z}, glm::vec2{from_uv.x, to_uv.y}, texId);
-                                v.emplace_back(glm::vec3{min.x, max.y, max.z}, to_uv, texId);
-                                v.emplace_back(glm::vec3{min.x, min.y, min.z}, from_uv, texId);
-                                v.emplace_back(glm::vec3{min.x, max.y, max.z}, to_uv, texId);
-                                v.emplace_back(glm::vec3{min.x, max.y, min.z}, glm::vec2{to_uv.x, from_uv.y}, texId);
-                            break;
+                                addQuad({x0, y1, z1}, {x1, y1, z1}, {x1, y1, z0}, {x0, y1, z0},
+                                    {u0, v0}, {u1, v0}, {u1, v1}, {u0, v1});
+                                break;
+                            case EnumFace::Down:
+                                addQuad({x0, y0, z1}, {x0, y0, z0}, {x1, y0, z0}, {x1, y0, z1},
+                                    {u0, v0}, {u0, v1}, {u1, v1}, {u1, v0});
+                                break;
                             case EnumFace::East:
-                                v.emplace_back(glm::vec3{max.x, min.y, min.z}, from_uv, texId);
-                                v.emplace_back(glm::vec3{max.x, min.y, max.z}, glm::vec2{from_uv.x, to_uv.y}, texId);
-                                v.emplace_back(glm::vec3{max.x, max.y, max.z}, to_uv, texId);
-                                v.emplace_back(glm::vec3{max.x, min.y, min.z}, from_uv, texId);
-                                v.emplace_back(glm::vec3{max.x, max.y, max.z}, to_uv, texId);
-                                v.emplace_back(glm::vec3{max.x, max.y, min.z}, glm::vec2{to_uv.x, from_uv.y}, texId);
-                            break;
+                                addQuad({x1, y0, z1}, {x1, y0, z0}, {x1, y1, z0}, {x1, y1, z1},
+                                    {u0, v0}, {u0, v1}, {u1, v1}, {u1, v0});
+                                break;
+                            case EnumFace::West:
+                                addQuad({x0, y0, z1}, {x0, y1, z1}, {x0, y1, z0}, {x0, y0, z0},
+                                    {u0, v0}, {u1, v0}, {u1, v1}, {u0, v1});
+                                break;
+                            case EnumFace::South:
+                                addQuad({x0, y0, z1}, {x1, y0, z1}, {x1, y1, z1}, {x0, y1, z1},
+                                    {u0, v0}, {u1, v0}, {u1, v1}, {u0, v1});
+                                break;
+                            case EnumFace::North:
+                                addQuad({x0, y0, z0}, {x0, y1, z0}, {x1, y1, z0}, {x1, y0, z0},
+                                    {u0, v0}, {u0, v1}, {u1, v1}, {u1, v0});
+                                break;
                             default:
                                 MAKE_ERROR("EnumFace::None");
                             }
 
                             cb.Trs.apply(v);
                             model.Vertecies[params.Cullface].append_range(v);
+                        }
+                    }
+
+                    if(!pm.SubModels.empty() && modelAssets) {
+                        model.Depends.reserve(pm.SubModels.size());
+                        for(const auto& sub : pm.SubModels) {
+                            auto iter = modelKeyToId.find(sub.Domain + ':' + sub.Key);
+                            if(iter == modelKeyToId.end())
+                                continue;
+                            model.Depends.emplace_back(iter->second, Transformations{});
                         }
                     }
 
@@ -271,12 +294,16 @@ private:
     Logger LOG = "Client>ModelProvider";
     // Таблица моделей
     std::unordered_map<ResourceId, ModelObject> Models;
+    std::unordered_set<ResourceId> MissingModelsLogged;
     uint64_t UniqId = 0;
 
     Model getModel(ResourceId id, std::vector<ResourceId>& used) {
         auto iterModel = Models.find(id);
         if(iterModel == Models.end()) {
             // Нет такой модели, ну и хрен с ним
+            if(MissingModelsLogged.insert(id).second) {
+                LOG.warn() << "Missing model id=" << id;
+            }
             return {};
         }
 
@@ -708,6 +735,15 @@ public:
                 } else if(data.starts_with((const char8_t*) "{")) {
                     type = "InternalJson";
                     // nodestate в json формате
+                } else {
+                    type = "InternalBinaryLegacy";
+                    // Старый двоичный формат без заголовка "bn"
+                    std::u8string patched;
+                    patched.reserve(data.size() + 2);
+                    patched.push_back(u8'b');
+                    patched.push_back(u8'n');
+                    patched.append(data);
+                    nodestate = PreparedNodeState(patched);
                 }
             } catch(const std::exception& exc) {
                 LOG.warn() << "Не удалось распарсить nodestate " << type << ":\n\t" << exc.what();
@@ -715,6 +751,14 @@ public:
             }
 
             Nodestates.insert_or_assign(key, std::move(nodestate));
+            if(key < 64) {
+                auto iter = Nodestates.find(key);
+                if(iter != Nodestates.end()) {
+                    LOG.debug() << "Nodestate loaded id=" << key
+                        << " routes=" << iter->second.Routes.size()
+                        << " models=" << iter->second.LocalToModel.size();
+                }
+            }
         }
 
         if(!changedModels.empty()) {
@@ -745,11 +789,26 @@ public:
     // states     - Текущие значения состояний ноды
     std::vector<std::vector<std::pair<float, std::unordered_map<EnumFace, std::vector<NodeVertexStatic>>>>> getModelsForNode(AssetsNodestate id, const std::vector<NodeStateInfo>& statesInfo, const std::unordered_map<std::string, int32_t>& states) {
         auto iterNodestate = Nodestates.find(id);
-        if(iterNodestate == Nodestates.end())
+        if(iterNodestate == Nodestates.end()) {
+            if(MissingNodestateLogged.insert(id).second) {
+                LOG.warn() << "Missing nodestate id=" << id;
+            }
             return {};
+        }
 
         PreparedNodeState& nodestate = iterNodestate->second;
         std::vector<uint16_t> routes = nodestate.getModelsForState(statesInfo, states);
+        if(routes.empty()) {
+            int32_t metaValue = 0;
+            if(auto iterMeta = states.find("meta"); iterMeta != states.end())
+                metaValue = iterMeta->second;
+            uint64_t key = (uint64_t(id) << 32) | (uint32_t(metaValue) & 0xffffffffu);
+            if(EmptyRouteLogged.insert(key).second) {
+                LOG.warn() << "No nodestate routes id=" << id
+                    << " meta=" << metaValue
+                    << " total_routes=" << nodestate.Routes.size();
+            }
+        }
         std::vector<std::vector<std::pair<float, std::unordered_map<EnumFace, std::vector<NodeVertexStatic>>>>> result;
 
         std::unordered_map<TexturePipeline, uint16_t> pipelineResolveCache;
@@ -765,12 +824,12 @@ public:
                 for(const Vertex& v : r) {
                     NodeVertexStatic vert;
 
-                    vert.FX = (v.Pos.x+0.5f)*64+224;
-                    vert.FY = (v.Pos.y+0.5f)*64+224;
-                    vert.FZ = (v.Pos.z+0.5f)*64+224;
+                    vert.FX = (v.Pos.x + 16.0f) * 2.0f + 224.0f;
+                    vert.FY = (v.Pos.y + 16.0f) * 2.0f + 224.0f;
+                    vert.FZ = (v.Pos.z + 16.0f) * 2.0f + 224.0f;
 
-                    vert.TU = std::clamp<int32_t>(v.UV.x * (1 << 16), 0, (1 << 16) - 1);
-                    vert.TV = std::clamp<int32_t>(v.UV.y * (1 << 16), 0, (1 << 16) - 1);
+                    vert.TU = std::clamp<int32_t>(v.UV.x * (1 << 11), 0, (1 << 16) - 1);
+                    vert.TV = std::clamp<int32_t>(v.UV.y * (1 << 11), 0, (1 << 16) - 1);
 
                     const TexturePipeline& pipe = model.TextureMap[model.TextureKeys[v.TexId]];
                     if(auto iterPipe = pipelineResolveCache.find(pipe); iterPipe != pipelineResolveCache.end()) {
@@ -836,11 +895,17 @@ public:
         return TP.getTextureId(pipe);
     }
 
+    bool hasNodestate(AssetsNodestate id) const {
+        return Nodestates.contains(id);
+    }
+
 private:
     Logger LOG = "Client>NodestateProvider";
     ModelProvider& MP;
     TextureProvider& TP;
     std::unordered_map<AssetsNodestate, PreparedNodeState> Nodestates;
+    std::unordered_set<AssetsNodestate> MissingNodestateLogged;
+    std::unordered_set<uint64_t> EmptyRouteLogged;
 };
 
 /*

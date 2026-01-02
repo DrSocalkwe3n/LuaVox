@@ -606,10 +606,12 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
         std::vector<DefWorldId> profile_World_Lost;
         std::unordered_map<DefPortalId, void*> profile_Portal_AddOrChange;
         std::vector<DefPortalId> profile_Portal_Lost;
-        std::unordered_map<DefEntityId, void*> profile_Entity_AddOrChange;
+        std::unordered_map<DefEntityId, DefEntityInfo> profile_Entity_AddOrChange;
         std::vector<DefEntityId> profile_Entity_Lost;
         std::unordered_map<DefItemId, void*> profile_Item_AddOrChange;
         std::vector<DefItemId> profile_Item_Lost;
+        std::unordered_map<EntityId_t, EntityInfo> entity_AddOrChange;
+        std::vector<EntityId_t> entity_Lost;
 
         {
             for(TickData& data : ticks) {
@@ -726,6 +728,25 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                     auto eraseIter = std::unique(profile_Item_Lost.begin(), profile_Item_Lost.end());
                     profile_Item_Lost.erase(eraseIter, profile_Item_Lost.end());
                 }
+
+                {
+                    for(auto& [id, info] : data.Entity_AddOrChange) {
+                        auto iter = std::lower_bound(entity_Lost.begin(), entity_Lost.end(), id);
+                        if(iter != entity_Lost.end() && *iter == id)
+                            entity_Lost.erase(iter);
+
+                        entity_AddOrChange[id] = info;
+                    }
+
+                    for(EntityId_t id : data.Entity_Lost) {
+                        entity_AddOrChange.erase(id);
+                    }
+
+                    entity_Lost.insert(entity_Lost.end(), data.Entity_Lost.begin(), data.Entity_Lost.end());
+                    std::sort(entity_Lost.begin(), entity_Lost.end());
+                    auto eraseIter = std::unique(entity_Lost.begin(), entity_Lost.end());
+                    entity_Lost.erase(eraseIter, entity_Lost.end());
+                }
             }
 
             for(auto& [id, _] : profile_Voxel_AddOrChange)
@@ -829,6 +850,11 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                 auto& c = chunks_Changed[wId];
 
                 for(auto& [pos, val] : list) {
+                    auto& sizes = VisibleChunkCompressed[wId][pos];
+                    VisibleChunkCompressedBytes -= sizes.Voxels;
+                    sizes.Voxels = val.size();
+                    VisibleChunkCompressedBytes += sizes.Voxels;
+
                     caocvr[pos] = unCompressVoxels(val);
                     c.push_back(pos);
                 }
@@ -839,6 +865,11 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                 auto& c = chunks_Changed[wId];
 
                 for(auto& [pos, val] : list) {
+                    auto& sizes = VisibleChunkCompressed[wId][pos];
+                    VisibleChunkCompressedBytes -= sizes.Nodes;
+                    sizes.Nodes = val.size();
+                    VisibleChunkCompressedBytes += sizes.Nodes;
+
                     auto& chunkNodes = caocvr[pos];
                     unCompressNodes(val, chunkNodes.data());
                     debugCheckGeneratedChunkNodes(wId, pos, chunkNodes);
@@ -985,20 +1016,41 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
             for(auto& [resId, def] : profile_Node_AddOrChange) {
                 Profiles.DefNode[resId] = def;
             }
+            for(auto& [resId, def] : profile_Entity_AddOrChange) {
+                Profiles.DefEntity[resId] = def;
+            }
         }
 
         // Чанки
         {
             for(auto& [wId, lost] : regions_Lost_Result) {
                 auto iterWorld = Content.Worlds.find(wId);
-                if(iterWorld == Content.Worlds.end())
+                auto iterSizesWorld = VisibleChunkCompressed.find(wId);
+                if(iterWorld != Content.Worlds.end()) {
+                    for(const Pos::GlobalRegion& rPos : lost) {
+                        auto iterRegion = iterWorld->second.Regions.find(rPos);
+                        if(iterRegion != iterWorld->second.Regions.end())
+                            iterWorld->second.Regions.erase(iterRegion);
+                    }
+                }
+
+                if(iterSizesWorld == VisibleChunkCompressed.end())
                     continue;
 
                 for(const Pos::GlobalRegion& rPos : lost) {
-                    auto iterRegion = iterWorld->second.Regions.find(rPos);
-                    if(iterRegion != iterWorld->second.Regions.end())
-                        iterWorld->second.Regions.erase(iterRegion);
+                    for(auto iter = iterSizesWorld->second.begin(); iter != iterSizesWorld->second.end(); ) {
+                        if(Pos::GlobalRegion(iter->first >> 2) == rPos) {
+                            VisibleChunkCompressedBytes -= iter->second.Voxels;
+                            VisibleChunkCompressedBytes -= iter->second.Nodes;
+                            iter = iterSizesWorld->second.erase(iter);
+                        } else {
+                            ++iter;
+                        }
+                    }
                 }
+
+                if(iterSizesWorld->second.empty())
+                    VisibleChunkCompressed.erase(iterSizesWorld);
             }
 
             for(auto& [wId, voxels] : chunks_AddOrChange_Voxel_Result) {
@@ -1017,6 +1069,43 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                 }
             }
 
+        }
+
+        // Сущности
+        {
+            for(auto& [entityId, info] : entity_AddOrChange) {
+                auto iter = Content.Entityes.find(entityId);
+                if(iter != Content.Entityes.end() && iter->second.WorldId != info.WorldId) {
+                    auto iterWorld = Content.Worlds.find(iter->second.WorldId);
+                    if(iterWorld != Content.Worlds.end()) {
+                        auto &list = iterWorld->second.Entitys;
+                        list.erase(std::remove(list.begin(), list.end(), entityId), list.end());
+                    }
+                }
+
+                Content.Entityes[entityId] = info;
+
+                auto &list = Content.Worlds[info.WorldId].Entitys;
+                if(std::find(list.begin(), list.end(), entityId) == list.end())
+                    list.push_back(entityId);
+            }
+
+            for(EntityId_t entityId : entity_Lost) {
+                auto iter = Content.Entityes.find(entityId);
+                if(iter != Content.Entityes.end()) {
+                    auto iterWorld = Content.Worlds.find(iter->second.WorldId);
+                    if(iterWorld != Content.Worlds.end()) {
+                        auto &list = iterWorld->second.Entitys;
+                        list.erase(std::remove(list.begin(), list.end(), entityId), list.end());
+                    }
+                    Content.Entityes.erase(iter);
+                } else {
+                    for(auto& [wId, worldInfo] : Content.Worlds) {
+                        auto &list = worldInfo.Entitys;
+                        list.erase(std::remove(list.begin(), list.end(), entityId), list.end());
+                    }
+                }
+            }
         }
 
         if(RS)
@@ -1402,11 +1491,18 @@ coro<> ServerSession::rP_Definition(Net::AsyncSocket &sock) {
     
         co_return;
     case ToClient::L2Definition::Entity:
-
+    {
+        DefEntityId id = co_await sock.read<DefEntityId>();
+        DefEntityInfo def;
+        AsyncContext.ThisTickEntry.Profile_Entity_AddOrChange.emplace_back(id, def);
         co_return;
+    }
     case ToClient::L2Definition::FreeEntity:
-    
+    {
+        DefEntityId id = co_await sock.read<DefEntityId>();
+        AsyncContext.ThisTickEntry.Profile_Entity_Lost.push_back(id);
         co_return;
+    }
     default:
         protocolError();
     }
@@ -1433,11 +1529,35 @@ coro<> ServerSession::rP_Content(Net::AsyncSocket &sock) {
     
         co_return;
     case ToClient::L2Content::Entity:
+    {
+        EntityId_t id = co_await sock.read<EntityId_t>();
+        DefEntityId defId = co_await sock.read<DefEntityId>();
+        WorldId_t worldId = co_await sock.read<WorldId_t>();
 
+        Pos::Object pos;
+        pos.x = co_await sock.read<decltype(pos.x)>();
+        pos.y = co_await sock.read<decltype(pos.y)>();
+        pos.z = co_await sock.read<decltype(pos.z)>();
+
+        ToServer::PacketQuat q;
+        for(int iter = 0; iter < 5; iter++)
+            q.Data[iter] = co_await sock.read<uint8_t>();
+
+        EntityInfo info;
+        info.DefId = defId;
+        info.WorldId = worldId;
+        info.Pos = pos;
+        info.Quat = q.toQuat();
+
+        AsyncContext.ThisTickEntry.Entity_AddOrChange.emplace_back(id, info);
         co_return;
+    }
     case ToClient::L2Content::RemoveEntity:
-    
+    {
+        EntityId_t id = co_await sock.read<EntityId_t>();
+        AsyncContext.ThisTickEntry.Entity_Lost.push_back(id);
         co_return;
+    }
     case ToClient::L2Content::ChunkVoxels:
     {
         WorldId_t wcId = co_await sock.read<WorldId_t>();

@@ -8,6 +8,7 @@
 #include <functional>
 #include <unordered_map>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 // ========================
@@ -19,11 +20,21 @@ struct Texture {
 };
 
 // ========================
-// Bytecode words are uint16_t
+// Bytecode words are uint8_t (1 byte machine word)
+// TexId is u24 (3 bytes, little-endian)
+// Subprogram refs use off24/len24 in BYTES (<=65535)
 // ========================
 class TexturePipelineProgram {
 public:
-  using Word = uint16_t;
+  using Word = uint8_t;
+
+  enum AnimFlags : Word {
+    AnimSmooth     = 1u << 0,
+    AnimHorizontal = 1u << 1
+  };
+
+  static constexpr uint16_t DefaultAnimFpsQ = uint16_t(8u * 256u);
+  static constexpr size_t MaxCodeBytes = (1u << 16) + 1u; // 65537
 
   struct OwnedTexture {
     uint32_t Width = 0, Height = 0;
@@ -31,118 +42,417 @@ public:
     Texture view() const { return Texture{Width, Height, Pixels.data()}; }
   };
 
-  // name -> uint32 id
-  using IdResolver      = std::function<std::optional<uint32_t>(std::string_view)>;
-  // id -> Texture view
-  using TextureProvider = std::function<std::optional<Texture>(uint32_t)>;
+  using IdResolverFunc      = std::function<std::optional<uint32_t>(std::string_view)>;
+  using TextureProviderFunc = std::function<std::optional<Texture>(uint32_t)>;
 
-  // Patch points to two consecutive u16 words where uint32 texId lives (lo, hi)
+  // Patch point to 3 consecutive bytes where u24 texId lives (b0,b1,b2)
   struct Patch {
-    size_t WordIndexLo = 0; // Code_[lo], Code_[lo+1] is hi
+    size_t ByteIndex0 = 0; // Code_[i], Code_[i+1], Code_[i+2]
     std::string Name;
   };
 
-  // ---- compile / link / bake ----
   bool compile(std::string src, std::string* err = nullptr) {
     Source_ = std::move(src);
     Code_.clear();
     Patches_.clear();
+    PendingSub_.clear();
     return _parseProgram(err);
   }
 
-  bool link(const IdResolver& resolver, std::string* err = nullptr) {
-    for(const auto& p : Patches_) {
-      auto id = resolver(p.Name);
-      if(!id) {
-        if(err) *err = "Unresolved texture name: " + p.Name;
+  bool link(const IdResolverFunc& resolver, std::string* err = nullptr) {
+    for (const auto& p : Patches_) {
+      auto idOpt = resolver(p.Name);
+      if(!idOpt) {
+        if(err) *err = "Не удалось разрешить имя текстуры: " + p.Name;
         return false;
       }
-      if(p.WordIndexLo + 1 >= Code_.size()) {
-        if(err) *err = "Internal error: patch out of range";
+      uint32_t id = *idOpt;
+      if(id >= (1u << 24)) {
+        if(err) *err = "TexId выходит за 24 бита (u24): " + p.Name + " => " + std::to_string(id);
         return false;
       }
-      Code_[p.WordIndexLo + 0] = _lo16(*id);
-      Code_[p.WordIndexLo + 1] = _hi16(*id);
+      if(p.ByteIndex0 + 2 >= Code_.size()) {
+        if(err) *err = "Внутренняя ошибка: применение идентификатора выходит за рамки кода";
+        return false;
+      }
+      Code_[p.ByteIndex0 + 0] = uint8_t(id & 0xFFu);
+      Code_[p.ByteIndex0 + 1] = uint8_t((id >> 8) & 0xFFu);
+      Code_[p.ByteIndex0 + 2] = uint8_t((id >> 16) & 0xFFu);
     }
     return true;
   }
 
-  bool bake(const TextureProvider& provider, OwnedTexture& out, std::string* err = nullptr) const {
+  bool bake(const TextureProviderFunc& provider, OwnedTexture& out, std::string* err = nullptr) const {
+    return bake(provider, out, 0.0, err);
+  }
+
+  bool bake(const TextureProviderFunc& provider, OwnedTexture& out, double timeSeconds, std::string* err = nullptr) const {
     VM vm(provider);
-    return vm.run(Code_, out, err);
+    return vm.run(Code_, out, timeSeconds, err);
   }
 
   const std::vector<Word>& words() const { return Code_; }
   const std::vector<Patch>& patches() const { return Patches_; }
 
-  // Serialize words to bytes (little-endian)
-  std::vector<uint8_t> toBytes() const {
-    std::vector<uint8_t> bytes(Code_.size() * sizeof(Word));
-    std::memcpy(bytes.data(), Code_.data(), bytes.size());
-    return bytes;
+  std::vector<uint8_t> toBytes() const { return Code_; }
+
+  struct AnimSpec {
+    uint32_t TexId = 0;
+    bool HasTexId = false;
+    uint16_t FrameW = 0;
+    uint16_t FrameH = 0;
+    uint16_t FrameCount = 0;
+    uint16_t FpsQ = 0;
+    uint16_t Flags = 0;
+  };
+
+  static std::vector<AnimSpec> extractAnimationSpecs(const Word* code, size_t size) {
+    std::vector<AnimSpec> specs;
+    if(!code || size == 0) {
+      return specs;
+    }
+
+    struct Range {
+      size_t Start = 0;
+      size_t End = 0;
+    };
+
+    std::vector<Range> visited;
+
+    auto read8 = [&](size_t& ip, uint8_t& out)->bool{
+      if(ip >= size) return false;
+      out = code[ip++];
+      return true;
+    };
+    auto read16 = [&](size_t& ip, uint16_t& out)->bool{
+      if(ip + 1 >= size) return false;
+      out = uint16_t(code[ip]) | (uint16_t(code[ip + 1]) << 8);
+      ip += 2;
+      return true;
+    };
+    auto read24 = [&](size_t& ip, uint32_t& out)->bool{
+      if(ip + 2 >= size) return false;
+      out = uint32_t(code[ip]) |
+            (uint32_t(code[ip + 1]) << 8) |
+            (uint32_t(code[ip + 2]) << 16);
+      ip += 3;
+      return true;
+    };
+    auto read32 = [&](size_t& ip, uint32_t& out)->bool{
+      if(ip + 3 >= size) return false;
+      out = uint32_t(code[ip]) |
+            (uint32_t(code[ip + 1]) << 8) |
+            (uint32_t(code[ip + 2]) << 16) |
+            (uint32_t(code[ip + 3]) << 24);
+      ip += 4;
+      return true;
+    };
+
+    struct SrcMeta {
+      SrcKind Kind = SrcKind::TexId;
+      uint32_t TexId = 0;
+      uint32_t Off = 0;
+      uint32_t Len = 0;
+    };
+
+    auto readSrc = [&](size_t& ip, SrcMeta& out)->bool{
+      uint8_t kind = 0;
+      if(!read8(ip, kind)) return false;
+      out.Kind = static_cast<SrcKind>(kind);
+      if(out.Kind == SrcKind::TexId) {
+        return read24(ip, out.TexId);
+      }
+      if(out.Kind == SrcKind::Sub) {
+        return read24(ip, out.Off) && read24(ip, out.Len);
+      }
+      return false;
+    };
+
+    auto scan = [&](auto&& self, size_t start, size_t end) -> void {
+      if(start >= end || end > size) {
+        return;
+      }
+      for(const auto& r : visited) {
+        if(r.Start == start && r.End == end) {
+          return;
+        }
+      }
+      visited.push_back(Range{start, end});
+
+      size_t ip = start;
+      while(ip < end) {
+        uint8_t opByte = 0;
+        if(!read8(ip, opByte)) return;
+        Op op = static_cast<Op>(opByte);
+        switch(op) {
+          case Op::End:
+            return;
+
+          case Op::Base_Tex: {
+            SrcMeta src{};
+            if(!readSrc(ip, src)) return;
+            if(src.Kind == SrcKind::Sub) {
+              size_t subStart = src.Off;
+              size_t subEnd = subStart + src.Len;
+              if(subStart < subEnd && subEnd <= size) {
+                self(self, subStart, subEnd);
+              }
+            }
+          } break;
+
+          case Op::Base_Fill: {
+            uint16_t tmp16 = 0;
+            uint32_t tmp32 = 0;
+            if(!read16(ip, tmp16)) return;
+            if(!read16(ip, tmp16)) return;
+            if(!read32(ip, tmp32)) return;
+          } break;
+
+          case Op::Base_Anim: {
+            SrcMeta src{};
+            if(!readSrc(ip, src)) return;
+            uint16_t frameW = 0;
+            uint16_t frameH = 0;
+            uint16_t frameCount = 0;
+            uint16_t fpsQ = 0;
+            uint8_t flags = 0;
+            if(!read16(ip, frameW)) return;
+            if(!read16(ip, frameH)) return;
+            if(!read16(ip, frameCount)) return;
+            if(!read16(ip, fpsQ)) return;
+            if(!read8(ip, flags)) return;
+
+            if(src.Kind == SrcKind::TexId) {
+              AnimSpec spec{};
+              spec.TexId = src.TexId;
+              spec.HasTexId = true;
+              spec.FrameW = frameW;
+              spec.FrameH = frameH;
+              spec.FrameCount = frameCount;
+              spec.FpsQ = fpsQ;
+              spec.Flags = flags;
+              specs.push_back(spec);
+            } else if(src.Kind == SrcKind::Sub) {
+              size_t subStart = src.Off;
+              size_t subEnd = subStart + src.Len;
+              if(subStart < subEnd && subEnd <= size) {
+                self(self, subStart, subEnd);
+              }
+            }
+          } break;
+
+          case Op::Resize: {
+            uint16_t tmp16 = 0;
+            if(!read16(ip, tmp16)) return;
+            if(!read16(ip, tmp16)) return;
+          } break;
+
+          case Op::Transform:
+          case Op::Opacity:
+          case Op::Invert:
+            if(!read8(ip, opByte)) return;
+            break;
+
+          case Op::NoAlpha:
+          case Op::Brighten:
+            break;
+
+          case Op::MakeAlpha:
+            if(ip + 2 >= size) return;
+            ip += 3;
+            break;
+
+          case Op::Contrast:
+            if(ip + 1 >= size) return;
+            ip += 2;
+            break;
+
+          case Op::Multiply:
+          case Op::Screen: {
+            uint32_t tmp32 = 0;
+            if(!read32(ip, tmp32)) return;
+          } break;
+
+          case Op::Colorize: {
+            uint32_t tmp32 = 0;
+            if(!read32(ip, tmp32)) return;
+            if(!read8(ip, opByte)) return;
+          } break;
+
+          case Op::Anim: {
+            uint16_t frameW = 0;
+            uint16_t frameH = 0;
+            uint16_t frameCount = 0;
+            uint16_t fpsQ = 0;
+            uint8_t flags = 0;
+            if(!read16(ip, frameW)) return;
+            if(!read16(ip, frameH)) return;
+            if(!read16(ip, frameCount)) return;
+            if(!read16(ip, fpsQ)) return;
+            if(!read8(ip, flags)) return;
+
+            AnimSpec spec{};
+            spec.HasTexId = false;
+            spec.FrameW = frameW;
+            spec.FrameH = frameH;
+            spec.FrameCount = frameCount;
+            spec.FpsQ = fpsQ;
+            spec.Flags = flags;
+            specs.push_back(spec);
+          } break;
+
+          case Op::Overlay:
+          case Op::Mask: {
+            SrcMeta src{};
+            if(!readSrc(ip, src)) return;
+            if(src.Kind == SrcKind::Sub) {
+              size_t subStart = src.Off;
+              size_t subEnd = subStart + src.Len;
+              if(subStart < subEnd && subEnd <= size) {
+                self(self, subStart, subEnd);
+              }
+            }
+          } break;
+
+          case Op::LowPart: {
+            if(!read8(ip, opByte)) return;
+            SrcMeta src{};
+            if(!readSrc(ip, src)) return;
+            if(src.Kind == SrcKind::Sub) {
+              size_t subStart = src.Off;
+              size_t subEnd = subStart + src.Len;
+              if(subStart < subEnd && subEnd <= size) {
+                self(self, subStart, subEnd);
+              }
+            }
+          } break;
+
+          case Op::Combine: {
+            uint16_t w = 0, h = 0, n = 0;
+            if(!read16(ip, w)) return;
+            if(!read16(ip, h)) return;
+            if(!read16(ip, n)) return;
+            for(uint16_t i = 0; i < n; ++i) {
+              uint16_t tmp16 = 0;
+              if(!read16(ip, tmp16)) return;
+              if(!read16(ip, tmp16)) return;
+              SrcMeta src{};
+              if(!readSrc(ip, src)) return;
+              if(src.Kind == SrcKind::Sub) {
+                size_t subStart = src.Off;
+                size_t subEnd = subStart + src.Len;
+                if(subStart < subEnd && subEnd <= size) {
+                  self(self, subStart, subEnd);
+                }
+              }
+            }
+            (void)w; (void)h;
+          } break;
+
+          default:
+            return;
+        }
+      }
+    };
+
+    scan(scan, 0, size);
+    return specs;
   }
 
-  void fromWords(std::vector<Word> words) {
-    Code_ = std::move(words);
+  static std::vector<AnimSpec> extractAnimationSpecs(const std::vector<Word>& code) {
+    return extractAnimationSpecs(code.data(), code.size());
+  }
+
+  void fromBytes(std::vector<uint8_t> bytes) {
+    Code_ = std::move(bytes);
     Patches_.clear();
     Source_.clear();
+    PendingSub_.clear();
   }
 
 private:
   // ========================
-  // Word helpers
+  // Byte helpers (little-endian)
   // ========================
-  static constexpr uint32_t _make_u32(uint16_t lo, uint16_t hi) {
-    return uint32_t(lo) | (uint32_t(hi) << 16);
+  static inline uint16_t _rd16(const std::vector<uint8_t>& c, size_t& ip) {
+    uint16_t v = uint16_t(c[ip]) | (uint16_t(c[ip+1]) << 8);
+    ip += 2;
+    return v;
   }
-  static constexpr uint16_t _lo16(uint32_t v) { return uint16_t(v & 0xFFFFu); }
-  static constexpr uint16_t _hi16(uint32_t v) { return uint16_t((v >> 16) & 0xFFFFu); }
+  static inline uint32_t _rd24(const std::vector<uint8_t>& c, size_t& ip) {
+    uint32_t v = uint32_t(c[ip]) | (uint32_t(c[ip+1]) << 8) | (uint32_t(c[ip+2]) << 16);
+    ip += 3;
+    return v;
+  }
+  static inline uint32_t _rd32(const std::vector<uint8_t>& c, size_t& ip) {
+    uint32_t v = uint32_t(c[ip]) |
+                 (uint32_t(c[ip+1]) << 8) |
+                 (uint32_t(c[ip+2]) << 16) |
+                 (uint32_t(c[ip+3]) << 24);
+    ip += 4;
+    return v;
+  }
+
+  static inline void _wr8 (std::vector<uint8_t>& o, uint32_t v){ o.push_back(uint8_t(v & 0xFFu)); }
+  static inline void _wr16(std::vector<uint8_t>& o, uint32_t v){
+    o.push_back(uint8_t(v & 0xFFu));
+    o.push_back(uint8_t((v >> 8) & 0xFFu));
+  }
+  static inline void _wr24(std::vector<uint8_t>& o, uint32_t v){
+    o.push_back(uint8_t(v & 0xFFu));
+    o.push_back(uint8_t((v >> 8) & 0xFFu));
+    o.push_back(uint8_t((v >> 16) & 0xFFu));
+  }
+  static inline void _wr32(std::vector<uint8_t>& o, uint32_t v){
+    o.push_back(uint8_t(v & 0xFFu));
+    o.push_back(uint8_t((v >> 8) & 0xFFu));
+    o.push_back(uint8_t((v >> 16) & 0xFFu));
+    o.push_back(uint8_t((v >> 24) & 0xFFu));
+  }
 
   // ========================
-  // SrcRef encoding in u16 words
-  //    kind + a + b  (3 words)
-  //    kind=0 TexId: a=_lo16(id), b=_hi16(id)
-  //    kind=1 Sub  : a=offsetWords, b=lenWords
+  // SrcRef encoding in bytes (variable length)
+  //   kind(1) + payload
+  //   TexId: id24(3)              => total 4
+  //   Sub  : off16(3) + len16(3)  => total 7
   // ========================
-  enum class SrcKind : Word { TexId = 0, Sub = 1 };
+  enum class SrcKind : uint8_t { TexId = 0, Sub = 1 };
 
   struct SrcRef {
-    SrcKind Kind;
-    Word A;
-    Word B;
+    SrcKind Kind{};
+    uint32_t TexId24 = 0;   // for TexId
+    uint16_t Off24 = 0;     // for Sub
+    uint16_t Len24 = 0;     // for Sub
   };
 
   // ========================
-  // Opcodes (fixed-length headers; some are variable like Combine)
+  // Opcodes (1 byte)
   // ========================
-  enum class Op : Word {
+  enum class Op : uint8_t {
     End = 0,
 
-    // Base producers (top-level expression must start with one of these)
-    Base_Tex   = 1, // args: SrcRef(TexId) -> kind,lo,hi
-    Base_Fill  = 2, // args: w, h, color_lo, color_hi
+    Base_Tex  = 1,  // SrcRef(TexId)
+    Base_Fill = 2,  // w16, h16, color32
+    Base_Anim = 3,  // SrcRef(TexId), frameW16, frameH16, frames16, fpsQ16, flags8
 
-    // Unary ops on current image
-    Resize     = 10, // w, h
-    Transform  = 11, // t(0..7)
-    Opacity    = 12, // a(0..255)
-    NoAlpha    = 13, // -
-    MakeAlpha  = 14, // rgb_lo(0xRRGG), rgb_hi(0x00BB) packed as 24-bit in 2 words
-    Invert     = 15, // mask bits (r=1 g=2 b=4 a=8)
-    Brighten   = 16, // -
-    Contrast   = 17, // contrast_bias(0..254), bright_bias(0..254) where v = bias-127
-    Multiply   = 18, // color_lo, color_hi (0xAARRGGBB)
-    Screen     = 19, // color_lo, color_hi
-    Colorize   = 20, // color_lo, color_hi, ratio(0..255)
+    Resize    = 10, // w16, h16
+    Transform = 11, // t8
+    Opacity   = 12, // a8
+    NoAlpha   = 13, // -
+    MakeAlpha = 14, // rgb24 (3 bytes) RR,GG,BB
+    Invert    = 15, // mask8
+    Brighten  = 16, // -
+    Contrast  = 17, // cBias8, bBias8 (bias-127)
+    Multiply  = 18, // color32
+    Screen    = 19, // color32
+    Colorize  = 20, // color32, ratio8
+    Anim      = 21, // frameW16, frameH16, frames16, fpsQ16, flags8
 
-    // Ops that consume a SrcRef (TexId or Sub)
-    Overlay    = 30, // SrcRef (3 words)
-    Mask       = 31, // SrcRef
-    LowPart    = 32, // percent(0..100), SrcRef (1 + 3 words)
+    Overlay   = 30, // SrcRef (var)
+    Mask      = 31, // SrcRef (var)
+    LowPart   = 32, // percent8, SrcRef (var)
 
-    // Variable example (optional): Combine
-    // Combine: w,h, n, then n times: x,y, SrcRef (x,y,kind,a,b)
-    Combine    = 40
+    Combine   = 40  // w16,h16,n16 then n*(x16,y16,SrcRef)  (если понадобится — допишем DSL)
   };
 
   // ========================
@@ -158,7 +468,7 @@ private:
   static inline uint8_t _clampu8(int v){ return uint8_t(std::min(255, std::max(0, v))); }
 
   // ========================
-  // VM (executes u16 words)
+  // VM (executes bytes)
   // ========================
   struct Image {
     uint32_t W=0,H=0;
@@ -167,58 +477,139 @@ private:
 
   class VM {
   public:
+    using TextureProvider = TexturePipelineProgram::TextureProviderFunc;
+
     explicit VM(TextureProvider provider) : Provider_(std::move(provider)) {}
 
-    bool run(const std::vector<Word>& code, OwnedTexture& out, std::string* err) {
+    bool run(const std::vector<uint8_t>& code, OwnedTexture& out, double timeSeconds, std::string* err) {
       if(code.empty()) { if(err) *err="Empty bytecode"; return false; }
 
       Image cur;
       std::unordered_map<uint32_t, Image> texCache;
-      std::unordered_map<uint32_t, Image> subCache; // key = (offset<<16)|len (fits if <=65535)
+      std::unordered_map<uint64_t, Image> subCache; // key = (off<<24) | len
 
       size_t ip = 0;
+
       auto need = [&](size_t n)->bool{
         if(ip + n > code.size()) { if(err) *err="Bytecode truncated"; return false; }
         return true;
       };
 
-      while (true) {
+      while(true) {
         if(!need(1)) return false;
         Op op = static_cast<Op>(code[ip++]);
         if(op == Op::End) break;
 
-        switch (op) {
+        switch(op) {
           case Op::Base_Tex: {
-            if(!need(3)) return false;
-            SrcRef src = _readSrc(code, ip);
+            SrcRef src;
+            if(!_readSrc(code, ip, src, err)) return false;
             if(src.Kind != SrcKind::TexId) return _bad(err, "Base_Tex must be TexId");
-            cur = _loadTex(_make_u32(src.A, src.B), texCache, err);
+            cur = _loadTex(src.TexId24, texCache, err);
             if(cur.W == 0) return false;
           } break;
 
           case Op::Base_Fill: {
-            if(!need(4)) return false;
-            uint32_t w = code[ip++], h = code[ip++];
-            uint32_t colorLo = code[ip++];
-            uint32_t colorHi = code[ip++];
-            uint32_t color = _make_u32(colorLo, colorHi);
+            if(!need(2+2+4)) return false;
+            uint32_t w = _rd16(code, ip);
+            uint32_t h = _rd16(code, ip);
+            uint32_t color = _rd32(code, ip);
             cur = _makeSolid(w, h, color);
           } break;
 
+          case Op::Base_Anim: {
+            SrcRef src;
+            if(!_readSrc(code, ip, src, err)) return false;
+            if(src.Kind != SrcKind::TexId) return _bad(err, "Base_Anim must be TexId");
+            if(!need(2+2+2+2+1)) return false;
+
+            uint32_t frameW = _rd16(code, ip);
+            uint32_t frameH = _rd16(code, ip);
+            uint32_t frameCount = _rd16(code, ip);
+            uint32_t fpsQ = _rd16(code, ip);
+            uint32_t flags = code[ip++];
+
+            Image sheet = _loadTex(src.TexId24, texCache, err);
+            if(sheet.W == 0) return false;
+
+            uint32_t fw = frameW ? frameW : sheet.W;
+            uint32_t fh = frameH ? frameH : sheet.H;
+            if(fw == 0 || fh == 0) return _bad(err, "Base_Anim invalid frame size");
+
+            bool horizontal = (flags & AnimHorizontal) != 0;
+            if(frameCount == 0) {
+              uint32_t avail = horizontal ? (sheet.W / fw) : (sheet.H / fh);
+              frameCount = std::max<uint32_t>(1u, avail);
+            }
+
+            uint32_t fpsQv = fpsQ ? fpsQ : DefaultAnimFpsQ;
+            double fps = double(fpsQv) / 256.0;
+            double frameTime = timeSeconds * fps;
+            if(frameTime < 0.0) frameTime = 0.0;
+
+            uint32_t frameIndex = frameCount ? (uint32_t(frameTime) % frameCount) : 0u;
+            double frac = frameTime - std::floor(frameTime);
+
+            cur = _cropFrame(sheet, frameIndex, fw, fh, horizontal);
+
+            if(flags & AnimSmooth) {
+              uint32_t nextIndex = frameCount ? ((frameIndex + 1u) % frameCount) : 0u;
+              Image next = _cropFrame(sheet, nextIndex, fw, fh, horizontal);
+              _lerp(cur, next, frac);
+            }
+          } break;
+
+          case Op::Anim: {
+            if(!cur.W || !cur.H) return _bad(err, "Anim requires base image");
+            if(!need(2+2+2+2+1)) return false;
+
+            uint32_t frameW = _rd16(code, ip);
+            uint32_t frameH = _rd16(code, ip);
+            uint32_t frameCount = _rd16(code, ip);
+            uint32_t fpsQ = _rd16(code, ip);
+            uint32_t flags = code[ip++];
+
+            const Image& sheet = cur;
+            uint32_t fw = frameW ? frameW : sheet.W;
+            uint32_t fh = frameH ? frameH : sheet.H;
+            if(fw == 0 || fh == 0) return _bad(err, "Anim invalid frame size");
+
+            bool horizontal = (flags & AnimHorizontal) != 0;
+            if(frameCount == 0) {
+              uint32_t avail = horizontal ? (sheet.W / fw) : (sheet.H / fh);
+              frameCount = std::max<uint32_t>(1u, avail);
+            }
+
+            uint32_t fpsQv = fpsQ ? fpsQ : DefaultAnimFpsQ;
+            double fps = double(fpsQv) / 256.0;
+            double frameTime = timeSeconds * fps;
+            if(frameTime < 0.0) frameTime = 0.0;
+
+            uint32_t frameIndex = frameCount ? (uint32_t(frameTime) % frameCount) : 0u;
+            double frac = frameTime - std::floor(frameTime);
+
+            cur = _cropFrame(sheet, frameIndex, fw, fh, horizontal);
+            if(flags & AnimSmooth) {
+              uint32_t nextIndex = frameCount ? ((frameIndex + 1u) % frameCount) : 0u;
+              Image next = _cropFrame(sheet, nextIndex, fw, fh, horizontal);
+              _lerp(cur, next, frac);
+            }
+          } break;
+
           case Op::Overlay: {
-            if(!need(3)) return false;
-            SrcRef src = _readSrc(code, ip);
-            Image over = _loadSrc(code, src, texCache, subCache, err);
+            SrcRef src;
+            if(!_readSrc(code, ip, src, err)) return false;
+            Image over = _loadSrc(code, src, texCache, subCache, timeSeconds, err);
             if(over.W == 0) return false;
-            if(!cur.W) { cur = std::move(over); break; } // if no base, adopt
+            if(!cur.W) { cur = std::move(over); break; }
             over = _resizeNN_ifNeeded(over, cur.W, cur.H);
             _alphaOver(cur, over);
           } break;
 
           case Op::Mask: {
-            if(!need(3)) return false;
-            SrcRef src = _readSrc(code, ip);
-            Image m = _loadSrc(code, src, texCache, subCache, err);
+            SrcRef src;
+            if(!_readSrc(code, ip, src, err)) return false;
+            Image m = _loadSrc(code, src, texCache, subCache, timeSeconds, err);
             if(m.W == 0) return false;
             if(!cur.W) return _bad(err, "Mask requires base image");
             m = _resizeNN_ifNeeded(m, cur.W, cur.H);
@@ -226,10 +617,11 @@ private:
           } break;
 
           case Op::LowPart: {
-            if(!need(1+3)) return false;
-            uint32_t pct = std::min<uint32_t>(100u, code[ip++]);
-            SrcRef src = _readSrc(code, ip);
-            Image over = _loadSrc(code, src, texCache, subCache, err);
+            if(!need(1)) return false;
+            uint32_t pct = std::min<uint32_t>(100u, uint32_t(code[ip++]));
+            SrcRef src;
+            if(!_readSrc(code, ip, src, err)) return false;
+            Image over = _loadSrc(code, src, texCache, subCache, timeSeconds, err);
             if(over.W == 0) return false;
             if(!cur.W) return _bad(err, "LowPart requires base image");
             over = _resizeNN_ifNeeded(over, cur.W, cur.H);
@@ -237,23 +629,24 @@ private:
           } break;
 
           case Op::Resize: {
-            if(!need(2)) return false;
-            uint32_t w = code[ip++], h = code[ip++];
             if(!cur.W) return _bad(err, "Resize requires base image");
+            if(!need(2+2)) return false;
+            uint32_t w = _rd16(code, ip);
+            uint32_t h = _rd16(code, ip);
             cur = _resizeNN(cur, w, h);
           } break;
 
           case Op::Transform: {
+            if(!cur.W) return _bad(err, "Transform requires base image");
             if(!need(1)) return false;
             uint32_t t = code[ip++] & 7u;
-            if(!cur.W) return _bad(err, "Transform requires base image");
             cur = _transform(cur, t);
           } break;
 
           case Op::Opacity: {
+            if(!cur.W) return _bad(err, "Opacity requires base image");
             if(!need(1)) return false;
             uint32_t a = code[ip++] & 0xFFu;
-            if(!cur.W) return _bad(err, "Opacity requires base image");
             _opacity(cur, uint8_t(a));
           } break;
 
@@ -263,17 +656,17 @@ private:
           } break;
 
           case Op::MakeAlpha: {
-            if(!need(2)) return false;
-            uint32_t rgb24 = (uint32_t(code[ip+1]) << 16) | uint32_t(code[ip]); // lo has RR GG, hi has 00 BB
-            ip += 2;
             if(!cur.W) return _bad(err, "MakeAlpha requires base image");
-            _makeAlpha(cur, rgb24 & 0x00FFFFFFu);
+            if(!need(3)) return false;
+            uint32_t rr = code[ip++], gg = code[ip++], bb = code[ip++];
+            uint32_t rgb24 = (rr << 16) | (gg << 8) | bb;
+            _makeAlpha(cur, rgb24);
           } break;
 
           case Op::Invert: {
+            if(!cur.W) return _bad(err, "Invert requires base image");
             if(!need(1)) return false;
             uint32_t mask = code[ip++] & 0xFu;
-            if(!cur.W) return _bad(err, "Invert requires base image");
             _invert(cur, mask);
           } break;
 
@@ -283,57 +676,33 @@ private:
           } break;
 
           case Op::Contrast: {
+            if(!cur.W) return _bad(err, "Contrast requires base image");
             if(!need(2)) return false;
             int c = int(code[ip++]) - 127;
             int b = int(code[ip++]) - 127;
-            if(!cur.W) return _bad(err, "Contrast requires base image");
             _contrast(cur, c, b);
           } break;
 
           case Op::Multiply: {
-            if(!need(2)) return false;
-            uint32_t colorLo = code[ip++];
-            uint32_t colorHi = code[ip++];
-            uint32_t color = _make_u32(colorLo, colorHi);
             if(!cur.W) return _bad(err, "Multiply requires base image");
+            if(!need(4)) return false;
+            uint32_t color = _rd32(code, ip);
             _multiply(cur, color);
           } break;
 
           case Op::Screen: {
-            if(!need(2)) return false;
-            uint32_t colorLo = code[ip++];
-            uint32_t colorHi = code[ip++];
-            uint32_t color = _make_u32(colorLo, colorHi);
             if(!cur.W) return _bad(err, "Screen requires base image");
+            if(!need(4)) return false;
+            uint32_t color = _rd32(code, ip);
             _screen(cur, color);
           } break;
 
           case Op::Colorize: {
-            if(!need(3)) return false;
-            uint32_t colorLo = code[ip++];
-            uint32_t colorHi = code[ip++];
-            uint32_t color = _make_u32(colorLo, colorHi);
-            uint32_t ratio = code[ip++] & 0xFFu;
             if(!cur.W) return _bad(err, "Colorize requires base image");
+            if(!need(4+1)) return false;
+            uint32_t color = _rd32(code, ip);
+            uint32_t ratio = code[ip++] & 0xFFu;
             _colorize(cur, color, uint8_t(ratio));
-          } break;
-
-          case Op::Combine: {
-            // variable length:
-            // w,h,n then for each: x,y, SrcRef(3)
-            if(!need(3)) return false;
-            uint32_t w = code[ip++], h = code[ip++], n = code[ip++];
-            Image outImg; outImg.W=w; outImg.H=h; outImg.Px.assign(size_t(w)*size_t(h), 0u);
-            for(uint32_t i=0;i<n;i++){
-              if(!need(2+3)) return false;
-              int x = int(code[ip++]);
-              int y = int(code[ip++]);
-              SrcRef src = _readSrc(code, ip);
-              Image part = _loadSrc(code, src, texCache, subCache, err);
-              if(part.W == 0) return false;
-              _overlayAt(outImg, part, x, y);
-            }
-            cur = std::move(outImg);
           } break;
 
           default:
@@ -352,17 +721,29 @@ private:
 
     static bool _bad(std::string* err, const char* msg){ if(err) *err = msg; return false; }
 
-    static SrcRef _readSrc(const std::vector<Word>& code, size_t& ip) {
-      SrcRef r;
-      r.Kind = static_cast<SrcKind>(code[ip++]);
-      r.A = code[ip++];
-      r.B = code[ip++];
-      return r;
+    static bool _readSrc(const std::vector<uint8_t>& code, size_t& ip, SrcRef& out, std::string* err) {
+      if(ip >= code.size()) return _bad(err, "Bytecode truncated (SrcRef.kind)");
+      out.Kind = static_cast<SrcKind>(code[ip++]);
+      if(out.Kind == SrcKind::TexId) {
+        if(ip + 3 > code.size()) return _bad(err, "Bytecode truncated (TexId24)");
+        out.TexId24 = _rd24(code, ip);
+        out.Off24 = 0; out.Len24 = 0;
+        return true;
+      }
+      if(out.Kind == SrcKind::Sub) {
+        if(ip + 6 > code.size()) return _bad(err, "Bytecode truncated (Sub off/len)");
+        out.Off24 = _rd24(code, ip);
+        out.Len24 = _rd24(code, ip);
+        out.TexId24 = 0;
+        return true;
+      }
+      return _bad(err, "Unknown SrcKind");
     }
 
     Image _loadTex(uint32_t id, std::unordered_map<uint32_t, Image>& cache, std::string* err) {
       auto it = cache.find(id);
       if(it != cache.end()) return it->second;
+
       auto t = Provider_(id);
       if(!t || !t->Pixels || !t->Width || !t->Height) {
         if(err) *err = "Texture id not found: " + std::to_string(id);
@@ -375,12 +756,13 @@ private:
       return img;
     }
 
-    Image _loadSub(const std::vector<Word>& code,
-                  Word off, Word len,
-                  std::unordered_map<uint32_t, Image>& texCache,
-                  std::unordered_map<uint32_t, Image>& subCache,
-                  std::string* err) {
-      uint32_t key = (uint32_t(off) << 16) | uint32_t(len);
+    Image _loadSub(const std::vector<uint8_t>& code,
+                   uint32_t off, uint32_t len,
+                   std::unordered_map<uint32_t, Image>& /*texCache*/,
+                   std::unordered_map<uint64_t, Image>& subCache,
+                   double timeSeconds,
+                   std::string* err) {
+      uint64_t key = (uint32_t(off) << 24) | uint32_t(len);
       auto it = subCache.find(key);
       if(it != subCache.end()) return it->second;
 
@@ -388,11 +770,10 @@ private:
       size_t end = start + size_t(len);
       if(end > code.size()) { if(err) *err="Subprogram out of range"; return {}; }
 
-      // Run subprogram slice by copying minimal (simple + safe).
-      std::vector<Word> slice(code.begin()+start, code.begin()+end);
+      std::vector<uint8_t> slice(code.begin()+start, code.begin()+end);
       OwnedTexture tmp;
       VM nested(Provider_);
-      if(!nested.run(slice, tmp, err)) return {};
+      if(!nested.run(slice, tmp, timeSeconds, err)) return {};
 
       Image img;
       img.W = tmp.Width; img.H = tmp.Height; img.Px = std::move(tmp.Pixels);
@@ -400,22 +781,19 @@ private:
       return img;
     }
 
-    Image _loadSrc(const std::vector<Word>& code,
-                  const SrcRef& src,
-                  std::unordered_map<uint32_t, Image>& texCache,
-                  std::unordered_map<uint32_t, Image>& subCache,
-                  std::string* err) {
-      if(src.Kind == SrcKind::TexId) {
-        return _loadTex(_make_u32(src.A, src.B), texCache, err);
-      }
-      if(src.Kind == SrcKind::Sub) {
-        return _loadSub(code, src.A, src.B, texCache, subCache, err);
-      }
+    Image _loadSrc(const std::vector<uint8_t>& code,
+                   const SrcRef& src,
+                   std::unordered_map<uint32_t, Image>& texCache,
+                   std::unordered_map<uint64_t, Image>& subCache,
+                   double timeSeconds,
+                   std::string* err) {
+      if(src.Kind == SrcKind::TexId) return _loadTex(src.TexId24, texCache, err);
+      if(src.Kind == SrcKind::Sub)   return _loadSub(code, src.Off24, src.Len24, texCache, subCache, timeSeconds, err);
       if(err) *err = "Unknown SrcKind";
       return {};
     }
 
-    // ---- image ops ----
+    // ---- image ops (как в исходнике) ----
     static Image _makeSolid(uint32_t w, uint32_t h, uint32_t color) {
       Image img; img.W=w; img.H=h;
       img.Px.assign(size_t(w)*size_t(h), color);
@@ -438,6 +816,48 @@ private:
     static Image _resizeNN_ifNeeded(Image img, uint32_t w, uint32_t h) {
       if(img.W == w && img.H == h) return img;
       return _resizeNN(img, w, h);
+    }
+
+    static Image _cropFrame(const Image& sheet, uint32_t index, uint32_t fw, uint32_t fh, bool horizontal) {
+      Image out;
+      out.W = fw;
+      out.H = fh;
+      out.Px.assign(size_t(fw) * size_t(fh), 0u);
+
+      uint32_t baseX = horizontal ? (index * fw) : 0u;
+      uint32_t baseY = horizontal ? 0u : (index * fh);
+
+      for(uint32_t y = 0; y < fh; ++y) {
+        uint32_t sy = baseY + y;
+        if(sy >= sheet.H) continue;
+        for(uint32_t x = 0; x < fw; ++x) {
+          uint32_t sx = baseX + x;
+          if(sx >= sheet.W) continue;
+          out.Px[size_t(y) * fw + x] = sheet.Px[size_t(sy) * sheet.W + sx];
+        }
+      }
+      return out;
+    }
+
+    static void _lerp(Image& base, const Image& over, double t) {
+      if(t <= 0.0) return;
+      if(t >= 1.0) { base = over; return; }
+      if(base.W != over.W || base.H != over.H) return;
+
+      const size_t n = base.Px.size();
+      for(size_t i = 0; i < n; ++i) {
+        uint32_t a = base.Px[i];
+        uint32_t b = over.Px[i];
+        int ar = _r(a), ag = _g(a), ab = _b(a), aa = _a(a);
+        int br = _r(b), bg = _g(b), bb = _b(b), ba = _a(b);
+
+        uint8_t rr = _clampu8(int(ar + (br - ar) * t));
+        uint8_t rg = _clampu8(int(ag + (bg - ag) * t));
+        uint8_t rb = _clampu8(int(ab + (bb - ab) * t));
+        uint8_t ra = _clampu8(int(aa + (ba - aa) * t));
+
+        base.Px[i] = _pack(ra, rr, rg, rb);
+      }
     }
 
     static void _alphaOver(Image& base, const Image& over) {
@@ -468,44 +888,6 @@ private:
           outB = uint8_t(std::min<uint32_t>(255, (outBp * 255) / outA));
         }
         base.Px[i] = _pack(uint8_t(outA), outR, outG, outB);
-      }
-    }
-
-    static void _overlayAt(Image& dst, const Image& src, int ox, int oy) {
-      for(uint32_t y=0;y<src.H;y++){
-        int dy = oy + int(y);
-        if(dy < 0 || dy >= int(dst.H)) continue;
-        for(uint32_t x=0;x<src.W;x++){
-          int dx = ox + int(x);
-          if(dx < 0 || dx >= int(dst.W)) continue;
-          size_t di = size_t(dy)*dst.W + uint32_t(dx);
-          uint32_t b = dst.Px[di], o = src.Px[size_t(y)*src.W + x];
-
-          uint8_t ba=_a(b), br=_r(b), bg=_g(b), bb=_b(b);
-          uint8_t oa=_a(o), or_=_r(o), og=_g(o), ob=_b(o);
-
-          uint32_t brp = (uint32_t(br) * ba) / 255;
-          uint32_t bgp = (uint32_t(bg) * ba) / 255;
-          uint32_t bbp = (uint32_t(bb) * ba) / 255;
-
-          uint32_t orp = (uint32_t(or_) * oa) / 255;
-          uint32_t ogp = (uint32_t(og)  * oa) / 255;
-          uint32_t obp = (uint32_t(ob)  * oa) / 255;
-
-          uint32_t inv = 255 - oa;
-          uint32_t outA  = oa + (uint32_t(ba) * inv) / 255;
-          uint32_t outRp = orp + (brp * inv) / 255;
-          uint32_t outGp = ogp + (bgp * inv) / 255;
-          uint32_t outBp = obp + (bbp * inv) / 255;
-
-          uint8_t outR=0,outG=0,outB=0;
-          if(outA) {
-            outR = uint8_t(std::min<uint32_t>(255, (outRp * 255) / outA));
-            outG = uint8_t(std::min<uint32_t>(255, (outGp * 255) / outA));
-            outB = uint8_t(std::min<uint32_t>(255, (outBp * 255) / outA));
-          }
-          dst.Px[di] = _pack(uint8_t(outA), outR, outG, outB);
-        }
       }
     }
 
@@ -596,7 +978,6 @@ private:
       for(uint32_t y=startY; y<base.H; y++){
         for(uint32_t x=0; x<base.W; x++){
           size_t i = size_t(y)*base.W + x;
-          // overlay one pixel
           uint32_t b = base.Px[i], o = over.Px[i];
           uint8_t ba=_a(b), br=_r(b), bg=_g(b), bb=_b(b);
           uint8_t oa=_a(o), or_=_r(o), og=_g(o), ob=_b(o);
@@ -674,11 +1055,12 @@ private:
 
   // ========================
   // Minimal DSL Lexer/Parser
-  // Supports:
-  //   tex "name" |> op(args...)
-  //   tex 32x32 "#RRGGBBAA" |> ...
-  // Grouping (subprogram) only where an op expects a texture arg:
-  //   overlay( tex "b" |> ... )
+  // now supports:
+  //   tex name |> op(...)
+  //   tex 32x32 "#RRGGBBAA"
+  // nested only where op expects a texture arg:
+  //   overlay( tex other |> ... )
+  // Also supports overlay(other) / mask(other) / lowpart(50, other)
   // ========================
   enum class TokKind { End, Ident, Number, String, Pipe, Comma, LParen, RParen, Eq, X };
 
@@ -692,21 +1074,38 @@ private:
     std::string_view S;
     size_t I=0;
 
+    bool HasBuf = false;
+    Tok  Buf;
+
     static bool isAlpha(char c){ return (c>='a'&&c<='z')||(c>='A'&&c<='Z')||c=='_'; }
     static bool isNum(char c){ return (c>='0'&&c<='9'); }
     static bool isAlnum(char c){ return isAlpha(c)||isNum(c); }
+
+    void unread(const Tok& t) {
+      // allow only 1-level unread
+      HasBuf = true;
+      Buf = t;
+    }
+
+    Tok peek() {
+      Tok t = next();
+      unread(t);
+      return t;
+    }
 
     void skipWs() {
       while (I < S.size()) {
         char c = S[I];
         if(c==' '||c=='\t'||c=='\r'||c=='\n'){ I++; continue; }
-        if(c=='#'){ while (I<S.size() && S[I]!='\n') I++; continue; } // line comment
+        if(c=='#'){ while (I<S.size() && S[I]!='\n') I++; continue; }
         if(c=='/' && I+1<S.size() && S[I+1]=='/'){ I+=2; while (I<S.size() && S[I]!='\n') I++; continue; }
         break;
       }
     }
 
     Tok next() {
+      if(HasBuf) { HasBuf = false; return Buf; }
+
       skipWs();
       if(I >= S.size()) return {TokKind::End, {}, 0};
 
@@ -748,7 +1147,11 @@ private:
       if(isAlpha(c) || c=='#') {
         size_t start=I;
         I++;
-        while (I<S.size() && (isAlnum(S[I]) || S[I]=='.' || S[I]=='#')) I++;
+        while (I<S.size()) {
+          char ch = S[I];
+          if(isAlnum(ch) || ch=='_' || ch=='.' || ch=='-' || ch=='#') { I++; continue; }
+          break;
+        }
         return {TokKind::Ident, std::string(S.substr(start, I-start)), 0};
       }
 
@@ -756,6 +1159,7 @@ private:
       return {TokKind::End, {}, 0};
     }
   };
+
 
   struct ArgVal {
     enum class ValueKind { U32, Str, Ident };
@@ -768,39 +1172,51 @@ private:
     std::string Name;
     std::vector<ArgVal> Pos;
     std::unordered_map<std::string, ArgVal> Named;
-    // For ops that accept texture expression, we allow first positional arg to be "subexpr marker"
-    // but we handle that at compile-time by parsing texture expr inside parentheses.
   };
 
   // ========================
   // Compiler state
   // ========================
   std::string Source_;
-  std::vector<Word> Code_;
+  std::vector<uint8_t> Code_;
   std::vector<Patch> Patches_;
 
-  // ---- _emit helpers ----
-  void _emit(Op op) { Code_.push_back(Word(op)); }
-  void _emitW(uint32_t v) { Code_.push_back(Word(v & 0xFFFFu)); }
-  void _emitU32(uint32_t v) { Code_.push_back(_lo16(v)); Code_.push_back(_hi16(v)); }
+  // ---- emit helpers (target = arbitrary out vector) ----
+  static inline void _emitOp(std::vector<uint8_t>& out, Op op) { _wr8(out, uint8_t(op)); }
+  static inline void _emitU8(std::vector<uint8_t>& out, uint32_t v){ _wr8(out, v); }
+  static inline void _emitU16(std::vector<uint8_t>& out, uint32_t v){ _wr16(out, v); }
+  static inline void _emitU24(std::vector<uint8_t>& out, uint32_t v){ _wr24(out, v); }
+  static inline void _emitU32(std::vector<uint8_t>& out, uint32_t v){ _wr32(out, v); }
 
-  void _emitTexRefName(const std::string& name) {
-    // reserve lo+hi for uint32 texId
-    size_t lo = Code_.size();
-    Code_.push_back(0);
-    Code_.push_back(0);
-    Patches_.push_back(Patch{lo, name});
+  // reserve 3 bytes for u24 texId and register patch (absolute or relative)
+  struct RelPatch { size_t Rel0; std::string Name; };
+
+  static void _emitTexPatchU24(std::vector<uint8_t>& out,
+                              std::vector<Patch>* absPatches,
+                              std::vector<RelPatch>* relPatches,
+                              const std::string& name) {
+    const size_t idx = out.size();
+    out.push_back(0); out.push_back(0); out.push_back(0);
+    if(absPatches) absPatches->push_back(Patch{idx, name});
+    if(relPatches) relPatches->push_back(RelPatch{idx, name});
   }
 
-  void _emitSrcRef(const SrcRef& r) {
-    Code_.push_back(Word(r.Kind));
-    Code_.push_back(r.A);
-    Code_.push_back(r.B);
+  static void _emitSrcTexName(std::vector<uint8_t>& out,
+                              std::vector<Patch>* absPatches,
+                              std::vector<RelPatch>* relPatches,
+                              const std::string& name) {
+    _emitU8(out, uint8_t(SrcKind::TexId));
+    _emitTexPatchU24(out, absPatches, relPatches, name);
+  }
+
+  static void _emitSrcSub(std::vector<uint8_t>& out, uint32_t off24, uint32_t len24) {
+    _emitU8(out, uint8_t(SrcKind::Sub));
+    _emitU24(out, off24);
+    _emitU24(out, len24);
   }
 
   // ========================
-  // Color parsing: #RRGGBB or #RRGGBBAA
-  // Stored as 0xAARRGGBB
+  // Color parsing: #RRGGBB or #RRGGBBAA -> 0xAARRGGBB
   // ========================
   static bool _parseHexColor(std::string_view s, uint32_t& outARGB) {
     if(s.size()!=7 && s.size()!=9) return false;
@@ -839,19 +1255,118 @@ private:
       return false;
     }
 
-    // Parse base expression after tex:
-    //   1) "name"
-    //   2) Number X Number Ident(color)
-    //   3) (future) png("...")
+    // compile base into main Code_
+    if(!_compileBaseAfterTex(lx, Code_, /*abs*/&Patches_, /*rel*/nullptr, err)) return false;
+
+    // pipeline: |> op ...
+    Tok nt = lx.next();
+    while (nt.Kind == TokKind::Pipe) {
+      Tok opName = lx.next();
+      if(opName.Kind != TokKind::Ident) { if(err) *err="Expected op name after |>"; return false; }
+      ParsedOp op; op.Name = opName.Text;
+
+      Tok peek = lx.next();
+      if(peek.Kind == TokKind::LParen) {
+        if(!_parseArgListOrTextureExpr(lx, op, err)) return false;
+        nt = lx.next();
+      } else {
+        nt = peek; // no-arg op
+      }
+
+      if(!_compileOpInto(lx, op, Code_, /*abs*/&Patches_, /*rel*/nullptr, err)) return false;
+    }
+
+    _emitOp(Code_, Op::End);
+    if (Code_.size() > MaxCodeBytes) {
+      if (err)
+        *err = "Pipeline bytecode too large: " + std::to_string(Code_.size()) +
+          " > MaxCodeBytes(" + std::to_string(MaxCodeBytes) + ")";
+      return false;
+    }
+
+    return true;
+  }
+
+  // ========================
+  // Base compilation after 'tex'
+  // supports:
+  //   1) tex name
+  //   2) tex "name(.png/.jpg/.jpeg)"  (allowed but normalized)
+  //   3) tex anim(...)
+  //   4) tex 32x32 "#RRGGBBAA"
+  // ========================
+  bool _compileBaseAfterTex(Lexer& lx,
+                            std::vector<uint8_t>& out,
+                            std::vector<Patch>* absPatches,
+                            std::vector<RelPatch>* relPatches,
+                            std::string* err) {
     Tok a = lx.next();
 
-    if(a.Kind == TokKind::String || a.Kind == TokKind::Ident) {
-      // tex "name.png"
-      _emit(Op::Base_Tex);
-      // SrcRef(TexId): kind + id(lo/hi)
-      Code_.push_back(Word(SrcKind::TexId));
-      _emitTexRefName(a.Text); // lo+hi patched later
-    } else if(a.Kind == TokKind::Number) {
+    if(a.Kind == TokKind::Ident && a.Text == "anim") {
+      Tok lp = lx.next();
+      if(lp.Kind != TokKind::LParen) { if(err) *err="Expected '(' after anim"; return false; }
+
+      ParsedOp op; op.Name="anim";
+      if(!_parseArgList(lx, op, err)) return false;
+
+      auto posU = [&](size_t i)->std::optional<uint32_t>{
+        if(i >= op.Pos.size()) return std::nullopt;
+        if(op.Pos[i].Kind != ArgVal::ValueKind::U32) return std::nullopt;
+        return op.Pos[i].U32;
+      };
+      auto posS = [&](size_t i)->std::optional<std::string>{
+        if(i >= op.Pos.size()) return std::nullopt;
+        return op.Pos[i].S;
+      };
+      auto namedU = [&](std::string_view k)->std::optional<uint32_t>{
+        auto it = op.Named.find(std::string(k));
+        if(it==op.Named.end() || it->second.Kind!=ArgVal::ValueKind::U32) return std::nullopt;
+        return it->second.U32;
+      };
+      auto namedS = [&](std::string_view k)->std::optional<std::string>{
+        auto it = op.Named.find(std::string(k));
+        if(it==op.Named.end()) return std::nullopt;
+        return it->second.S;
+      };
+
+      std::string tex = namedS("tex").value_or(posS(0).value_or(""));
+      if(tex.empty()) { if(err) *err="anim requires texture name"; return false; }
+
+      uint32_t frameW = namedU("frame_w").value_or(namedU("w").value_or(posU(1).value_or(0)));
+      uint32_t frameH = namedU("frame_h").value_or(namedU("h").value_or(posU(2).value_or(0)));
+      uint32_t frames = namedU("frames").value_or(namedU("count").value_or(posU(3).value_or(0)));
+      uint32_t fps    = namedU("fps").value_or(posU(4).value_or(0));
+      uint32_t smooth = namedU("smooth").value_or(posU(5).value_or(0));
+
+      std::string axis = namedS("axis").value_or("");
+      bool horizontal = (!axis.empty() && (axis[0] == 'x' || axis[0] == 'h'));
+
+      if(frameW > 65535u || frameH > 65535u || frames > 65535u) {
+        if(err) *err="anim params must fit uint16";
+        return false;
+      }
+
+      uint32_t fpsQ = fps ? std::min<uint32_t>(0xFFFFu, fps * 256u) : DefaultAnimFpsQ;
+      uint32_t flags = (smooth ? AnimSmooth : 0) | (horizontal ? AnimHorizontal : 0);
+
+      _emitOp(out, Op::Base_Anim);
+      _emitSrcTexName(out, absPatches, relPatches, tex);
+      _emitU16(out, frameW);
+      _emitU16(out, frameH);
+      _emitU16(out, frames);
+      _emitU16(out, fpsQ);
+      _emitU8(out, flags);
+      return true;
+    }
+
+    if(a.Kind == TokKind::Ident || a.Kind == TokKind::String) {
+      // tex name   (or tex "name.png" => normalized)
+      _emitOp(out, Op::Base_Tex);
+      _emitSrcTexName(out, absPatches, relPatches, a.Text);
+      return true;
+    }
+
+    if(a.Kind == TokKind::Number) {
       // tex 32x32 "#RRGGBBAA"
       Tok xTok = lx.next();
       Tok b = lx.next();
@@ -867,66 +1382,75 @@ private:
         return false;
       }
       if(w>65535u || h>65535u) { if(err) *err="w/h must fit in uint16"; return false; }
-      _emit(Op::Base_Fill);
-      _emitW(w); _emitW(h);
-      _emitU32(color);
-    } else {
-      if(err) *err="Bad 'tex' base expression";
-      return false;
+      _emitOp(out, Op::Base_Fill);
+      _emitU16(out, w);
+      _emitU16(out, h);
+      _emitU32(out, color);
+      return true;
     }
 
-    // pipeline: |> op ...
-    Tok nt = lx.next();
-    while (nt.Kind == TokKind::Pipe) {
-      Tok opName = lx.next();
-      if(opName.Kind != TokKind::Ident) { if(err) *err="Expected op name after |>"; return false; }
-      ParsedOp op;
-      op.Name = opName.Text;
-
-      Tok peek = lx.next();
-      if(peek.Kind == TokKind::LParen) {
-        if(!_parseArgListOrTextureExpr(lx, op, err)) return false;
-        nt = lx.next();
-      } else {
-        // no-arg op (like brighten) must be followed by next |> or end
-        nt = peek;
-      }
-
-      if(!_compileOp(lx, op, err)) return false;
-    }
-
-    _emit(Op::End);
-    return true;
+    if(err) *err="Bad 'tex' base expression";
+    return false;
   }
 
-  // Parses either:
-  //  - normal args list: (a,b,key=v)
-  //  - OR for ops that take texture, allow: ( tex ... |> ... ) as the *first* positional "special"
+  // ========================
+  // Args parsing:
+  //  - normal args: (a,b,key=v)
+  //  - OR if first token inside '(' is 'tex' => parse nested program until ')'
+  // ========================
   bool _parseArgListOrTextureExpr(Lexer& lx, ParsedOp& op, std::string* err) {
-    // Lookahead: if next token is 'tex' => parse sub texture expression until ')'
     Tok first = lx.next();
-    if(first.Kind==TokKind::Ident && first.Text=="tex") {
-      // We parse a full texture expression (starting after 'tex') into a subprogram bytecode vector.
-      // We'll store a marker in op.Named["_subtex"] with special string "<compiled later>"
-      // But easier: store the subprogram words immediately as a pseudo-arg in op.Pos[0].S = "<SUB>"
-      ArgVal av; av.Kind = ArgVal::ValueKind::Ident; av.S = "__SUBTEX__";
-      op.Pos.push_back(std::move(av));
 
-      // compile subprogram into vector<Word> sub
-      std::vector<Word> sub;
+    if(first.Kind==TokKind::Ident && first.Text=="tex") {
+      // marker
+      ArgVal av; av.Kind = ArgVal::ValueKind::Ident; av.S = "__SUBTEX__";
+      op.Pos.push_back(av);
+
+      PendingSubData sub;
       if(!_compileSubProgramFromAlreadySawTex(lx, sub, err)) return false;
 
-      // Expect ')'
       Tok end = lx.next();
       if(end.Kind != TokKind::RParen) { if(err) *err="Expected ')' after sub texture expr"; return false; }
 
-      // Stash the subprogram into an internal buffer attached to this op (hack: store in a map)
       PendingSub_[&op] = std::move(sub);
       return true;
     }
 
-    // Otherwise parse normal arg list, where `first` is first token inside '('
+    // otherwise parse as normal arg list, where `first` is first token inside '('
     Tok t = first;
+    if(t.Kind == TokKind::RParen) return true;
+
+    while (true) {
+      if(t.Kind == TokKind::Ident) {
+        Tok maybeEq = lx.next();
+        if(maybeEq.Kind == TokKind::Eq) {
+          Tok v = lx.next();
+          ArgVal av;
+          if(!_tokToVal(v, av, err)) return false;
+          op.Named[t.Text] = std::move(av);
+          t = lx.next();
+        } else {
+          ArgVal av; av.Kind = ArgVal::ValueKind::Ident; av.S = t.Text;
+          op.Pos.push_back(std::move(av));
+          t = maybeEq;
+        }
+      } else {
+        ArgVal av;
+        if(!_tokToVal(t, av, err)) return false;
+        op.Pos.push_back(std::move(av));
+        t = lx.next();
+      }
+
+      if(t.Kind == TokKind::Comma) { t = lx.next(); continue; }
+      if(t.Kind == TokKind::RParen) return true;
+
+      if(err) *err = "Expected ',' or ')' in argument list";
+      return false;
+    }
+  }
+
+  bool _parseArgList(Lexer& lx, ParsedOp& op, std::string* err) {
+    Tok t = lx.next();
     if(t.Kind == TokKind::RParen) return true;
 
     while (true) {
@@ -967,139 +1491,142 @@ private:
   }
 
   // ========================
-  // Subprogram compilation
-  // We already consumed 'tex' token. Now we parse base + pipeline until we hit ')'
-  // Strategy:
-  //  - compile into `sub` vector<Word>
-  //  - stop when next token would be ')'
-  //  - do NOT consume ')'
+  // Subprogram compilation:
+  // we already consumed 'tex'. Parse base + pipeline until next token is ')'
+  // DO NOT consume ')'
   // ========================
-  bool _compileSubProgramFromAlreadySawTex(Lexer& lx, std::vector<Word>& sub, std::string* err) {
-    // We reuse a mini-compiler that writes into `sub` instead of Code_
-    auto emitS  = [&](Op op){ sub.push_back(Word(op)); };
-    auto emitSW = [&](uint32_t v){ sub.push_back(Word(v & 0xFFFFu)); };
-    auto emitSU32 = [&](uint32_t v){ sub.push_back(_lo16(v)); sub.push_back(_hi16(v)); };
-    auto emitSTexName = [&](const std::string& name){
-      // IMPORTANT: patches must point into main Code_, not sub.
-      // Solution: subprogram words are appended into main Code_ later, so we can patch after append.
-      // Here we place placeholder lo/hi and store a *relative patch* into SubPatchesTemp_.
-      size_t lo = sub.size();
-      sub.push_back(0); sub.push_back(0);
-      SubPatchesTemp_.push_back({lo, name}); // relative to sub start
-    };
+  struct PendingSubData {
+    std::vector<uint8_t> Bytes;
+    std::vector<RelPatch> RelPatches;
+  };
 
-    Tok a = lx.next();
-    if(a.Kind == TokKind::String || a.Kind == TokKind::Ident) {
-      emitS(Op::Base_Tex);
-      sub.push_back(Word(SrcKind::TexId));
-      emitSTexName(a.Text);
-    } else if(a.Kind == TokKind::Number) {
-      Tok xTok = lx.next();
-      Tok b = lx.next();
-      Tok colTok = lx.next();
-      if(xTok.Kind != TokKind::X || b.Kind != TokKind::Number || (colTok.Kind!=TokKind::Ident && colTok.Kind!=TokKind::String)) {
-        if(err) *err="Sub tex: expected <w>x<h> <#color>";
-        return false;
-      }
-      uint32_t w = a.U32, h = b.U32;
-      uint32_t color=0;
-      if(!_parseHexColor(colTok.Text, color)) { if(err) *err="Sub tex: bad color"; return false; }
-      if(w>65535u || h>65535u) { if(err) *err="Sub tex: w/h must fit uint16"; return false; }
-      emitS(Op::Base_Fill);
-      emitSW(w); emitSW(h);
-      emitSU32(color);
-    } else {
-      if(err) *err="Sub tex: bad base";
+  bool _compileSubProgramFromAlreadySawTex(Lexer& lx, PendingSubData& outSub, std::string* err) {
+    outSub.Bytes.clear();
+    outSub.RelPatches.clear();
+
+    // base
+    if(!_compileBaseAfterTex(lx, outSub.Bytes, /*abs*/nullptr, /*rel*/&outSub.RelPatches, err))
       return false;
-    }
 
-    // Pipeline until we see ')' lookahead (we can’t unread, so we detect by peeking in a copy)
-    while (true) {
-      // Peek next non-ws token without consuming by copying lexer
-      Lexer peek = lx;
-      Tok nt = peek.next();
+    // pipeline until ')'
+    while(true) {
+      // peek
+      Tok nt = lx.peek();
       if(nt.Kind == TokKind::RParen) break;
       if(nt.Kind != TokKind::Pipe) { if(err) *err="Sub tex: expected '|>' or ')'"; return false; }
+
       // consume pipe
       lx.next();
       Tok opName = lx.next();
       if(opName.Kind != TokKind::Ident) { if(err) *err="Sub tex: expected op name"; return false; }
+
       ParsedOp op; op.Name = opName.Text;
 
       Tok lp = lx.next();
       if(lp.Kind == TokKind::LParen) {
         if(!_parseArgListOrTextureExpr(lx, op, err)) return false;
       } else {
-        // no-arg op
+        // no-arg op, lp already is next token (pipe or ')'), so we need to "unread" — can't.
+        // simplest: treat it as next token for outer loop by rewinding lexer state.
+        // We'll do it by storing the token back via a small hack: rebuild peek? Too heavy.
+        // Instead: enforce parentheses for ops in subprogram except no-arg ops (brighten/noalpha) which can be without.
+        // To keep behavior identical to main, we handle no-arg by rewinding I one token is not possible,
+        // so we accept that in subprogram, no-arg ops must be written as brighten() etc.
+        if(err) *err="Sub tex: no-arg ops must use parentheses, e.g. brighten()";
+        return false;
       }
 
-      // compile op into `sub` by temporarily swapping buffers
-      if(!_compileOpInto(lx, op, sub, emitS, emitSW, emitSU32, emitSTexName, err)) return false;
+      if(!_compileOpInto(lx, op, outSub.Bytes, /*abs*/nullptr, /*rel*/&outSub.RelPatches, err))
+        return false;
+    }
+    
+    // Pipeline until we see ')'
+    while (true) {
+      Tok nt = lx.peek();
+      if(nt.Kind == TokKind::RParen) break;
+      if(nt.Kind != TokKind::Pipe) { if(err) *err="Sub tex: expected '|>' or ')'"; return false; }
+
+      // consume pipe
+      lx.next();
+
+      Tok opName = lx.next();
+      if(opName.Kind != TokKind::Ident) { if(err) *err="Sub tex: expected op name"; return false; }
+
+      ParsedOp op; op.Name = opName.Text;
+
+      // allow both op and op(...)
+      Tok maybe = lx.peek();
+      if(maybe.Kind == TokKind::LParen) {
+        lx.next(); // consume '('
+        if(!_parseArgListOrTextureExpr(lx, op, err)) return false;
+      } else {
+        // no-arg op; nothing to parse
+      }
+
+      if(!_compileOpInto(lx, op, outSub.Bytes, /*abs*/nullptr, /*rel*/&outSub.RelPatches, err))
+        return false;
     }
 
-    emitS(Op::End);
+
+    _emitOp(outSub.Bytes, Op::End);
     return true;
   }
 
-  // Temporary relative patches inside subprogram being built
-  struct RelPatch { size_t RelLo; std::string Name; };
-  mutable std::vector<RelPatch> SubPatchesTemp_;
+  // pending subprogram associated with ParsedOp pointer (created during parsing)
+  mutable std::unordered_map<const ParsedOp*, PendingSubData> PendingSub_;
 
-  // Stash compiled subprogram per op pointer (simplifies this one-file example)
-  mutable std::unordered_map<const ParsedOp*, std::vector<Word>> PendingSub_;
+  // Append subprogram to `out` and emit SrcRef(Sub, off16, len16), migrating patches properly.
+  static bool _appendSubprogram(std::vector<uint8_t>& out,
+                                PendingSubData&& sub,
+                                std::vector<Patch>* absPatches,
+                                std::vector<RelPatch>* relPatches,
+                                uint32_t& outOff,
+                                uint32_t& outLen,
+                                std::string* err) {
+    const size_t offset = out.size();
+    const size_t len = sub.Bytes.size();
 
-  // Append a subprogram to main Code_, returning SrcRef(Sub, offset,len) and migrating its patches
-  SrcRef _appendSubprogram(std::vector<Word>&& sub) {
-    // offset/len must fit u16
-    size_t offset = Code_.size();
-    size_t len = sub.size();
-
-    // migrate relative patches -> absolute patches into main Code_
-    // Each rel patch points to lo word within sub vector.
-    for(const auto& rp : SubPatchesTemp_) {
-      size_t absLo = offset + rp.RelLo;
-      Patches_.push_back(Patch{absLo, rp.Name});
+    if(offset > 0xFFFFFFu || len > 0xFFFFFFu || (offset + len) > 0xFFFFFFu) {
+      if(err) *err = "Subprogram слишком большой (off/len должны влезать в u24 байт)";
+      return false;
     }
-    SubPatchesTemp_.clear();
 
-    Code_.insert(Code_.end(), sub.begin(), sub.end());
+    if(offset + len > MaxCodeBytes) {
+      if(err) *err = "Pipeline bytecode too large after sub append: " +
+                    std::to_string(offset + len) + " > MaxCodeBytes(" + std::to_string(MaxCodeBytes) + ")";
+      return false;
+    }
 
-    SrcRef r;
-    r.Kind = SrcKind::Sub;
-    r.A = Word(offset & 0xFFFFu);
-    r.B = Word(len & 0xFFFFu);
-    return r;
+    // migrate patches
+    if(absPatches) {
+      for(const auto& rp : sub.RelPatches) {
+        absPatches->push_back(Patch{offset + rp.Rel0, rp.Name});
+      }
+    }
+    if(relPatches) {
+      for(const auto& rp : sub.RelPatches) {
+        relPatches->push_back(RelPatch{offset + rp.Rel0, rp.Name});
+      }
+    }
+
+    out.insert(out.end(), sub.Bytes.begin(), sub.Bytes.end());
+
+    outOff = uint32_t(offset);
+    outLen = uint32_t(len);
+    return true;
   }
 
   // ========================
-  // compile operations
+  // Compile operations into arbitrary `out`
+  // absPatches != nullptr => patches recorded as absolute for this buffer
+  // relPatches != nullptr => patches recorded as relative for this buffer
   // ========================
-  bool _compileOp(Lexer& lx, const ParsedOp& op, std::string* err) {
-    // Normal compile into main Code_
-    auto it = PendingSub_.find(&op);
-    const bool hasSub = (it != PendingSub_.end());
-    return _compileOpInto(
-      lx, op, Code_,
-      [&](Op o){ _emit(o); },
-      [&](uint32_t v){ _emitW(v); },
-      [&](uint32_t v){ _emitU32(v); },
-      [&](const std::string& name){ _emitTexRefName(name); },
-      err,
-      hasSub ? &it->second : nullptr
-    );
-  }
-
-  // Core compiler that can target either main `Code_` or a `sub` vector.
-  template <class EmitOp, class EmitWFn, class EmitU32Fn, class EmitTexNameFn>
   bool _compileOpInto(Lexer& /*lx*/,
-                     const ParsedOp& op,
-                     std::vector<Word>& out,
-                     EmitOp emitOpFn,
-                     EmitWFn emitWFn,
-                     EmitU32Fn emitU32Fn,
-                     EmitTexNameFn emitTexNameFn,
-                     std::string* err,
-                     std::vector<Word>* pendingSub = nullptr) {
+                      const ParsedOp& op,
+                      std::vector<uint8_t>& out,
+                      std::vector<Patch>* absPatches,
+                      std::vector<RelPatch>* relPatches,
+                      std::string* err) {
     auto posU = [&](size_t i)->std::optional<uint32_t>{
       if(i >= op.Pos.size()) return std::nullopt;
       if(op.Pos[i].Kind != ArgVal::ValueKind::U32) return std::nullopt;
@@ -1120,64 +1647,55 @@ private:
       return it->second.S;
     };
 
-    auto emitSrcTexName = [&](const std::string& texName){
-      // SrcRef(TexId): kind + id(lo/hi)
-      out.push_back(Word(SrcKind::TexId));
-      emitTexNameFn(texName);
+    auto emitSrcFromName = [&](const std::string& n){
+      _emitSrcTexName(out, absPatches, relPatches, n);
     };
 
     auto emitSrcFromPendingSub = [&]()->bool{
-      if(!pendingSub) { if(err) *err="Internal: missing subprogram"; return false; }
-      // move pendingSub into main Code_ ONLY (grouping only makes sense there)
-      // If we're compiling inside a subprogram and we see another nested subprogram,
-      // this demo keeps it simple: it will still append into the *same* vector (out),
-      // so we can just inline by "append here". For production, you likely want a
-      // separate sub-table or a more structured approach.
-      //
-      // For simplicity: we append nested subprogram right into `out` and reference it by offset/len.
-      size_t offset = out.size();
-      size_t len = pendingSub->size();
-      out.insert(out.end(), pendingSub->begin(), pendingSub->end());
-      out.push_back(Word(SrcKind::Sub));
-      out.push_back(Word(offset & 0xFFFFu));
-      out.push_back(Word(len & 0xFFFFu));
+      auto it = PendingSub_.find(&op);
+      if(it == PendingSub_.end()) { if(err) *err="Internal: missing subprogram"; return false; }
+      uint32_t off=0, len=0;
+      if(!_appendSubprogram(out, std::move(it->second), absPatches, relPatches, off, len, err)) return false;
+      PendingSub_.erase(it);
+      _emitSrcSub(out, off, len);
       return true;
     };
 
-    // --- Ops that accept a "texture" argument: overlay/mask/lowpart/combine parts ---
+    // --- Ops that accept a "texture" argument: overlay/mask/lowpart ---
     if(op.Name == "overlay") {
-      emitOpFn(Op::Overlay);
-      if(!op.Pos.empty() && op.Pos[0].S == "__SUBTEX__") {
-        // Subprogram source
-        // In main compile path, we prefer storing subprograms at end and referencing by offset/len.
-        // Here we already have the compiled sub in pendingSub; we append + _emit SrcRef(Sub,...).
-        // For main program, we use _appendSubprogram() outside; in this generic function we inline.
-        return emitSrcFromPendingSub();
-      }
+      _emitOp(out, Op::Overlay);
+      if(!op.Pos.empty() && op.Pos[0].S == "__SUBTEX__") return emitSrcFromPendingSub();
+
+      // allow overlay(name) or overlay(tex=name)
       std::string tex = namedS("tex").value_or(posS(0).value_or(""));
       if(tex.empty()) { if(err) *err="overlay requires texture arg"; return false; }
-      emitSrcTexName(tex);
+      emitSrcFromName(tex);
       return true;
     }
 
     if(op.Name == "mask") {
-      emitOpFn(Op::Mask);
+      _emitOp(out, Op::Mask);
       if(!op.Pos.empty() && op.Pos[0].S == "__SUBTEX__") return emitSrcFromPendingSub();
+
       std::string tex = namedS("tex").value_or(posS(0).value_or(""));
       if(tex.empty()) { if(err) *err="mask requires texture arg"; return false; }
-      emitSrcTexName(tex);
+      emitSrcFromName(tex);
       return true;
     }
 
     if(op.Name == "lowpart") {
       uint32_t pct = namedU("percent").value_or(posU(0).value_or(0));
       if(!pct) { if(err) *err="lowpart requires percent"; return false; }
-      emitOpFn(Op::LowPart);
-      emitWFn(std::min<uint32_t>(100u, pct));
+
+      _emitOp(out, Op::LowPart);
+      _emitU8(out, std::min<uint32_t>(100u, pct));
+
+      // 2nd arg can be nested subtex or name
       if(op.Pos.size() >= 2 && op.Pos[1].S == "__SUBTEX__") return emitSrcFromPendingSub();
+
       std::string tex = namedS("tex").value_or(posS(1).value_or(""));
-      if(tex.empty()) { if(err) *err="lowpart requires tex"; return false; }
-      emitSrcTexName(tex);
+      if(tex.empty()) { if(err) *err="lowpart requires texture arg"; return false; }
+      emitSrcFromName(tex);
       return true;
     }
 
@@ -1186,24 +1704,24 @@ private:
       uint32_t w = namedU("w").value_or(posU(0).value_or(0));
       uint32_t h = namedU("h").value_or(posU(1).value_or(0));
       if(!w || !h || w>65535u || h>65535u) { if(err) *err="resize(w,h) must fit uint16"; return false; }
-      emitOpFn(Op::Resize); emitWFn(w); emitWFn(h);
+      _emitOp(out, Op::Resize); _emitU16(out, w); _emitU16(out, h);
       return true;
     }
 
     if(op.Name == "transform") {
       uint32_t t = namedU("t").value_or(posU(0).value_or(0));
-      emitOpFn(Op::Transform); emitWFn(t & 7u);
+      _emitOp(out, Op::Transform); _emitU8(out, t & 7u);
       return true;
     }
 
     if(op.Name == "opacity") {
       uint32_t a = namedU("a").value_or(posU(0).value_or(255));
-      emitOpFn(Op::Opacity); emitWFn(a & 0xFFu);
+      _emitOp(out, Op::Opacity); _emitU8(out, a & 0xFFu);
       return true;
     }
 
     if(op.Name == "remove_alpha" || op.Name == "noalpha") {
-      emitOpFn(Op::NoAlpha);
+      _emitOp(out, Op::NoAlpha);
       return true;
     }
 
@@ -1212,10 +1730,10 @@ private:
       uint32_t argb=0;
       if(!_parseHexColor(col, argb)) { if(err) *err="make_alpha requires color #RRGGBB"; return false; }
       uint32_t rgb24 = argb & 0x00FFFFFFu;
-      // pack rgb24 into two u16: lo=0xRRGG, hi=0x00BB
-      emitOpFn(Op::MakeAlpha);
-      emitWFn((rgb24 >> 8) & 0xFFFFu); // RR GG
-      emitWFn(rgb24 & 0x00FFu);        // BB
+      _emitOp(out, Op::MakeAlpha);
+      _emitU8(out, (rgb24 >> 16) & 0xFFu);
+      _emitU8(out, (rgb24 >>  8) & 0xFFu);
+      _emitU8(out, (rgb24 >>  0) & 0xFFu);
       return true;
     }
 
@@ -1228,12 +1746,12 @@ private:
         if(c=='b') mask |= 4;
         if(c=='a') mask |= 8;
       }
-      emitOpFn(Op::Invert); emitWFn(mask);
+      _emitOp(out, Op::Invert); _emitU8(out, mask & 0xFu);
       return true;
     }
 
     if(op.Name == "brighten") {
-      emitOpFn(Op::Brighten);
+      _emitOp(out, Op::Brighten);
       return true;
     }
 
@@ -1242,9 +1760,9 @@ private:
       int b = int(namedU("brightness").value_or(posU(1).value_or(0)));
       c = std::max(-127, std::min(127, c));
       b = std::max(-127, std::min(127, b));
-      emitOpFn(Op::Contrast);
-      emitWFn(uint32_t(c + 127));
-      emitWFn(uint32_t(b + 127));
+      _emitOp(out, Op::Contrast);
+      _emitU8(out, uint32_t(c + 127));
+      _emitU8(out, uint32_t(b + 127));
       return true;
     }
 
@@ -1252,11 +1770,11 @@ private:
       std::string col = namedS("color").value_or(posS(0).value_or(""));
       uint32_t argb=0;
       if(!_parseHexColor(col, argb)) { if(err) *err="Bad color literal"; return false; }
-      emitOpFn(opcode);
-      emitU32Fn(argb);
+      _emitOp(out, opcode);
+      _emitU32(out, argb);
       if(needsRatio) {
         uint32_t ratio = namedU("ratio").value_or(posU(1).value_or(255));
-        emitWFn(ratio & 0xFFu);
+        _emitU8(out, ratio & 0xFFu);
       }
       return true;
     };
@@ -1264,6 +1782,33 @@ private:
     if(op.Name == "multiply") return compileColorOp(Op::Multiply, false);
     if(op.Name == "screen")   return compileColorOp(Op::Screen, false);
     if(op.Name == "colorize") return compileColorOp(Op::Colorize, true);
+
+    if(op.Name == "anim") {
+      uint32_t frameW = namedU("frame_w").value_or(namedU("w").value_or(posU(0).value_or(0)));
+      uint32_t frameH = namedU("frame_h").value_or(namedU("h").value_or(posU(1).value_or(0)));
+      uint32_t frames = namedU("frames").value_or(namedU("count").value_or(posU(2).value_or(0)));
+      uint32_t fps    = namedU("fps").value_or(posU(3).value_or(0));
+      uint32_t smooth = namedU("smooth").value_or(posU(4).value_or(0));
+
+      std::string axis = namedS("axis").value_or("");
+      bool horizontal = (!axis.empty() && (axis[0] == 'x' || axis[0] == 'h'));
+
+      if(frameW > 65535u || frameH > 65535u || frames > 65535u) {
+        if(err) *err="anim params must fit uint16";
+        return false;
+      }
+
+      uint32_t fpsQ = fps ? std::min<uint32_t>(0xFFFFu, fps * 256u) : DefaultAnimFpsQ;
+      uint32_t flags = (smooth ? AnimSmooth : 0) | (horizontal ? AnimHorizontal : 0);
+
+      _emitOp(out, Op::Anim);
+      _emitU16(out, frameW);
+      _emitU16(out, frameH);
+      _emitU16(out, frames);
+      _emitU16(out, fpsQ);
+      _emitU8(out, flags);
+      return true;
+    }
 
     if(err) *err = "Unknown op: " + op.Name;
     return false;

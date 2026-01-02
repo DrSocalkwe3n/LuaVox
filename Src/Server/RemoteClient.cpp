@@ -366,8 +366,35 @@ void RemoteClient::NetworkAndResource_t::prepareEntitiesUpdate(const std::vector
             }
         }
 
-        // TODO: отправить клиенту
+        ResUses_t::RefEntity_t refEntity;
+        refEntity.Profile = entity->getDefId();
+        if(!ResUses.RefDefEntity.contains(refEntity.Profile))
+            ResUses.RefDefEntity[refEntity.Profile] = {};
+
+        checkPacketBorder(32);
+        NextPacket << (uint8_t) ToClient::L1::Content
+            << (uint8_t) ToClient::L2Content::Entity
+            << ceId
+            << (uint32_t) refEntity.Profile
+            << (uint32_t) entity->WorldId
+            << entity->Pos.x
+            << entity->Pos.y
+            << entity->Pos.z;
+
+        {
+            ToServer::PacketQuat q;
+            q.fromQuat(entity->Quat);
+            for(int iter = 0; iter < 5; iter++)
+                NextPacket << q.Data[iter];
+        }
+
+        ResUses.RefEntity[entityId] = std::move(refEntity);
     }
+}
+
+void RemoteClient::NetworkAndResource_t::prepareEntitiesUpdate_Dynamic(const std::vector<std::tuple<ServerEntityId_t, const Entity*>>& entities)
+{
+    prepareEntitiesUpdate(entities);
 }
 
 void RemoteClient::NetworkAndResource_t::prepareEntitySwap(ServerEntityId_t prev, ServerEntityId_t next)
@@ -400,6 +427,8 @@ void RemoteClient::NetworkAndResource_t::prepareEntitiesRemove(const std::vector
                 ResUses.RefDefEntity.erase(iterProfileRef);
                 ResUses.DefEntity.erase(iterProfile);
             }
+
+            ResUses.RefEntity.erase(iterEntity);
         }
 
         checkPacketBorder(16);
@@ -489,7 +518,12 @@ void RemoteClient::NetworkAndResource_t::prepareWorldRemove(WorldId_t worldId)
 // void RemoteClient::NetworkAndResource_t::preparePortalRemove(PortalId portalId) {}
 
 void RemoteClient::prepareCameraSetEntity(ServerEntityId_t entityId) {
-
+    auto lock = NetworkAndResource.lock();
+    ClientEntityId_t cId = lock->ReMapEntities.toClient(entityId);
+    lock->checkPacketBorder(8);
+    lock->NextPacket << (uint8_t) ToClient::L1::System
+        << (uint8_t) ToClient::L2System::LinkCameraToEntity
+        << cId;
 }
 
 ResourceRequest RemoteClient::pushPreparedPackets() {
@@ -679,15 +713,19 @@ void RemoteClient::NetworkAndResource_t::informateDefPortal(const std::vector<st
 
 void RemoteClient::NetworkAndResource_t::informateDefEntity(const std::vector<std::pair<DefEntityId, DefEntity*>>& entityes)
 {
-    // for(auto pair : entityes) {
-    //     DefEntityId_t id = pair.first;
-    //     if(!ResUses.DefEntity.contains(id))
-    //         continue;
+    for(auto pair : entityes) {
+        DefEntityId id = pair.first;
+        if(!ResUses.DefEntity.contains(id))
+            continue;
 
-    //     NextPacket << (uint8_t) ToClient::L1::Definition
-    //         << (uint8_t) ToClient::L2Definition::Entity
-    //         << id;
-    // }
+        checkPacketBorder(8);
+        NextPacket << (uint8_t) ToClient::L1::Definition
+            << (uint8_t) ToClient::L2Definition::Entity
+            << id;
+
+        if(!ResUses.RefDefEntity.contains(id))
+            ResUses.RefDefEntity[id] = {};
+    }
 }
 
 void RemoteClient::NetworkAndResource_t::informateDefItem(const std::vector<std::pair<DefItemId, DefItem*>>& items)

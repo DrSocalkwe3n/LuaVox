@@ -80,6 +80,16 @@ void ContentManager::registerBase_World(ResourceId id, const std::string& domain
         world.emplace();
 }
 
+void ContentManager::registerBase_Entity(ResourceId id, const std::string& domain, const std::string& key, const sol::table& profile) {
+    std::optional<DefEntity>& entity = getEntry_Entity(id);
+    if(!entity)
+        entity.emplace();
+
+    DefEntity& def = *entity;
+    def.Domain = domain;
+    def.Key = key;
+}
+
 void ContentManager::registerBase(EnumDefContent type, const std::string& domain, const std::string& key, const sol::table& profile)
 {
     ResourceId id = getId(type, domain, key);
@@ -89,6 +99,8 @@ void ContentManager::registerBase(EnumDefContent type, const std::string& domain
         registerBase_Node(id, domain, key, profile);
     else if(type == EnumDefContent::World)
         registerBase_World(id, domain, key, profile);
+    else if(type == EnumDefContent::Entity)
+        registerBase_Entity(id, domain, key, profile);
     else
         MAKE_ERROR("Не реализовано");
 }

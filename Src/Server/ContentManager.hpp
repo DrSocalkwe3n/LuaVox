@@ -132,6 +132,7 @@ class ContentManager {
 
     void registerBase_Node(ResourceId id, const std::string& domain, const std::string& key, const sol::table& profile);
     void registerBase_World(ResourceId id, const std::string& domain, const std::string& key, const sol::table& profile);
+    void registerBase_Entity(ResourceId id, const std::string& domain, const std::string& key, const sol::table& profile);
 
 public:
     ContentManager(AssetsManager &am);
@@ -206,6 +207,10 @@ public:
             return {&*value};
         else
             return std::nullopt;
+    }
+
+    ResourceId getContentId(EnumDefContent type, const std::string& domain, const std::string& key) {
+        return getId(type, domain, key);
     }
 
 private:

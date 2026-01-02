@@ -418,6 +418,13 @@ private:
 */
 class TextureProvider {
 public:
+    struct TextureUpdate {
+        AssetsTexture Id = 0;
+        Resource Res;
+        std::string Domain;
+        std::string Key;
+    };
+
     TextureProvider(Vulkan* inst, VkDescriptorPool descPool)
         : Inst(inst), DescPool(descPool)
     {
@@ -508,32 +515,58 @@ public:
         return Descriptor;
     }
 
-    uint16_t getTextureId(const TexturePipeline& pipe) {
+    uint32_t getTextureId(const TexturePipeline& pipe) {
         std::lock_guard lock(Mutex);
-        auto iter = PipelineToAtlas.find(pipe);
-        if(iter != PipelineToAtlas.end())
-            return iter->second;
+        bool animated = isAnimatedPipeline(pipe);
+        if(!animated) {
+            auto iter = PipelineToAtlas.find(pipe);
+            if(iter != PipelineToAtlas.end())
+                return iter->second;
+        }
 
         ::HashedPipeline hashed = makeHashedPipeline(pipe);
         uint32_t atlasId = Atlas->getByPipeline(hashed);
 
-        uint16_t result = 0;
-        if(atlasId <= std::numeric_limits<uint16_t>::max())
-            result = static_cast<uint16_t>(atlasId);
-        else
+        uint32_t result = atlasId;
+        if(Atlas && result >= Atlas->maxTextureId()) {
             LOG.warn() << "Atlas texture id overflow: " << atlasId;
+            result = Atlas->reservedOverflowId();
+        }
 
-        PipelineToAtlas.emplace(pipe, result);
+        if(!animated)
+            PipelineToAtlas.emplace(pipe, result);
         NeedsUpload = true;
         return result;
     }
 
+    uint32_t getAtlasMaxLayers() const {
+        std::lock_guard lock(Mutex);
+        return Atlas ? Atlas->maxLayers() : 0u;
+    }
+
+    uint32_t getAtlasLayerId(uint32_t layer) const {
+        std::lock_guard lock(Mutex);
+        if(!Atlas)
+            return TextureAtlas::kOverflowId;
+        if(layer >= Atlas->maxLayers())
+            return Atlas->reservedOverflowId();
+        return Atlas->reservedLayerId(layer);
+    }
+
+    void requestAtlasLayerCount(uint32_t layers) {
+        std::lock_guard lock(Mutex);
+        if(Atlas)
+            Atlas->requestLayerCount(layers);
+    }
+
     // Применяет изменения, возвращая все затронутые модели
-    std::vector<AssetsTexture> onTexturesChanges(std::vector<std::tuple<AssetsTexture, Resource>> newOrChanged, std::vector<AssetsTexture> lost) {
+    std::vector<AssetsTexture> onTexturesChanges(std::vector<TextureUpdate> newOrChanged, std::vector<AssetsTexture> lost) {
         std::lock_guard lock(Mutex);
         std::vector<AssetsTexture> result;
 
-        for(const auto& [key, res] : newOrChanged) {
+        for(const auto& update : newOrChanged) {
+            const AssetsTexture key = update.Id;
+            const Resource& res = update.Res;
             result.push_back(key);
 
             iResource sres((const uint8_t*) res.data(), res.size());
@@ -563,12 +596,19 @@ public:
                 std::move(pixels)
             ));
 
+            if(auto anim = getDefaultAnimation(update.Key, width, height)) {
+                AnimatedSources[key] = *anim;
+            } else {
+                AnimatedSources.erase(key);
+            }
+
             NeedsUpload = true;
         }
 
         for(AssetsTexture key : lost) {
             result.push_back(key);
             Atlas->freeTexture(key);
+            AnimatedSources.erase(key);
             NeedsUpload = true;
         }
 
@@ -579,9 +619,15 @@ public:
         return result;
     }
 
-    void update() {
+    void update(double timeSeconds) {
         std::lock_guard lock(Mutex);
-        if(!NeedsUpload || !Atlas)
+        if(!Atlas)
+            return;
+
+        if(Atlas->updateAnimatedPipelines(timeSeconds))
+            NeedsUpload = true;
+
+        if(!NeedsUpload)
             return;
 
         Atlas->flushNewPipelines();
@@ -638,24 +684,94 @@ public:
     }
 
 private:
+    struct AnimatedSource {
+        uint16_t FrameW = 0;
+        uint16_t FrameH = 0;
+        uint16_t FrameCount = 0;
+        uint16_t FpsQ = 0;
+        uint16_t Flags = 0;
+    };
+
+    static std::optional<AnimatedSource> getDefaultAnimation(std::string_view key, uint32_t width, uint32_t height) {
+        if(auto slash = key.find_last_of('/'); slash != std::string_view::npos)
+            key = key.substr(slash + 1);
+
+        if(key == "fire_0.png") {
+            AnimatedSource anim;
+            anim.FrameW = static_cast<uint16_t>(width);
+            anim.FrameH = static_cast<uint16_t>(width);
+            anim.FrameCount = static_cast<uint16_t>(width ? height / width : 0);
+            anim.FpsQ = static_cast<uint16_t>(12 * 256);
+            anim.Flags = 0;
+            return anim;
+        }
+
+        if(key == "lava_still.png") {
+            AnimatedSource anim;
+            anim.FrameW = static_cast<uint16_t>(width);
+            anim.FrameH = static_cast<uint16_t>(width);
+            anim.FrameCount = static_cast<uint16_t>(width ? height / width : 0);
+            anim.FpsQ = static_cast<uint16_t>(8 * 256);
+            anim.Flags = 0;
+            return anim;
+        }
+
+        if(key == "water_still.png") {
+            AnimatedSource anim;
+            anim.FrameW = static_cast<uint16_t>(width);
+            anim.FrameH = static_cast<uint16_t>(width);
+            anim.FrameCount = static_cast<uint16_t>(width ? height / width : 0);
+            anim.FpsQ = static_cast<uint16_t>(8 * 256);
+            anim.Flags = TexturePipelineProgram::AnimSmooth;
+            return anim;
+        }
+
+        return std::nullopt;
+    }
+
+    bool isAnimatedPipeline(const TexturePipeline& pipe) const {
+        if(!pipe.Pipeline.empty())
+            return false;
+        if(pipe.BinTextures.size() != 1)
+            return false;
+        return AnimatedSources.contains(pipe.BinTextures.front());
+    }
+
     ::HashedPipeline makeHashedPipeline(const TexturePipeline& pipe) const {
         ::Pipeline pipeline;
 
-        if(!pipe.Pipeline.empty() && (pipe.Pipeline.size() % 2u) == 0u) {
-            std::vector<TexturePipelineProgram::Word> words;
-            words.reserve(pipe.Pipeline.size() / 2u);
-            const uint8_t* bytes = reinterpret_cast<const uint8_t*>(pipe.Pipeline.data());
-            for(size_t i = 0; i < pipe.Pipeline.size(); i += 2) {
-                uint16_t lo = bytes[i];
-                uint16_t hi = bytes[i + 1];
-                words.push_back(static_cast<TexturePipelineProgram::Word>(lo | (hi << 8)));
-            }
-            pipeline._Pipeline.assign(words.begin(), words.end());
+        if(!pipe.Pipeline.empty()) {
+            const auto* bytes = reinterpret_cast<const ::detail::Word*>(pipe.Pipeline.data());
+            pipeline._Pipeline.assign(bytes, bytes + pipe.Pipeline.size());
         }
 
         if(pipeline._Pipeline.empty()) {
-            if(!pipe.BinTextures.empty())
-                pipeline = ::Pipeline(pipe.BinTextures.front());
+            if(!pipe.BinTextures.empty()) {
+                AssetsTexture texId = pipe.BinTextures.front();
+                auto animIter = AnimatedSources.find(texId);
+                if(animIter != AnimatedSources.end()) {
+                    const auto& anim = animIter->second;
+                    pipeline._Pipeline.clear();
+                    pipeline._Pipeline.reserve(1 + 1 + 3 + 2 + 2 + 2 + 2 + 1 + 1);
+                    auto emit16 = [&](uint16_t v) {
+                        pipeline._Pipeline.push_back(static_cast<::detail::Word>(v & 0xFFu));
+                        pipeline._Pipeline.push_back(static_cast<::detail::Word>((v >> 8) & 0xFFu));
+                    };
+                    pipeline._Pipeline.push_back(static_cast<::detail::Word>(::detail::Op16::Base_Anim));
+                    pipeline._Pipeline.push_back(static_cast<::detail::Word>(::detail::SrcKind16::TexId));
+                    pipeline._Pipeline.push_back(static_cast<::detail::Word>(texId & 0xFFu));
+                    pipeline._Pipeline.push_back(static_cast<::detail::Word>((texId >> 8) & 0xFFu));
+                    pipeline._Pipeline.push_back(static_cast<::detail::Word>((texId >> 16) & 0xFFu));
+                    emit16(anim.FrameW);
+                    emit16(anim.FrameH);
+                    emit16(anim.FrameCount);
+                    emit16(anim.FpsQ);
+                    pipeline._Pipeline.push_back(static_cast<::detail::Word>(anim.Flags & 0xFFu));
+                    pipeline._Pipeline.push_back(static_cast<::detail::Word>(::detail::Op16::End));
+                } else {
+                    pipeline = ::Pipeline(texId);
+                }
+            }
         }
 
         return ::HashedPipeline(pipeline);
@@ -690,7 +806,8 @@ private:
 
     std::shared_ptr<SharedStagingBuffer> AtlasStaging;
     std::unique_ptr<PipelinedTextureAtlas> Atlas;
-    std::unordered_map<TexturePipeline, uint16_t> PipelineToAtlas;
+    std::unordered_map<TexturePipeline, uint32_t> PipelineToAtlas;
+    std::unordered_map<AssetsTexture, AnimatedSource> AnimatedSources;
 
     bool NeedsUpload = false;
     Logger LOG = "Client>TextureProvider";
@@ -811,7 +928,7 @@ public:
         }
         std::vector<std::vector<std::pair<float, std::unordered_map<EnumFace, std::vector<NodeVertexStatic>>>>> result;
 
-        std::unordered_map<TexturePipeline, uint16_t> pipelineResolveCache;
+        std::unordered_map<TexturePipeline, uint32_t> pipelineResolveCache;
 
         auto appendModel = [&](AssetsModel modelId, const std::vector<Transformation>& transforms, std::unordered_map<EnumFace, std::vector<NodeVertexStatic>>& out) {
             ModelProvider::Model model = MP.getModel(modelId);
@@ -886,7 +1003,7 @@ public:
         return result;
     }
 
-    uint16_t getTextureId(AssetsTexture texId) {
+    uint32_t getTextureId(AssetsTexture texId) {
         if(texId == 0)
             return 0;
 
@@ -1134,6 +1251,10 @@ class VulkanRenderSession : public IRenderSession {
     AtlasImage LightDummy;
     Buffer TestQuad;
     std::optional<Buffer> TestVoxel;
+    std::optional<Buffer> AtlasLayersPreview;
+    uint32_t AtlasLayersPreviewCount = 0;
+    uint32_t EntityTextureId = 0;
+    bool EntityTextureReady = false;
 
     VkDescriptorPool DescriptorPool = VK_NULL_HANDLE;
 
@@ -1187,7 +1308,7 @@ public:
         return glm::translate(glm::mat4(quat), camOffset);
     }
 
-    void beforeDraw();
+    void beforeDraw(double timeSeconds);
     void onGpuFinished();
     void drawWorld(GlobalTime gTime, float dTime, VkCommandBuffer drawCmd);
     void pushStage(EnumRenderStage stage);
@@ -1195,6 +1316,9 @@ public:
     static std::vector<VoxelVertexPoint> generateMeshForVoxelChunks(const std::vector<VoxelCube>& cubes);
 
 private:
+    void updateTestQuadTexture(uint32_t texId);
+    void ensureEntityTexture();
+    void ensureAtlasLayerPreview();
     void updateDescriptor_VoxelsLight();
     void updateDescriptor_ChunksLight();
 };

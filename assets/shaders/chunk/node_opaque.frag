@@ -1,6 +1,6 @@
 #version 460
 
-// layout(early_fragment_tests) in;
+layout(early_fragment_tests) in;
 
 layout(location = 0) in FragmentObj {
     vec3 GeoPos;    // Реальная позиция в мире

@@ -6,6 +6,7 @@
 #include <cassert>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <unordered_map>
 #include <utility>
@@ -22,6 +23,7 @@ enum class Op16 : Word {
     End        = 0,
     Base_Tex   = 1,
     Base_Fill  = 2,
+    Base_Anim  = 3,
     Resize     = 10,
     Transform  = 11,
     Opacity    = 12,
@@ -33,6 +35,7 @@ enum class Op16 : Word {
     Multiply   = 18,
     Screen     = 19,
     Colorize   = 20,
+    Anim       = 21,
     Overlay    = 30,
     Mask       = 31,
     LowPart    = 32,
@@ -43,13 +46,24 @@ enum class SrcKind16 : Word { TexId = 0, Sub = 1 };
 
 struct SrcRef16 {
     SrcKind16 kind{SrcKind16::TexId};
-    Word a = 0;
-    Word b = 0;
+    uint32_t TexId = 0;
+    uint32_t Off = 0;
+    uint32_t Len = 0;
 };
 
-inline uint32_t makeU32(Word lo, Word hi) {
-    return uint32_t(lo) | (uint32_t(hi) << 16);
-}
+enum AnimFlags16 : Word {
+    AnimSmooth = 1 << 0,
+    AnimHorizontal = 1 << 1
+};
+
+struct AnimSpec16 {
+    uint32_t TexId = 0;
+    uint16_t FrameW = 0;
+    uint16_t FrameH = 0;
+    uint16_t FrameCount = 0;
+    uint16_t FpsQ = 0;
+    uint16_t Flags = 0;
+};
 
 inline void addUniqueDep(boost::container::small_vector<uint32_t, 8>& deps, uint32_t id) {
     if (id == TextureAtlas::kOverflowId) {
@@ -60,14 +74,50 @@ inline void addUniqueDep(boost::container::small_vector<uint32_t, 8>& deps, uint
     }
 }
 
-inline bool readSrc(const std::vector<Word>& words, size_t end, size_t& ip, SrcRef16& out) {
+inline bool read16(const std::vector<Word>& words, size_t end, size_t& ip, uint16_t& out) {
+    if (ip + 1 >= end) {
+        return false;
+    }
+    out = uint16_t(words[ip]) | (uint16_t(words[ip + 1]) << 8);
+    ip += 2;
+    return true;
+}
+
+inline bool read24(const std::vector<Word>& words, size_t end, size_t& ip, uint32_t& out) {
     if (ip + 2 >= end) {
         return false;
     }
-    out.kind = static_cast<SrcKind16>(words[ip++]);
-    out.a = words[ip++];
-    out.b = words[ip++];
+    out = uint32_t(words[ip]) |
+          (uint32_t(words[ip + 1]) << 8) |
+          (uint32_t(words[ip + 2]) << 16);
+    ip += 3;
     return true;
+}
+
+inline bool read32(const std::vector<Word>& words, size_t end, size_t& ip, uint32_t& out) {
+    if (ip + 3 >= end) {
+        return false;
+    }
+    out = uint32_t(words[ip]) |
+          (uint32_t(words[ip + 1]) << 8) |
+          (uint32_t(words[ip + 2]) << 16) |
+          (uint32_t(words[ip + 3]) << 24);
+    ip += 4;
+    return true;
+}
+
+inline bool readSrc(const std::vector<Word>& words, size_t end, size_t& ip, SrcRef16& out) {
+    if (ip >= end) {
+        return false;
+    }
+    out.kind = static_cast<SrcKind16>(words[ip++]);
+    if (out.kind == SrcKind16::TexId) {
+        return read24(words, end, ip, out.TexId);
+    }
+    if (out.kind == SrcKind16::Sub) {
+        return read24(words, end, ip, out.Off) && read24(words, end, ip, out.Len);
+    }
+    return false;
 }
 
 inline void extractPipelineDependencies(const std::vector<Word>& words,
@@ -88,12 +138,12 @@ inline void extractPipelineDependencies(const std::vector<Word>& words,
     auto need = [&](size_t n) { return ip + n <= end; };
     auto handleSrc = [&](const SrcRef16& src) {
         if (src.kind == SrcKind16::TexId) {
-            addUniqueDep(deps, makeU32(src.a, src.b));
+            addUniqueDep(deps, src.TexId);
             return;
         }
         if (src.kind == SrcKind16::Sub) {
-            size_t subStart = static_cast<size_t>(src.a);
-            size_t subEnd = subStart + static_cast<size_t>(src.b);
+            size_t subStart = static_cast<size_t>(src.Off);
+            size_t subEnd = subStart + static_cast<size_t>(src.Len);
             if (subStart < subEnd && subEnd <= words.size()) {
                 extractPipelineDependencies(words, subStart, subEnd, deps, visited);
             }
@@ -108,37 +158,54 @@ inline void extractPipelineDependencies(const std::vector<Word>& words,
                 return;
 
             case Op16::Base_Tex: {
-                if (!need(3)) return;
                 SrcRef16 src{};
                 if (!readSrc(words, end, ip, src)) return;
                 handleSrc(src);
             } break;
 
-            case Op16::Base_Fill:
-                if (!need(4)) return;
-                ip += 4;
-                break;
+            case Op16::Base_Anim: {
+                SrcRef16 src{};
+                if (!readSrc(words, end, ip, src)) return;
+                handleSrc(src);
+                uint16_t tmp16 = 0;
+                uint8_t tmp8 = 0;
+                if (!read16(words, end, ip, tmp16)) return;
+                if (!read16(words, end, ip, tmp16)) return;
+                if (!read16(words, end, ip, tmp16)) return;
+                if (!read16(words, end, ip, tmp16)) return;
+                if (!need(1)) return;
+                tmp8 = words[ip++];
+                (void)tmp8;
+            } break;
+
+            case Op16::Base_Fill: {
+                uint16_t tmp16 = 0;
+                uint32_t tmp32 = 0;
+                if (!read16(words, end, ip, tmp16)) return;
+                if (!read16(words, end, ip, tmp16)) return;
+                if (!read32(words, end, ip, tmp32)) return;
+            } break;
 
             case Op16::Overlay:
             case Op16::Mask: {
-                if (!need(3)) return;
                 SrcRef16 src{};
                 if (!readSrc(words, end, ip, src)) return;
                 handleSrc(src);
             } break;
 
             case Op16::LowPart: {
-                if (!need(1 + 3)) return;
+                if (!need(1)) return;
                 ip += 1; // percent
                 SrcRef16 src{};
                 if (!readSrc(words, end, ip, src)) return;
                 handleSrc(src);
             } break;
 
-            case Op16::Resize:
-                if (!need(2)) return;
-                ip += 2;
-                break;
+            case Op16::Resize: {
+                uint16_t tmp16 = 0;
+                if (!read16(words, end, ip, tmp16)) return;
+                if (!read16(words, end, ip, tmp16)) return;
+            } break;
 
             case Op16::Transform:
             case Op16::Opacity:
@@ -151,8 +218,8 @@ inline void extractPipelineDependencies(const std::vector<Word>& words,
                 break;
 
             case Op16::MakeAlpha:
-                if (!need(2)) return;
-                ip += 2;
+                if (!need(3)) return;
+                ip += 3;
                 break;
 
             case Op16::Invert:
@@ -166,27 +233,42 @@ inline void extractPipelineDependencies(const std::vector<Word>& words,
                 break;
 
             case Op16::Multiply:
-            case Op16::Screen:
-                if (!need(2)) return;
-                ip += 2;
-                break;
+            case Op16::Screen: {
+                uint32_t tmp32 = 0;
+                if (!read32(words, end, ip, tmp32)) return;
+            } break;
 
-            case Op16::Colorize:
-                if (!need(3)) return;
-                ip += 3;
-                break;
+            case Op16::Colorize: {
+                uint32_t tmp32 = 0;
+                if (!read32(words, end, ip, tmp32)) return;
+                if (!need(1)) return;
+                ip += 1;
+            } break;
+
+            case Op16::Anim: {
+                uint16_t tmp16 = 0;
+                if (!read16(words, end, ip, tmp16)) return;
+                if (!read16(words, end, ip, tmp16)) return;
+                if (!read16(words, end, ip, tmp16)) return;
+                if (!read16(words, end, ip, tmp16)) return;
+                if (!need(1)) return;
+                ip += 1;
+            } break;
 
             case Op16::Combine: {
-                if (!need(3)) return;
-                ip += 2; // skip w,h
-                uint32_t n = words[ip++];
+                uint16_t w = 0, h = 0, n = 0;
+                if (!read16(words, end, ip, w)) return;
+                if (!read16(words, end, ip, h)) return;
+                if (!read16(words, end, ip, n)) return;
                 for (uint32_t i = 0; i < n; ++i) {
-                    if (!need(2 + 3)) return;
-                    ip += 2; // x, y
+                    uint16_t tmp16 = 0;
+                    if (!read16(words, end, ip, tmp16)) return; // x
+                    if (!read16(words, end, ip, tmp16)) return; // y
                     SrcRef16 src{};
                     if (!readSrc(words, end, ip, src)) return;
                     handleSrc(src);
                 }
+                (void)w; (void)h;
             } break;
 
             default:
@@ -227,8 +309,9 @@ struct Pipeline {
         _Pipeline = {
             static_cast<detail::Word>(detail::Op16::Base_Tex),
             static_cast<detail::Word>(detail::SrcKind16::TexId),
-            static_cast<detail::Word>(texId & 0xFFFFu),
-            static_cast<detail::Word>((texId >> 16) & 0xFFFFu),
+            static_cast<detail::Word>(texId & 0xFFu),
+            static_cast<detail::Word>((texId >> 8) & 0xFFu),
+            static_cast<detail::Word>((texId >> 16) & 0xFFu),
             static_cast<detail::Word>(detail::Op16::End)
         };
     }
@@ -253,9 +336,7 @@ struct HashedPipeline {
         constexpr std::size_t prime = 1099511628211ull;
 
         for(detail::Word w : _Pipeline) {
-            hash ^= static_cast<uint8_t>(w & 0xFF);
-            hash *= prime;
-            hash ^= static_cast<uint8_t>((w >> 8) & 0xFF);
+            hash ^= static_cast<uint8_t>(w);
             hash *= prime;
         }
 
@@ -328,6 +409,13 @@ private:
     std::vector<uint32_t> _ChangedTextures;
     // Необходимые к созданию/обновлению пайплайны
     std::vector<HashedPipeline> _ChangedPipelines;
+    struct AnimatedPipelineState {
+        std::vector<detail::AnimSpec16> Specs;
+        std::vector<uint32_t> LastFrames;
+        bool Smooth = false;
+    };
+    std::unordered_map<HashedPipeline, AnimatedPipelineState, HashedPipelineKeyHash, HashedPipelineKeyEqual> _AnimatedPipelines;
+    double _AnimTimeSeconds = 0.0;
 
 public:
     PipelinedTextureAtlas(TextureAtlas&& tk);
@@ -346,6 +434,26 @@ public:
 
     uint32_t AtlasLayers() const {
         return atlasLayers();
+    }
+
+    uint32_t maxLayers() const {
+        return Super.maxLayers();
+    }
+
+    uint32_t maxTextureId() const {
+        return Super.maxTextureId();
+    }
+
+    TextureAtlas::TextureId reservedOverflowId() const {
+        return Super.reservedOverflowId();
+    }
+
+    TextureAtlas::TextureId reservedLayerId(uint32_t layer) const {
+        return Super.reservedLayerId(layer);
+    }
+
+    void requestLayerCount(uint32_t layers) {
+        Super.requestLayerCount(layers);
     }
 
     // Должны всегда бронировать идентификатор, либо отдавать kOverflowId. При этом запись tex+pipeline остаётся
@@ -372,6 +480,8 @@ public:
     TextureAtlas::DescriptorOut flushUploadsAndBarriers(VkCommandBuffer cmdBuffer);
 
     void notifyGpuFinished();
+
+    bool updateAnimatedPipelines(double timeSeconds);
 
 private:
     std::optional<StoredTexture> tryCopyFirstDependencyTexture(const HashedPipeline& pipeline) const;

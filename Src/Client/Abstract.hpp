@@ -112,7 +112,6 @@ struct DefPortalInfo {
 };
 
 struct DefEntityInfo {
-
 };
 
 struct DefFuncEntityInfo {
@@ -138,7 +137,10 @@ struct PortalInfo {
 };
 
 struct EntityInfo {
-
+    DefEntityId DefId = 0;
+    WorldId_t WorldId = 0;
+    Pos::Object Pos = Pos::Object(0);
+    glm::quat Quat = glm::quat(1.f, 0.f, 0.f, 0.f);
 };
 
 struct FuncEntityInfo {

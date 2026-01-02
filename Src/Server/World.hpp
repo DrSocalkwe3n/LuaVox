@@ -146,8 +146,8 @@ public:
         Возвращает список не загруженных регионов, на которые соответственно игрока не получилось подписать
         При подписи происходит отправка всех чанков и сущностей региона
     */
-    std::vector<Pos::GlobalRegion> onRemoteClient_RegionsEnter(std::shared_ptr<RemoteClient> cec, const std::vector<Pos::GlobalRegion> &enter);
-    void onRemoteClient_RegionsLost(std::shared_ptr<RemoteClient> cec, const std::vector<Pos::GlobalRegion>& lost); 
+    std::vector<Pos::GlobalRegion> onRemoteClient_RegionsEnter(WorldId_t worldId, std::shared_ptr<RemoteClient> cec, const std::vector<Pos::GlobalRegion> &enter);
+    void onRemoteClient_RegionsLost(WorldId_t worldId, std::shared_ptr<RemoteClient> cec, const std::vector<Pos::GlobalRegion>& lost); 
     struct SaveUnloadInfo {
         std::vector<Pos::GlobalRegion> ToUnload;
         std::vector<std::pair<Pos::GlobalRegion, SB_Region_In>> ToSave;

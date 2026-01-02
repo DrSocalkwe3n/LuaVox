@@ -29,11 +29,13 @@ TextureAtlas::TextureAtlas(VkDevice device,
 
   EntriesCpu_.resize(Cfg_.MaxTextureId);
   std::memset(EntriesCpu_.data(), 0, EntriesCpu_.size() * sizeof(Entry));
+  _initReservedEntries();
   EntriesDirty_ = true;
 
   Slots_.resize(Cfg_.MaxTextureId);
   FreeIds_.reserve(Cfg_.MaxTextureId);
   PendingInQueue_.assign(Cfg_.MaxTextureId, false);
+  NextId_ = _allocatableStart();
 
   if(Cfg_.ExternalSampler != VK_NULL_HANDLE) {
     Sampler_ = Cfg_.ExternalSampler;
@@ -70,13 +72,19 @@ TextureAtlas::TextureId TextureAtlas::registerTexture() {
   _ensureAliveOrThrow();
 
   TextureId id = kOverflowId;
+  if(NextId_ < _allocatableStart()) {
+    NextId_ = _allocatableStart();
+  }
+  while(!FreeIds_.empty() && isReservedId(FreeIds_.back())) {
+    FreeIds_.pop_back();
+  }
   if(!FreeIds_.empty()) {
     id = FreeIds_.back();
     FreeIds_.pop_back();
-  } else if(NextId_ < Cfg_.MaxTextureId) {
+  } else if(NextId_ < _allocatableLimit()) {
     id = NextId_++;
   } else {
-    return kOverflowId;
+    return reservedOverflowId();
   }
 
   Slot& s = Slots_[id];
@@ -96,7 +104,7 @@ void TextureAtlas::setTextureData(TextureId id,
                                     const void* pixelsRGBA8,
                                     uint32_t rowPitchBytes) {
   _ensureAliveOrThrow();
-  if(id == kOverflowId) return;
+  if(isInvalidId(id)) return;
   _ensureRegisteredIdOrThrow(id);
 
   if(w == 0 || h == 0) {
@@ -151,7 +159,7 @@ void TextureAtlas::setTextureData(TextureId id,
 
 void TextureAtlas::clearTextureData(TextureId id) {
   _ensureAliveOrThrow();
-  if(id == kOverflowId) return;
+  if(isInvalidId(id)) return;
   _ensureRegisteredIdOrThrow(id);
 
   Slot& s = Slots_[id];
@@ -172,7 +180,7 @@ void TextureAtlas::clearTextureData(TextureId id) {
 
 void TextureAtlas::removeTexture(TextureId id) {
   _ensureAliveOrThrow();
-  if(id == kOverflowId) return;
+  if(isInvalidId(id)) return;
   _ensureRegisteredIdOrThrow(id);
 
   Slot& s = Slots_[id];
@@ -217,7 +225,7 @@ TextureAtlas::DescriptorOut TextureAtlas::flushUploadsAndBarriers(VkCommandBuffe
     while (!queue.empty()) {
       TextureId id = queue.front();
       queue.pop_front();
-      if(id == kOverflowId || id >= inQueue.size()) {
+      if(isInvalidId(id) || id >= inQueue.size()) {
         continue;
       }
       if(!inQueue[id]) {
@@ -253,7 +261,7 @@ TextureAtlas::DescriptorOut TextureAtlas::flushUploadsAndBarriers(VkCommandBuffe
 
   bool outOfSpace = false;
   for(TextureId id : pendingNow) {
-    if(id == kOverflowId) continue;
+    if(isInvalidId(id)) continue;
     if(id >= Slots_.size()) continue;
     Slot& s = Slots_[id];
     if(!s.InUse || !s.HasCpuData) continue;
@@ -310,7 +318,7 @@ TextureAtlas::DescriptorOut TextureAtlas::flushUploadsAndBarriers(VkCommandBuffe
   };
 
   for(TextureId id : pendingNow) {
-    if(id == kOverflowId) continue;
+    if(isInvalidId(id)) continue;
     Slot& s = Slots_[id];
     if(!s.InUse || !s.HasCpuData || !s.HasPlacement) continue;
     if(!uploadTextureIntoAtlas(s, s.Place, Atlas_, false)) {

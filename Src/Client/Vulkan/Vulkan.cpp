@@ -311,7 +311,7 @@ void Vulkan::run()
 			}
 
 			if(Game.RSession) {
-				Game.RSession->beforeDraw();
+				Game.RSession->beforeDraw(double(gTime));
 			}
 
 			{
@@ -624,12 +624,6 @@ void Vulkan::run()
 					err = vkQueuePresentKHR(*lockQueue, &present);
 				}
 
-				{
-					auto lockQueue = Graphics.DeviceQueueGraphic.lock();
-					vkDeviceWaitIdle(Graphics.Device);
-					lockQueue.unlock();
-				}
-				
 				if (err == VK_ERROR_OUT_OF_DATE_KHR)
 				{
 					freeSwapchains();
@@ -649,12 +643,6 @@ void Vulkan::run()
 			Game.Session->update(gTime, dTime);
 		}
 		Screen.State = DrawState::End;
-	}
-
-	{
-		auto lockQueue = Graphics.DeviceQueueGraphic.lock();
-		vkDeviceWaitIdle(Graphics.Device);
-		lockQueue.unlock();
 	}
 
 	for(int iter = 0; iter < 4; iter++) {
@@ -688,8 +676,6 @@ uint32_t Vulkan::memoryTypeFromProperties(uint32_t bitsOfAcceptableTypes, VkFlag
 
 void Vulkan::freeSwapchains()
 {
-	//vkDeviceWaitIdle(Screen.Device);
-
 	if(Graphics.Instance && Graphics.Device)
 	{
 		std::vector<VkImageView> oldViews;
@@ -2301,6 +2287,9 @@ void Vulkan::gui_ConnectedToServer() {
 				(int) Game.RSession->PlayerPos.x, (int) Game.RSession->PlayerPos.y, (int) Game.RSession->PlayerPos.z,
 				(int) Game.RSession->PlayerPos.x >> 6, (int) Game.RSession->PlayerPos.y >> 6, (int) Game.RSession->PlayerPos.z >> 6
 			);
+
+			double chunksKb = double(Game.Session->getVisibleCompressedChunksBytes()) / 1024.0;
+			ImGui::Text("chunks compressed: %.1f KB", chunksKb);
 
 			if(ImGui::Button("Delimeter"))
 				LOG.debug();

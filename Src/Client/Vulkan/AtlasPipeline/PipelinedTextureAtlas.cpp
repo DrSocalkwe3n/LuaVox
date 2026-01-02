@@ -14,6 +14,34 @@ PipelinedTextureAtlas::AtlasTextureId PipelinedTextureAtlas::getByPipeline(const
             _AddictedTextures[texId].push_back(pipeline);
         }
 
+        {
+            std::vector<TexturePipelineProgram::AnimSpec> animMeta =
+                TexturePipelineProgram::extractAnimationSpecs(pipeline._Pipeline.data(), pipeline._Pipeline.size());
+            if (!animMeta.empty()) {
+                AnimatedPipelineState entry;
+                entry.Specs.reserve(animMeta.size());
+                for (const auto& spec : animMeta) {
+                    detail::AnimSpec16 outSpec{};
+                    outSpec.TexId = spec.HasTexId ? spec.TexId : TextureAtlas::kOverflowId;
+                    outSpec.FrameW = spec.FrameW;
+                    outSpec.FrameH = spec.FrameH;
+                    outSpec.FrameCount = spec.FrameCount;
+                    outSpec.FpsQ = spec.FpsQ;
+                    outSpec.Flags = spec.Flags;
+                    entry.Specs.push_back(outSpec);
+                }
+                entry.LastFrames.resize(entry.Specs.size(), std::numeric_limits<uint32_t>::max());
+                entry.Smooth = false;
+                for (const auto& spec : entry.Specs) {
+                    if (spec.Flags & detail::AnimSmooth) {
+                        entry.Smooth = true;
+                        break;
+                    }
+                }
+                _AnimatedPipelines.emplace(pipeline, std::move(entry));
+            }
+        }
+
         return atlasTexId;
     }
 
@@ -37,6 +65,7 @@ void PipelinedTextureAtlas::freeByPipeline(const HashedPipeline& pipeline) {
     Super.removeTexture(iter->second);
     _AtlasCpuTextures.erase(iter->second);
     _PipeToTexId.erase(iter);
+    _AnimatedPipelines.erase(pipeline);
 }
 
 void PipelinedTextureAtlas::updateTexture(uint32_t texId, const StoredTexture& texture) {
@@ -90,7 +119,7 @@ StoredTexture PipelinedTextureAtlas::_generatePipelineTexture(const HashedPipeli
     }
 
     TexturePipelineProgram program;
-    program.fromWords(std::move(words));
+    program.fromBytes(std::move(words));
 
     TexturePipelineProgram::OwnedTexture baked;
     auto provider = [this](uint32_t texId) -> std::optional<Texture> {
@@ -109,7 +138,7 @@ StoredTexture PipelinedTextureAtlas::_generatePipelineTexture(const HashedPipeli
         return tex;
     };
 
-    if (!program.bake(provider, baked, nullptr)) {
+    if (!program.bake(provider, baked, _AnimTimeSeconds, nullptr)) {
         if (auto tex = tryCopyFirstDependencyTexture(pipeline)) {
             return *tex;
         }
@@ -135,6 +164,7 @@ StoredTexture PipelinedTextureAtlas::_generatePipelineTexture(const HashedPipeli
 
 void PipelinedTextureAtlas::flushNewPipelines() {
     std::vector<uint32_t> changedTextures = std::move(_ChangedTextures);
+    _ChangedTextures.clear();
 
     std::sort(changedTextures.begin(), changedTextures.end());
     changedTextures.erase(std::unique(changedTextures.begin(), changedTextures.end()), changedTextures.end());
@@ -150,6 +180,7 @@ void PipelinedTextureAtlas::flushNewPipelines() {
     }
 
     changedPipelineTextures.append_range(std::move(_ChangedPipelines));
+    _ChangedPipelines.clear();
     changedTextures.clear();
 
     std::sort(changedPipelineTextures.begin(), changedPipelineTextures.end());
@@ -165,6 +196,18 @@ void PipelinedTextureAtlas::flushNewPipelines() {
         auto& stored = _AtlasCpuTextures[atlasTexId];
         stored = std::move(texture);
         if (!stored._Pixels.empty()) {
+            // Смена порядка пикселей
+            for (uint32_t& pixel : stored._Pixels) {
+                union {
+                    struct { uint8_t r, g, b, a; } color;
+                    uint32_t data;
+                };
+
+                data = pixel;
+                std::swap(color.r, color.b);
+                pixel = data;
+            }
+
             Super.setTextureData(atlasTexId,
                                  stored._Widht,
                                  stored._Height,
@@ -180,6 +223,72 @@ TextureAtlas::DescriptorOut PipelinedTextureAtlas::flushUploadsAndBarriers(VkCom
 
 void PipelinedTextureAtlas::notifyGpuFinished() {
     Super.notifyGpuFinished();
+}
+
+bool PipelinedTextureAtlas::updateAnimatedPipelines(double timeSeconds) {
+    _AnimTimeSeconds = timeSeconds;
+    if (_AnimatedPipelines.empty()) {
+        return false;
+    }
+
+    bool changed = false;
+    for (auto& [pipeline, entry] : _AnimatedPipelines) {
+        if (entry.Specs.empty()) {
+            continue;
+        }
+
+        if (entry.Smooth) {
+            _ChangedPipelines.push_back(pipeline);
+            changed = true;
+            continue;
+        }
+
+        if (entry.LastFrames.size() != entry.Specs.size())
+            entry.LastFrames.assign(entry.Specs.size(), std::numeric_limits<uint32_t>::max());
+
+        bool pipelineChanged = false;
+        for (size_t i = 0; i < entry.Specs.size(); ++i) {
+            const auto& spec = entry.Specs[i];
+
+            uint32_t fpsQ = spec.FpsQ ? spec.FpsQ : TexturePipelineProgram::DefaultAnimFpsQ;
+            double fps = double(fpsQ) / 256.0;
+            double frameTime = timeSeconds * fps;
+            if (frameTime < 0.0)
+                frameTime = 0.0;
+
+            uint32_t frameCount = spec.FrameCount;
+            // Авторасчёт количества кадров
+            if (frameCount == 0) {
+                auto iterTex = _ResToTexture.find(spec.TexId);
+                if (iterTex != _ResToTexture.end()) {
+                    uint32_t fw = spec.FrameW ? spec.FrameW : iterTex->second._Widht;
+                    uint32_t fh = spec.FrameH ? spec.FrameH : iterTex->second._Widht;
+                    if (fw > 0 && fh > 0) {
+                        if (spec.Flags & detail::AnimHorizontal)
+                            frameCount = iterTex->second._Widht / fw;
+                        else
+                            frameCount = iterTex->second._Height / fh;
+                    }
+                }
+            }
+
+            if (frameCount == 0)
+                frameCount = 1;
+
+            uint32_t frameIndex = frameCount ? (uint32_t(frameTime) % frameCount) : 0u;
+            if (entry.LastFrames[i] != frameIndex) {
+                entry.LastFrames[i] = frameIndex;
+                pipelineChanged = true;
+            }
+        }
+
+        if (pipelineChanged) {
+            _ChangedPipelines.push_back(pipeline);
+            changed = true;
+        }
+    }
+
+    return changed;
 }
 
 std::optional<StoredTexture> PipelinedTextureAtlas::tryCopyFirstDependencyTexture(const HashedPipeline& pipeline) const {

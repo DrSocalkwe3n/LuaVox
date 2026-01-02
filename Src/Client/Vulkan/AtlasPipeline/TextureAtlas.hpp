@@ -10,7 +10,7 @@ TextureAtlas — как пользоваться (кратко)
 
 2) Зарегистрируйте текстуру и получите стабильный ID:
    TextureId id = atlas.registerTexture();
-   if(id == TextureAtlas::kOverflowId) { ... } // нет свободных ID
+   if(id == TextureAtlas::kOverflowId || id == atlas.reservedOverflowId()) { ... } // нет свободных ID
 
 3) Задайте данные (RGBA8), можно много раз — ID не меняется:
    atlas.setTextureData(id, w, h, pixels, rowPitchBytes);
@@ -32,7 +32,11 @@ TextureAtlas — как пользоваться (кратко)
    atlas.removeTexture(id);     // освободить ID (после этого использовать нельзя)
 
 Примечания:
-- Вызовы API с kOverflowId игнорируются (no-op).
+- Вызовы API с kOverflowId и зарезервированными ID игнорируются (no-op).
+- ID из начала диапазона зарезервированы под служебные нужды:
+    reservedOverflowId() == 0,
+    reservedLayerId(0) == 1 (первый слой),
+    reservedLayerId(1) == 2 (второй слой) и т.д.
 - Ошибки ресурсов (нет места/стейджинга/oom) НЕ бросают исключения — дают события.
 - Исключения только за неверный ввод/неверное использование (см. ТЗ).
 - Класс не thread-safe: синхронизацию обеспечивает пользователь.
@@ -192,11 +196,60 @@ public:
   /// Текущее число слоёв атласа.
   uint32_t atlasLayers() const { return Atlas_.Layers; }
 
+  uint32_t maxLayers() const { return Cfg_.MaxLayers; }
+  uint32_t maxTextureId() const { return Cfg_.MaxTextureId; }
+
+  TextureId reservedOverflowId() const { return 0; }
+  TextureId reservedLayerId(uint32_t layer) const { return 1u + layer; }
+
+  bool isReservedId(TextureId id) const {
+    if(id >= Cfg_.MaxTextureId) return false;
+    return id < _reservedCount();
+  }
+
+  bool isReservedLayerId(TextureId id) const {
+    if(id >= Cfg_.MaxTextureId) return false;
+    return id != reservedOverflowId() && id < _reservedCount();
+  }
+
+  bool isInvalidId(TextureId id) const {
+    return id == kOverflowId || isReservedId(id);
+  }
+
+  void requestLayerCount(uint32_t layers) {
+    _ensureAliveOrThrow();
+    _scheduleLayerGrow(layers);
+  }
+
   /// Общий staging-буфер (может быть задан извне).
   std::shared_ptr<SharedStagingBuffer> getStagingBuffer() const { return Staging_; }
 
 private:
   void _moveFrom(TextureAtlas&& other) noexcept;
+  uint32_t _reservedCount() const { return Cfg_.MaxLayers + 1; }
+  uint32_t _reservedStart() const { return 0; }
+  uint32_t _allocatableStart() const { return _reservedCount(); }
+  uint32_t _allocatableLimit() const { return Cfg_.MaxTextureId; }
+
+  void _initReservedEntries() {
+    if(Cfg_.MaxTextureId <= _reservedCount()) {
+      return;
+    }
+
+    _setEntryInvalid(reservedOverflowId(), /*diagPending*/false, /*diagTooLarge*/false);
+    for(uint32_t layer = 0; layer < Cfg_.MaxLayers; ++layer) {
+      TextureId id = reservedLayerId(layer);
+      Entry& e = EntriesCpu_[id];
+      e.UVMinMax[0] = 0.0f;
+      e.UVMinMax[1] = 0.0f;
+      e.UVMinMax[2] = 1.0f;
+      e.UVMinMax[3] = 1.0f;
+      e.Layer = layer;
+      e.Flags = ENTRY_VALID;
+    }
+    EntriesDirty_ = true;
+  }
+
   // ============================= Ошибки/валидация =============================
 
   struct InputError : std::runtime_error {
@@ -225,6 +278,9 @@ private:
     if(Cfg_.MaxTextureId == 0) {
       throw _inputError("Config.MaxTextureId must be > 0");
     }
+    if(Cfg_.MaxTextureId <= (Cfg_.MaxLayers + 1)) {
+      throw _inputError("Config.MaxTextureId must be > MaxLayers + 1 (reserved ids)");
+    }
 
     if(Cfg_.MaxTextureSize != 2048) {
       /// TODO: 
@@ -246,7 +302,7 @@ private:
   }
 
   void _ensureRegisteredIdOrThrow(TextureId id) const {
-    if(id >= Cfg_.MaxTextureId) {
+    if(id >= Cfg_.MaxTextureId || isReservedId(id)) {
       throw _inputError("TextureId out of range");
     }
     if(!Slots_[id].InUse || Slots_[id].StateValue == State::REMOVED) {

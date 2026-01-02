@@ -516,6 +516,8 @@ struct PrecompiledTexturePipeline {
     std::vector<std::pair<std::string, std::string>> Assets;
     // Чистый код текстурных преобразований, локальные идентификаторы связаны с Assets
     std::u8string Pipeline;
+    // Pipeline содержит исходный текст (tex ...), нужен для компиляции на сервере
+    bool IsSource = false;
 };
 
 struct TexturePipeline {
@@ -530,15 +532,7 @@ struct TexturePipeline {
 };
 
 // Компилятор текстурных потоков
-inline PrecompiledTexturePipeline compileTexturePipeline(const std::string &cmd, const std::string_view defaultDomain = "core") {
-    PrecompiledTexturePipeline result;
-
-    auto [domain, key] = parseDomainKey(cmd, defaultDomain);
-
-    result.Assets.emplace_back(domain, key);
-
-    return result;
-}
+PrecompiledTexturePipeline compileTexturePipeline(const std::string &cmd, std::string_view defaultDomain = "core");
 
 struct NodestateEntry {
     std::string Name;

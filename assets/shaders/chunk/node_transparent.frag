@@ -44,4 +44,7 @@ vec4 atlasColor(uint texId, vec2 uv)
 void main() {
     Frame = atlasColor(Fragment.Texture, Fragment.UV);
     Frame.xyz *= max(0.2f, dot(Fragment.Normal, normalize(vec3(0.5, 1, 0.8))));
+
+    if(Frame.w == 0)
+        discard;
 }

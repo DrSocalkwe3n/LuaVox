@@ -10,6 +10,7 @@
 #include <Common/Abstract.hpp>
 #include <bitset>
 #include <initializer_list>
+#include <optional>
 #include <queue>
 #include <type_traits>
 #include <unordered_map>
@@ -336,6 +337,7 @@ public:
     // Если игрок пересекал границы региона (для перерасчёта ContentViewState)
     bool CrossedRegion = true;
     std::queue<Pos::GlobalNode> Build, Break;
+    std::optional<ServerEntityId_t> PlayerEntity;
 
 public:
     RemoteClient(asio::io_context &ioc, tcp::socket socket, const std::string username, GameServer* server)
@@ -347,6 +349,9 @@ public:
     coro<> run();
     void shutdown(EnumDisconnect type, const std::string reason);
     bool isConnected() { return IsConnected; }
+    void setPlayerEntity(ServerEntityId_t id) { PlayerEntity = id; }
+    std::optional<ServerEntityId_t> getPlayerEntity() const { return PlayerEntity; }
+    void clearPlayerEntity() { PlayerEntity.reset(); }
 
     void pushPackets(std::vector<Net::Packet> *simplePackets, std::vector<Net::SmartPacket> *smartPackets = nullptr) {
         if(IsGoingShutdown)

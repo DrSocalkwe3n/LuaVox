@@ -4,6 +4,18 @@
 
 namespace LV::Server {
 
+Entity::Entity(DefEntityId defId)
+    : DefId(defId)
+{
+    ABBOX = {Pos::Object_t::BS, Pos::Object_t::BS, Pos::Object_t::BS};
+    WorldId = 0;
+    Pos = Pos::Object(0);
+    Speed = Pos::Object(0);
+    Acceleration = Pos::Object(0);
+    Quat = glm::quat(1.f, 0.f, 0.f, 0.f);
+    InRegionPos = Pos::GlobalRegion(0);
+}
+
 }
 
 namespace std {

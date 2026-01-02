@@ -42,6 +42,10 @@ public:
         return Socket->isAlive() && IsConnected; 
     }
 
+    uint64_t getVisibleCompressedChunksBytes() const {
+        return VisibleChunkCompressedBytes;
+    }
+
     // ISurfaceEventListener
     
     virtual void onResize(uint32_t width, uint32_t height) override;
@@ -99,7 +103,7 @@ private:
         std::vector<DefWorldId> Profile_World_Lost;
         std::vector<std::pair<DefPortalId, void*>> Profile_Portal_AddOrChange;
         std::vector<DefPortalId> Profile_Portal_Lost;
-        std::vector<std::pair<DefEntityId, void*>> Profile_Entity_AddOrChange;
+        std::vector<std::pair<DefEntityId, DefEntityInfo>> Profile_Entity_AddOrChange;
         std::vector<DefEntityId> Profile_Entity_Lost;
         std::vector<std::pair<DefItemId, void*>> Profile_Item_AddOrChange;
         std::vector<DefItemId> Profile_Item_Lost;
@@ -110,6 +114,13 @@ private:
         std::unordered_map<WorldId_t, std::unordered_map<Pos::GlobalChunk, std::u8string>> Chunks_AddOrChange_Voxel;
         std::unordered_map<WorldId_t, std::unordered_map<Pos::GlobalChunk, std::u8string>> Chunks_AddOrChange_Node;
         std::unordered_map<WorldId_t, std::vector<Pos::GlobalRegion>> Regions_Lost;
+        std::vector<std::pair<EntityId_t, EntityInfo>> Entity_AddOrChange;
+        std::vector<EntityId_t> Entity_Lost;
+    };
+
+    struct ChunkCompressedSize {
+        uint32_t Voxels = 0;
+        uint32_t Nodes = 0;
     };
 
     struct AssetsBindsChange {
@@ -168,6 +179,9 @@ private:
     Pos::Object Pos = Pos::Object(0), Speed = Pos::Object(0);
 
     GlobalTime LastSendPYR_POS;
+
+    std::unordered_map<WorldId_t, std::unordered_map<Pos::GlobalChunk, ChunkCompressedSize>> VisibleChunkCompressed;
+    uint64_t VisibleChunkCompressedBytes = 0;
 
     // Приём данных с сокета
     coro<> run(AsyncUseControl::Lock);

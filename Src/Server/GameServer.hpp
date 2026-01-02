@@ -267,6 +267,7 @@ class GameServer : public AsyncObject {
     // Идентификатор текущегго мода, находящевося в обработке
     std::string CurrentModId;
     AssetsManager::AssetsRegister AssetsInit;
+    DefEntityId PlayerEntityDefId = 0;
 
 public:
     GameServer(asio::io_context &ioc, fs::path worldPath);

@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <functional>
 #include <glm/geometric.hpp>
+#include <glm/gtc/noise.hpp>
 #include <iostream>
 #include <iterator>
 #include <memory>
@@ -853,31 +854,159 @@ void GameServer::BackingAsyncLua_t::run(int id) {
                 lock->pop();
             }
 
-            //if(key.RegionPos == Pos::GlobalRegion(0, 0, 0))
+            out.Voxels.clear();
+            out.Entityes.clear();
+
             {
-                float *ptr = noise.data();
-                for(int z = 0; z < 64; z++)
-                    for(int y = 0; y < 64; y++)
-                        for(int x = 0; x < 64; x++, ptr++) {
-                            DefVoxelId id = std::clamp(*ptr, 0.f, 1.f) * 3; //> 0.9 ? 1 : 0;
+                constexpr DefNodeId kNodeAir = 0;
+                constexpr DefNodeId kNodeGrass = 2;
+                constexpr uint8_t kMetaGrass = 1;
+                constexpr DefNodeId kNodeDirt = 3;
+                constexpr DefNodeId kNodeStone = 4;
+                constexpr DefNodeId kNodeWood = 1;
+                constexpr DefNodeId kNodeLeaves = 5;
+                constexpr DefNodeId kNodeLava = 7;
+                constexpr DefNodeId kNodeWater = 8;
+                constexpr DefNodeId kNodeFire = 9;
+
+                auto hash32 = [](uint32_t x) {
+                    x ^= x >> 16;
+                    x *= 0x7feb352dU;
+                    x ^= x >> 15;
+                    x *= 0x846ca68bU;
+                    x ^= x >> 16;
+                    return x;
+                };
+
+                Pos::GlobalNode regionBase = key.RegionPos;
+                regionBase <<= 6;
+
+                std::array<int, 64*64> heights;
+                for(int z = 0; z < 64; z++) {
+                    for(int x = 0; x < 64; x++) {
+                        int32_t gx = regionBase.x + x;
+                        int32_t gz = regionBase.z + z;
+                        float fx = float(gx);
+                        float fz = float(gz);
+
+                        float base = glm::perlin(glm::vec2(fx * 0.005f, fz * 0.005f));
+                        float detail = glm::perlin(glm::vec2(fx * 0.02f, fz * 0.02f)) * 0.35f;
+                        float ridge = glm::perlin(glm::vec2(fx * 0.0015f, fz * 0.0015f));
+                        float ridged = 1.f - std::abs(ridge);
+                        float mountains = ridged * ridged;
+                        float noiseDetail = noise[(z * 64) + x];
+
+                        float height = 18.f + (base + detail) * 8.f + mountains * 32.f + noiseDetail * 3.f;
+                        int h = std::clamp<int>(int(height + 0.5f), -256, 256);
+                        heights[z * 64 + x] = h;
+                    }
+                }
+
+                for(int z = 0; z < 64; z++) {
+                    for(int x = 0; x < 64; x++) {
+                        int surface = heights[z * 64 + x];
+                        int32_t gx = regionBase.x + x;
+                        int32_t gz = regionBase.z + z;
+                        uint32_t seed = hash32(uint32_t(gx) * 73856093u ^ uint32_t(gz) * 19349663u);
+
+                        for(int y = 0; y < 64; y++) {
+                            int32_t gy = regionBase.y + y;
                             Pos::bvec64u nodePos(x, y, z);
                             auto &node = out.Nodes[Pos::bvec4u(nodePos >> 4).pack()][Pos::bvec16u(nodePos & 0xf).pack()];
-                            node.NodeId = id;
-                            
-                            if(x == 0 && z == 0)
-                                node.NodeId = 1;
-                            else if(y == 0 && z == 0)
-                                node.NodeId = 2;
-                            else if(x == 0 && y == 0)
-                                node.NodeId = 3;
 
-                            if(y == 1 && z == 0)
-                                node.NodeId = 0;
-                            else if(x == 0 && y == 1)
-                                node.NodeId = 0;
-
-                            node.Meta = uint8_t((x + y + z + int(node.NodeId)) & 0x3);
+                            if(gy <= surface) {
+                                if(gy == surface) {
+                                    node.NodeId = kNodeGrass;
+                                    node.Meta = kMetaGrass;
+                                } else if(gy >= surface - 3) {
+                                    node.NodeId = kNodeDirt;
+                                    node.Meta = uint8_t((seed + gy) & 0x3);
+                                } else {
+                                    node.NodeId = kNodeStone;
+                                    node.Meta = uint8_t((seed + gy + 1) & 0x3);
+                                }
+                            } else {
+                                node.Data = kNodeAir;
+                            }
                         }
+                    }
+                }
+
+                auto setNode = [&](int x, int y, int z, DefNodeId id, uint8_t meta, bool onlyAir) {
+                    if(x < 0 || x >= 64 || y < 0 || y >= 64 || z < 0 || z >= 64)
+                        return;
+
+                    Pos::bvec64u nodePos(x, y, z);
+                    auto &node = out.Nodes[Pos::bvec4u(nodePos >> 4).pack()][Pos::bvec16u(nodePos & 0xf).pack()];
+                    if(onlyAir && node.Data != 0)
+                        return;
+
+                    node.NodeId = id;
+                    node.Meta = meta;
+                };
+
+                for(int z = 1; z < 63; z++) {
+                    for(int x = 1; x < 63; x++) {
+                        int surface = heights[z * 64 + x];
+                        int localY = surface - regionBase.y;
+                        if(localY < 1 || localY >= 63)
+                            continue;
+
+                        int32_t gx = regionBase.x + x;
+                        int32_t gz = regionBase.z + z;
+                        uint32_t seed = hash32(uint32_t(gx) * 83492791u ^ uint32_t(gz) * 2971215073u);
+
+                        int treeHeight = 4 + int(seed % 3);
+                        if(localY + treeHeight + 2 >= 64)
+                            continue;
+
+                        if((seed % 97) >= 2)
+                            continue;
+
+                        int diff = surface - heights[z * 64 + (x - 1)];
+                        if(diff > 2 || diff < -2)
+                            continue;
+                        diff = surface - heights[z * 64 + (x + 1)];
+                        if(diff > 2 || diff < -2)
+                            continue;
+                        diff = surface - heights[(z - 1) * 64 + x];
+                        if(diff > 2 || diff < -2)
+                            continue;
+                        diff = surface - heights[(z + 1) * 64 + x];
+                        if(diff > 2 || diff < -2)
+                            continue;
+
+                        uint8_t woodMeta = uint8_t((seed >> 2) & 0x3);
+                        uint8_t leafMeta = uint8_t((seed >> 4) & 0x3);
+
+                        for(int i = 1; i <= treeHeight; i++) {
+                            setNode(x, localY + i, z, kNodeWood, woodMeta, false);
+                        }
+
+                        int topY = localY + treeHeight;
+                        for(int dy = -2; dy <= 2; dy++) {
+                            for(int dz = -2; dz <= 2; dz++) {
+                                for(int dx = -2; dx <= 2; dx++) {
+                                    int dist2 = dx * dx + dz * dz + dy * dy;
+                                    if(dist2 > 5)
+                                        continue;
+
+                                    setNode(x + dx, topY + dy, z + dz, kNodeLeaves, leafMeta, true);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if(regionBase.x == 0 && regionBase.z == 0) {
+                    constexpr int kTestGlobalY = 64;
+                    if(regionBase.y <= kTestGlobalY && (regionBase.y + 63) >= kTestGlobalY) {
+                        int localY = kTestGlobalY - regionBase.y;
+                        setNode(2, localY, 2, kNodeLava, 0, false);
+                        setNode(4, localY, 2, kNodeWater, 0, false);
+                        setNode(6, localY, 2, kNodeFire, 0, false);
+                    }
+                }
             } 
             // else {
             //     Node *ptr = (Node*) &out.Nodes[0][0];
@@ -1447,6 +1576,8 @@ void GameServer::init(fs::path worldPath) {
         sol::table t = LuaMainState.create_table();
         // Content.CM.registerBase(EnumDefContent::Node, "core", "none", t);
         Content.CM.registerBase(EnumDefContent::World, "test", "devel_world", t);
+        Content.CM.registerBase(EnumDefContent::Entity, "core", "player", t);
+        PlayerEntityDefId = Content.CM.getContentId(EnumDefContent::Entity, "core", "player");
     }
 
     initLuaPre();
@@ -1706,7 +1837,27 @@ void GameServer::stepConnections() {
                 auto wIter = Expanse.Worlds.find(wPair.first);
                 assert(wIter != Expanse.Worlds.end());
 
-                wIter->second->onRemoteClient_RegionsLost(cec, wPair.second);
+                wIter->second->onRemoteClient_RegionsLost(wPair.first, cec, wPair.second);
+            }
+
+            if(cec->PlayerEntity) {
+                ServerEntityId_t entityId = *cec->PlayerEntity;
+                auto [worldId, regionPos, entityIndex] = entityId;
+                auto iterWorld = Expanse.Worlds.find(worldId);
+                if(iterWorld != Expanse.Worlds.end()) {
+                    auto iterRegion = iterWorld->second->Regions.find(regionPos);
+                    if(iterRegion != iterWorld->second->Regions.end()) {
+                        Region& region = *iterRegion->second;
+                        if(entityIndex < region.Entityes.size())
+                            region.Entityes[entityIndex].IsRemoved = true;
+
+                        std::vector<ServerEntityId_t> removed = {entityId};
+                        for(const std::shared_ptr<RemoteClient>& observer : region.RMs) {
+                            observer->prepareEntitiesRemove(removed);
+                        }
+                    }
+                }
+                cec->clearPlayerEntity();
             }
 
             std::string username = cec->Username;
@@ -1811,7 +1962,7 @@ IWorldSaveBackend::TickSyncInfo_Out GameServer::stepDatabaseSync() {
                 auto iterWorld = Expanse.Worlds.find(worldId);
                 assert(iterWorld != Expanse.Worlds.end());
 
-                std::vector<Pos::GlobalRegion> notLoaded = iterWorld->second->onRemoteClient_RegionsEnter(remoteClient, regions);
+                std::vector<Pos::GlobalRegion> notLoaded = iterWorld->second->onRemoteClient_RegionsEnter(worldId, remoteClient, regions);
                 if(!notLoaded.empty()) {
                     // Добавляем к списку на загрузку
                     std::vector<Pos::GlobalRegion> &tl = toDB.Load[worldId];
@@ -1824,7 +1975,7 @@ IWorldSaveBackend::TickSyncInfo_Out GameServer::stepDatabaseSync() {
                 auto iterWorld = Expanse.Worlds.find(worldId);
                 assert(iterWorld != Expanse.Worlds.end());
 
-                iterWorld->second->onRemoteClient_RegionsLost(remoteClient, regions);
+                iterWorld->second->onRemoteClient_RegionsLost(worldId, remoteClient, regions);
             }
         }
     }
@@ -1929,13 +2080,116 @@ void GameServer::stepGeneratorAndLuaAsync(IWorldSaveBackend::TickSyncInfo_Out db
 
         iterWorld->second->pushRegions(std::move(regions));
         for(auto& [cec, poses] : toSubscribe) {
-            iterWorld->second->onRemoteClient_RegionsEnter(cec, poses);
+            iterWorld->second->onRemoteClient_RegionsEnter(worldId, cec, poses);
         }
     }
 }
 
 void GameServer::stepPlayerProceed() {
+    auto iterWorld = Expanse.Worlds.find(0);
+    if(iterWorld == Expanse.Worlds.end())
+        return;
 
+    World& world = *iterWorld->second;
+
+    for(std::shared_ptr<RemoteClient>& remoteClient : Game.RemoteClients) {
+        if(!remoteClient)
+            continue;
+
+        Pos::Object pos = remoteClient->CameraPos;
+        Pos::GlobalRegion regionPos = Pos::Object_t::asRegionsPos(pos);
+        glm::quat quat = remoteClient->CameraQuat.toQuat();
+
+        if(!remoteClient->PlayerEntity) {
+            auto iterRegion = world.Regions.find(regionPos);
+            if(iterRegion == world.Regions.end())
+                continue;
+
+            Entity entity(PlayerEntityDefId);
+            entity.WorldId = iterWorld->first;
+            entity.Pos = pos;
+            entity.Quat = quat;
+            entity.InRegionPos = regionPos;
+
+            Region& region = *iterRegion->second;
+            RegionEntityId_t entityIndex = region.pushEntity(entity);
+            if(entityIndex == RegionEntityId_t(-1))
+                continue;
+
+            ServerEntityId_t entityId = {iterWorld->first, regionPos, entityIndex};
+            remoteClient->setPlayerEntity(entityId);
+
+            std::vector<std::tuple<ServerEntityId_t, const Entity*>> updates;
+            updates.emplace_back(entityId, &region.Entityes[entityIndex]);
+            for(const std::shared_ptr<RemoteClient>& observer : region.RMs) {
+                observer->prepareEntitiesUpdate(updates);
+            }
+
+            continue;
+        }
+
+        ServerEntityId_t entityId = *remoteClient->PlayerEntity;
+        auto [worldId, prevRegion, entityIndex] = entityId;
+        auto iterRegion = world.Regions.find(prevRegion);
+        if(iterRegion == world.Regions.end()) {
+            remoteClient->clearPlayerEntity();
+            continue;
+        }
+
+        Region& region = *iterRegion->second;
+        if(entityIndex >= region.Entityes.size() || region.Entityes[entityIndex].IsRemoved) {
+            remoteClient->clearPlayerEntity();
+            continue;
+        }
+
+        Entity& entity = region.Entityes[entityIndex];
+        Pos::GlobalRegion nextRegion = Pos::Object_t::asRegionsPos(pos);
+        if(nextRegion != prevRegion) {
+            entity.IsRemoved = true;
+            std::vector<ServerEntityId_t> removed = {entityId};
+            for(const std::shared_ptr<RemoteClient>& observer : region.RMs) {
+                observer->prepareEntitiesRemove(removed);
+            }
+
+            remoteClient->clearPlayerEntity();
+
+            auto iterNewRegion = world.Regions.find(nextRegion);
+            if(iterNewRegion == world.Regions.end())
+                continue;
+
+            Entity nextEntity(PlayerEntityDefId);
+            nextEntity.WorldId = iterWorld->first;
+            nextEntity.Pos = pos;
+            nextEntity.Quat = quat;
+            nextEntity.InRegionPos = nextRegion;
+
+            Region& newRegion = *iterNewRegion->second;
+            RegionEntityId_t nextIndex = newRegion.pushEntity(nextEntity);
+            if(nextIndex == RegionEntityId_t(-1))
+                continue;
+
+            ServerEntityId_t nextId = {iterWorld->first, nextRegion, nextIndex};
+            remoteClient->setPlayerEntity(nextId);
+
+            std::vector<std::tuple<ServerEntityId_t, const Entity*>> updates;
+            updates.emplace_back(nextId, &newRegion.Entityes[nextIndex]);
+            for(const std::shared_ptr<RemoteClient>& observer : newRegion.RMs) {
+                observer->prepareEntitiesUpdate(updates);
+            }
+            continue;
+        }
+
+        entity.Pos = pos;
+        entity.Quat = quat;
+        entity.WorldId = iterWorld->first;
+        entity.InRegionPos = prevRegion;
+
+        std::vector<std::tuple<ServerEntityId_t, const Entity*>> updates;
+        updates.emplace_back(entityId, &entity);
+        for(const std::shared_ptr<RemoteClient>& observer : region.RMs) {
+            observer->prepareEntitiesUpdate(updates);
+        }
+    }
 }
 
 void GameServer::stepWorldPhysic() {

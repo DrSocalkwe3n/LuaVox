@@ -323,7 +323,7 @@ void ChunkMeshGenerator::run(uint8_t id) {
                 };
 
                 std::unordered_map<uint32_t, ModelCacheEntry> modelCache;
-                std::unordered_map<AssetsTexture, uint16_t> baseTextureCache;
+                std::unordered_map<AssetsTexture, uint32_t> baseTextureCache;
 
                 std::vector<NodeStateInfo> metaStatesInfo;
                 {
@@ -451,7 +451,7 @@ void ChunkMeshGenerator::run(uint8_t id) {
                         if(iterTex != baseTextureCache.end()) {
                             v.Tex = iterTex->second;
                         } else {
-                            uint16_t resolvedTex = NSP->getTextureId(node->TexId);
+                            uint32_t resolvedTex = NSP->getTextureId(node->TexId);
                             v.Tex = resolvedTex;
                             baseTextureCache.emplace(node->TexId, resolvedTex);
                         }
@@ -1670,7 +1670,7 @@ void VulkanRenderSession::tickSync(const TickSyncData& data) {
     }
 
     if(TP) {
-        std::vector<std::tuple<AssetsTexture, Resource>> textureResources;
+        std::vector<TextureProvider::TextureUpdate> textureResources;
         std::vector<AssetsTexture> textureLost;
 
         if(auto iter = data.Assets_ChangeOrAdd.find(EnumAssets::Texture); iter != data.Assets_ChangeOrAdd.end()) {
@@ -1680,7 +1680,12 @@ void VulkanRenderSession::tickSync(const TickSyncData& data) {
                 if(entryIter == list.end())
                     continue;
 
-                textureResources.emplace_back(id, entryIter->second.Res);
+                textureResources.push_back({
+                    .Id = id,
+                    .Res = entryIter->second.Res,
+                    .Domain = entryIter->second.Domain,
+                    .Key = entryIter->second.Key
+                });
             }
         }
 
@@ -1739,9 +1744,9 @@ void VulkanRenderSession::setCameraPos(WorldId_t worldId, Pos::Object pos, glm::
     PlayerPos /= float(Pos::Object_t::BS);
 }
 
-void VulkanRenderSession::beforeDraw() {
+void VulkanRenderSession::beforeDraw(double timeSeconds) {
     if(TP)
-        TP->update();
+        TP->update(timeSeconds);
     LightDummy.atlasUpdateDynamicData();
     CP.flushUploadsAndBarriers(VkInst->Graphics.CommandBufferRender);
 }
@@ -1901,6 +1906,7 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
     vkCmdDraw(drawCmd, 6*3*2, 1, 0, 0);
 
     {
+        PCO.Model = glm::mat4(1.0f);
         Pos::GlobalChunk x64offset = X64Offset >> Pos::Object_t::BS_Bit >> 4;
         Pos::GlobalRegion x64offset_region = x64offset >> 2;
 
@@ -1940,7 +1946,158 @@ void VulkanRenderSession::drawWorld(GlobalTime gTime, float dTime, VkCommandBuff
         PCO.Model = orig;
     }
 
+    vkCmdBindPipeline(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, NodeStaticTransparentPipeline);
+	vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout, 
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, 0, sizeof(WorldPCO), &PCO);
+    vkCmdBindDescriptorSets(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, 
+        MainAtlas_LightMap_PipelineLayout,  0, 2, 
+        (const VkDescriptorSet[]) {TP ? TP->getDescriptorSet() : VK_NULL_HANDLE, VoxelLightMapDescriptor}, 0, nullptr);
+
+    ensureAtlasLayerPreview();
+    if(AtlasLayersPreview) {
+        glm::mat4 previewModel = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 64.0f, 0.0f)-glm::vec3(X64Offset >> Pos::Object_t::BS_Bit));
+        vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout,
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, offsetof(WorldPCO, Model), sizeof(WorldPCO::Model), &previewModel);
+        VkBuffer previewBuffer = *AtlasLayersPreview;
+        VkDeviceSize previewOffset = 0;
+        vkCmdBindVertexBuffers(drawCmd, 0, 1, &previewBuffer, &previewOffset);
+        vkCmdDraw(drawCmd, AtlasLayersPreviewCount * 6, 1, 0, 0);
+    }
+
+    if(false) {
+        ensureEntityTexture();
+
+        if(!ServerSession->Content.Entityes.empty()) {
+            VkBuffer entityBuffer = TestQuad;
+            VkDeviceSize entityOffset = 0;
+            vkCmdBindVertexBuffers(drawCmd, 0, 1, &entityBuffer, &entityOffset);
+
+            glm::mat4 orig = PCO.Model;
+            for(const auto& pair : ServerSession->Content.Entityes) {
+                const auto& info = pair.second;
+                if(info.WorldId != WorldId)
+                    continue;
+
+                glm::vec3 entityPos = Pos::Object_t::asFloatVec(info.Pos - X64Offset);
+                entityPos.y -= 1.6f; // Camera position arrives as eye height.
+
+                glm::mat4 model = glm::translate(glm::mat4(1.0f), entityPos);
+                model = model * glm::mat4(info.Quat);
+                model = glm::scale(model, glm::vec3(0.6f, 1.8f, 0.6f));
+
+                PCO.Model = model;
+                vkCmdPushConstants(drawCmd, MainAtlas_LightMap_PipelineLayout,
+                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT, offsetof(WorldPCO, Model), sizeof(WorldPCO::Model), &PCO.Model);
+                vkCmdDraw(drawCmd, 6*3*2, 1, 0, 0);
+            }
+
+            PCO.Model = orig;
+        }
+    }
+
     CP.pushFrame();
+}
+
+void VulkanRenderSession::updateTestQuadTexture(uint32_t texId) {
+    if(EntityTextureReady && EntityTextureId == texId)
+        return;
+
+    auto *array = reinterpret_cast<NodeVertexStatic*>(TestQuad.mapMemory());
+    const size_t vertexCount = TestQuad.getSize() / sizeof(NodeVertexStatic);
+    for(size_t iter = 0; iter < vertexCount; ++iter)
+        array[iter].Tex = texId;
+    TestQuad.unMapMemory();
+
+    EntityTextureId = texId;
+    EntityTextureReady = true;
+}
+
+void VulkanRenderSession::ensureEntityTexture() {
+    if(EntityTextureReady || !TP || !NSP)
+        return;
+
+    auto iter = ServerSession->Assets.find(EnumAssets::Texture);
+    if(iter == ServerSession->Assets.end() || iter->second.empty())
+        return;
+
+    const AssetEntry* picked = nullptr;
+    for(const auto& [id, entry] : iter->second) {
+        if(entry.Key == "default.png") {
+            picked = &entry;
+            break;
+        }
+    }
+    if(!picked) {
+        for(const auto& [id, entry] : iter->second) {
+            if(entry.Key == "grass.png") {
+                picked = &entry;
+                break;
+            }
+        }
+    }
+    if(!picked)
+        picked = &iter->second.begin()->second;
+
+    updateTestQuadTexture(NSP->getTextureId(picked->Id));
+}
+
+void VulkanRenderSession::ensureAtlasLayerPreview() {
+    if(!TP)
+        return;
+
+    const uint32_t maxLayers = TP->getAtlasMaxLayers();
+    if(maxLayers == 0)
+        return;
+
+    if(AtlasLayersPreview && AtlasLayersPreviewCount == maxLayers)
+        return;
+
+    TP->requestAtlasLayerCount(maxLayers);
+
+    const uint32_t vertsPerQuad = 6;
+    const uint32_t totalVerts = maxLayers * vertsPerQuad;
+    std::vector<NodeVertexStatic> verts(totalVerts);
+
+    const uint32_t columns = 4;
+    const uint32_t base = 224;
+    const uint32_t step = 320;
+    const uint32_t size = 256;
+    const uint32_t z = base;
+
+    auto makeVert = [&](uint32_t fx, uint32_t fy, uint32_t tex, uint32_t tu, uint32_t tv) -> NodeVertexStatic {
+        NodeVertexStatic v{};
+        v.FX = fx;
+        v.FY = fy;
+        v.FZ = z;
+        v.LS = 0;
+        v.Tex = tex;
+        v.TU = tu;
+        v.TV = tv;
+        return v;
+    };
+
+    for(uint32_t layer = 0; layer < maxLayers; ++layer) {
+        const uint32_t col = layer % columns;
+        const uint32_t row = layer / columns;
+        const uint32_t x0 = base + col * step;
+        const uint32_t y0 = base + row * step;
+        const uint32_t x1 = x0 + size;
+        const uint32_t y1 = y0 + size;
+        const uint32_t tex = TP->getAtlasLayerId(layer);
+
+        const size_t start = static_cast<size_t>(layer) * vertsPerQuad;
+        verts[start + 0] = makeVert(x0, y0, tex, 0, 0);
+        verts[start + 1] = makeVert(x0, y1, tex, 0, 65535);
+        verts[start + 2] = makeVert(x1, y1, tex, 65535, 65535);
+        verts[start + 3] = makeVert(x0, y0, tex, 0, 0);
+        verts[start + 4] = makeVert(x1, y1, tex, 65535, 65535);
+        verts[start + 5] = makeVert(x1, y0, tex, 65535, 0);
+    }
+
+    AtlasLayersPreview.emplace(VkInst, verts.size() * sizeof(NodeVertexStatic));
+    std::memcpy(AtlasLayersPreview->mapMemory(), verts.data(), verts.size() * sizeof(NodeVertexStatic));
+    AtlasLayersPreview->unMapMemory();
+    AtlasLayersPreviewCount = maxLayers;
 }
 
 void VulkanRenderSession::pushStage(EnumRenderStage stage) {

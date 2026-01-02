@@ -1,4 +1,5 @@
 #include "Abstract.hpp"
+#include "Client/Vulkan/AtlasPipeline/TexturePipelineProgram.hpp"
 #include "Common/Net.hpp"
 #include "TOSLib.hpp"
 #include <boost/interprocess/file_mapping.hpp>
@@ -6,6 +7,8 @@
 #include "boost/json.hpp"
 #include "sha2.hpp"
 #include <algorithm>
+#include <cctype>
+#include <cstring>
 #include <boost/iostreams/filtering_streambuf.hpp>
 #include <boost/iostreams/copy.hpp>
 #include <boost/iostreams/filter/zlib.hpp>
@@ -15,12 +18,57 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 
 
 namespace LV {
 
 namespace fs = std::filesystem;
+
+PrecompiledTexturePipeline compileTexturePipeline(const std::string &cmd, std::string_view defaultDomain) {
+    PrecompiledTexturePipeline result;
+
+    std::string_view view(cmd);
+    const size_t trimPos = view.find_first_not_of(" \t\r\n");
+    if(trimPos == std::string_view::npos)
+        MAKE_ERROR("Пустая текстурная команда");
+
+    view = view.substr(trimPos);
+
+    const bool isPipeline = view.size() >= 3
+        && view.compare(0, 3, "tex") == 0
+        && (view.size() == 3 || std::isspace(static_cast<unsigned char>(view[3])));
+
+    if(!isPipeline) {
+        auto [domain, key] = parseDomainKey(std::string(view), defaultDomain);
+        result.Assets.emplace_back(std::move(domain), std::move(key));
+        return result;
+    }
+
+    TexturePipelineProgram program;
+    std::string err;
+    if(!program.compile(std::string(view), &err)) {
+        MAKE_ERROR("Ошибка разбора pipeline: " << err);
+    }
+
+    result.IsSource = true;
+    result.Pipeline.assign(reinterpret_cast<const char8_t*>(view.data()), view.size());
+
+    std::unordered_set<std::string> seen;
+    for(const auto& patch : program.patches()) {
+        auto [domain, key] = parseDomainKey(patch.Name, defaultDomain);
+        std::string token;
+        token.reserve(domain.size() + key.size() + 1);
+        token.append(domain);
+        token.push_back(':');
+        token.append(key);
+        if(seen.insert(token).second)
+            result.Assets.emplace_back(std::move(domain), std::move(key));
+    }
+
+    return result;
+}
 
 
 CompressedVoxels compressVoxels_byte(const std::vector<VoxelCube>& voxels) {
@@ -1089,6 +1137,10 @@ uint16_t PreparedNodeState::parseCondition(const std::string_view expression) {
     };
 
     std::vector<std::variant<EnumTokenKind, std::string_view, int, uint16_t>> tokens;
+
+    if(expression.empty())
+        tokens.push_back(int(1));
+
     ssize_t pos = 0;
     auto skipWS = [&](){ while(pos<expression.size() && std::isspace((unsigned char) expression[pos])) ++pos; };
 

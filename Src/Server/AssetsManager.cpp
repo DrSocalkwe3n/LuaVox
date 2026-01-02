@@ -1,8 +1,10 @@
 #include "AssetsManager.hpp"
 #include "Common/Abstract.hpp"
+#include "Client/Vulkan/AtlasPipeline/TexturePipelineProgram.hpp"
 #include "boost/json.hpp"
 #include "png++/rgb_pixel.hpp"
 #include <algorithm>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <png.h>
@@ -560,10 +562,34 @@ AssetsManager::Out_applyResourceChange AssetsManager::applyResourceChange(const 
 
                 // Ресолвим текстуры
                 std::variant<LV::PreparedModel, PreparedGLTF> model = _model;
-                std::visit([&lock](auto& val) {
+                std::visit([&lock, &domain](auto& val) {
                     for(const auto& [key, pipeline] : val.Textures) {
                         TexturePipeline pipe;
-                        pipe.Pipeline = pipeline.Pipeline;
+                        if(pipeline.IsSource) {
+                            std::string source(reinterpret_cast<const char*>(pipeline.Pipeline.data()), pipeline.Pipeline.size());
+                            TexturePipelineProgram program;
+                            std::string err;
+                            if(!program.compile(source, &err)) {
+                                MAKE_ERROR("Ошибка компиляции pipeline: " << err);
+                            }
+
+                            auto resolver = [&](std::string_view name) -> std::optional<uint32_t> {
+                                auto [texDomain, texKey] = parseDomainKey(std::string(name), domain);
+                                return lock->getId(EnumAssets::Texture, texDomain, texKey);
+                            };
+
+                            if(!program.link(resolver, &err)) {
+                                MAKE_ERROR("Ошибка линковки pipeline: " << err);
+                            }
+
+                            const std::vector<uint8_t> bytes = program.toBytes();
+                            pipe.Pipeline.resize(bytes.size());
+                            if(!bytes.empty()) {
+                                std::memcpy(pipe.Pipeline.data(), bytes.data(), bytes.size());
+                            }
+                        } else {
+                            pipe.Pipeline = pipeline.Pipeline;
+                        }
 
                         for(const auto& [domain, key] : pipeline.Assets) {
                             ResourceId texId = lock->getId(EnumAssets::Texture, domain, key);

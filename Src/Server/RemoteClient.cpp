@@ -11,6 +11,7 @@
 #include <boost/system/system_error.hpp>
 #include <exception>
 #include <Common/Packets.hpp>
+#include "sha2.hpp"
 
 
 namespace LV::Server {
@@ -562,13 +563,14 @@ ResourceRequest RemoteClient::pushPreparedPackets() {
     return std::move(nextRequest);
 }
 
-void RemoteClient::informateAssets(const std::vector<std::tuple<EnumAssets, ResourceId, const std::string, const std::string, Resource>>& resources)
+void RemoteClient::informateAssets(const std::vector<std::tuple<EnumAssets, ResourceId, std::string, std::string, Resource, std::vector<uint8_t>>>& resources)
 {
-    std::vector<std::tuple<EnumAssets, ResourceId, const std::string, const std::string, Hash_t, size_t>> newForClient;
+    std::vector<std::tuple<EnumAssets, ResourceId, std::string, std::string, Hash_t, std::vector<uint8_t>>> newForClient;
     static std::atomic<uint32_t> debugSendLogCount = 0;
 
-    for(auto& [type, resId, domain, key, resource] : resources) {
+    for(auto& [type, resId, domain, key, resource, header] : resources) {
         auto hash = resource.hash();
+        Hash_t headerHash = sha2::sha256(header.data(), header.size());
         auto lock = NetworkAndResource.lock();
 
         // Проверка запрашиваемых клиентом ресурсов
@@ -613,12 +615,13 @@ void RemoteClient::informateAssets(const std::vector<std::tuple<EnumAssets, Reso
             // Посмотрим что известно клиенту
             if(auto iter = lock->ResUses.AssetsUse[(int) type].find(resId); 
                 iter != lock->ResUses.AssetsUse[(int) type].end() 
-                && std::get<Hash_t>(iter->second) != hash
+                && (iter->second.second.Hash != hash || iter->second.second.HeaderHash != headerHash)
             ) {
                 lock.unlock();
                 // Требуется перепривязать идентификатор к новому хешу
-                newForClient.push_back({(EnumAssets) type, resId, domain, key, hash, resource.size()});
-                std::get<Hash_t>(iter->second) = hash;
+                newForClient.push_back({(EnumAssets) type, resId, domain, key, hash, header});
+                iter->second.second.Hash = hash;
+                iter->second.second.HeaderHash = headerHash;
             }
         }
     }
@@ -628,14 +631,19 @@ void RemoteClient::informateAssets(const std::vector<std::tuple<EnumAssets, Reso
         assert(newForClient.size() < 65535*4);
         auto lock = NetworkAndResource.lock();
 
-        lock->checkPacketBorder(2+1+4+newForClient.size()*(1+4+64+32));
+        lock->checkPacketBorder(2+1+4);
         lock->NextPacket << (uint8_t) ToClient::L1::Resource    // Оповещение
             << ((uint8_t) ToClient::L2Resource::Bind) << uint32_t(newForClient.size());
 
-        for(auto& [type, resId, domain, key, hash, size] : newForClient) {
+        for(auto& [type, resId, domain, key, hash, header] : newForClient) {
             // TODO: может внести ограничение на длину домена и ключа?
+            const size_t entrySize = 1 + 4 + 2 + domain.size() + 2 + key.size() + 32 + 4 + header.size();
+            lock->checkPacketBorder(entrySize);
             lock->NextPacket << uint8_t(type) << uint32_t(resId) << domain << key;
             lock->NextPacket.write((const std::byte*) hash.data(), hash.size());
+            lock->NextPacket << uint32_t(header.size());
+            if(!header.empty())
+                lock->NextPacket.write((const std::byte*) header.data(), header.size());
         }
     }
 }

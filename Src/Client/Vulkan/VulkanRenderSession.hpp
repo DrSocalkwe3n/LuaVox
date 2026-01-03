@@ -1,11 +1,13 @@
 #pragma once
 
+#include "Client/AssetsManager.hpp"
 #include "Client/Abstract.hpp"
 #include "Common/Abstract.hpp"
 #include <Client/Vulkan/Vulkan.hpp>
 #include <algorithm>
 #include <bitset>
 #include <condition_variable>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -85,7 +87,7 @@ public:
     }
 
     // Применяет изменения, возвращая все затронутые модели
-    std::vector<AssetsModel> onModelChanges(std::vector<std::tuple<AssetsModel, Resource>> newOrChanged,
+    std::vector<AssetsModel> onModelChanges(std::vector<std::tuple<AssetsModel, Resource, const std::vector<uint8_t>*>> newOrChanged,
         std::vector<AssetsModel> lost,
         const std::unordered_map<ResourceId, AssetEntry>* modelAssets) {
         std::vector<AssetsModel> result;
@@ -140,12 +142,39 @@ public:
             }
         }
 
-        for(const auto& [key, resource] : newOrChanged) {
+        for(const auto& [key, resource, deps] : newOrChanged) {
             result.push_back(key);
 
             makeUnready(key);
             ModelObject model;
             std::string type = "unknown";
+            std::optional<AssetsManager::ParsedHeader> header;
+            if(deps && !deps->empty()) {
+                header = AssetsManager::parseHeader(*deps);
+                if(header && header->Type != EnumAssets::Model)
+                    header.reset();
+            }
+            const std::vector<uint32_t>* textureDeps = header ? &header->TextureDeps : nullptr;
+            auto remapTextureId = [&](uint32_t placeholder) -> uint32_t {
+                if(!textureDeps || placeholder >= textureDeps->size())
+                    return 0;
+                return (*textureDeps)[placeholder];
+            };
+            auto remapPipeline = [&](TexturePipeline pipe) {
+                if(textureDeps) {
+                    for(auto& texId : pipe.BinTextures)
+                        texId = remapTextureId(texId);
+                    if(!pipe.Pipeline.empty()) {
+                        std::vector<uint8_t> code;
+                        code.resize(pipe.Pipeline.size());
+                        std::memcpy(code.data(), pipe.Pipeline.data(), code.size());
+                        TexturePipelineProgram::remapTexIds(code, *textureDeps, nullptr);
+                        pipe.Pipeline.resize(code.size());
+                        std::memcpy(pipe.Pipeline.data(), code.data(), code.size());
+                    }
+                }
+                return pipe;
+            };
                 
             try {
                 std::u8string_view data((const char8_t*) resource.data(), resource.size());
@@ -153,7 +182,10 @@ public:
                     type = "InternalBinary";
                     // Компилированная модель внутреннего формата
                     LV::PreparedModel pm((std::u8string) data);
-                    model.TextureMap = pm.CompiledTextures;
+                    model.TextureMap.clear();
+                    model.TextureMap.reserve(pm.CompiledTextures.size());
+                    for(auto& [tkey, pipe] : pm.CompiledTextures)
+                        model.TextureMap.emplace(tkey, remapPipeline(std::move(pipe)));
                     model.TextureKeys = {};
 
                     for(const PreparedModel::Cuboid& cb : pm.Cuboids) {
@@ -825,7 +857,7 @@ public:
     {}
 
     // Применяет изменения, возвращает изменённые описания состояний
-    std::vector<AssetsNodestate> onNodestateChanges(std::vector<std::tuple<AssetsNodestate, Resource>> newOrChanged, std::vector<AssetsNodestate> lost, std::vector<AssetsModel> changedModels) {
+    std::vector<AssetsNodestate> onNodestateChanges(std::vector<std::tuple<AssetsNodestate, Resource, const std::vector<uint8_t>*>> newOrChanged, std::vector<AssetsNodestate> lost, std::vector<AssetsModel> changedModels) {
         std::vector<AssetsNodestate> result;
 
         for(ResourceId lostId : lost) {
@@ -837,7 +869,7 @@ public:
             Nodestates.erase(iterNodestate);
         }
         
-        for(const auto& [key, resource] : newOrChanged) {
+        for(const auto& [key, resource, deps] : newOrChanged) {
             result.push_back(key);
 
             PreparedNodeState nodestate;
@@ -865,6 +897,13 @@ public:
             } catch(const std::exception& exc) {
                 LOG.warn() << "Не удалось распарсить nodestate " << type << ":\n\t" << exc.what();
                 continue;
+            }
+
+            if(deps && !deps->empty()) {
+                auto header = AssetsManager::parseHeader(*deps);
+                if(header && header->Type == EnumAssets::Nodestate) {
+                    nodestate.LocalToModel.assign(header->ModelDeps.begin(), header->ModelDeps.end());
+                }
             }
 
             Nodestates.insert_or_assign(key, std::move(nodestate));

@@ -17,6 +17,7 @@ AssetsManager::AssetsManager(boost::asio::io_context &ioc, const fs::path &cache
         size_t maxCacheDirectorySize, size_t maxLifeTime)
     :   IAsyncDestructible(ioc), CachePath(cachePath)
 {
+    NextId.fill(0);
     {
         auto lock = Changes.lock();
         lock->MaxCacheDatabaseSize = maxCacheDirectorySize;
@@ -170,6 +171,212 @@ AssetsManager::~AssetsManager() {
     OffThread.join();
 
     LOG.info() << "Хранилище кеша закрыто";
+}
+
+ResourceId AssetsManager::getId(EnumAssets type, const std::string& domain, const std::string& key) {
+    std::lock_guard lock(MapMutex);
+    auto& typeTable = DKToId[type];
+    auto& domainTable = typeTable[domain];
+    if(auto iter = domainTable.find(key); iter != domainTable.end())
+        return iter->second;
+
+    ResourceId id = NextId[(int) type]++;
+    domainTable[key] = id;
+    return id;
+}
+
+std::optional<ResourceId> AssetsManager::getLocalIdFromServer(EnumAssets type, ResourceId serverId) const {
+    std::lock_guard lock(MapMutex);
+    auto iterType = ServerToLocal.find(type);
+    if(iterType == ServerToLocal.end())
+        return std::nullopt;
+    auto iter = iterType->second.find(serverId);
+    if(iter == iterType->second.end())
+        return std::nullopt;
+    return iter->second;
+}
+
+const AssetsManager::BindInfo* AssetsManager::getBind(EnumAssets type, ResourceId localId) const {
+    std::lock_guard lock(MapMutex);
+    auto iterType = LocalBinds.find(type);
+    if(iterType == LocalBinds.end())
+        return nullptr;
+    auto iter = iterType->second.find(localId);
+    if(iter == iterType->second.end())
+        return nullptr;
+    return &iter->second;
+}
+
+AssetsManager::BindResult AssetsManager::bindServerResource(EnumAssets type, ResourceId serverId, const std::string& domain,
+    const std::string& key, const Hash_t& hash, std::vector<uint8_t> header)
+{
+    BindResult result;
+    result.LocalId = getId(type, domain, key);
+
+    std::lock_guard lock(MapMutex);
+    ServerToLocal[type][serverId] = result.LocalId;
+
+    auto& binds = LocalBinds[type];
+    auto iter = binds.find(result.LocalId);
+    if(iter == binds.end()) {
+        result.Changed = true;
+        binds.emplace(result.LocalId, BindInfo{
+            .LocalId = result.LocalId,
+            .ServerId = serverId,
+            .Domain = domain,
+            .Key = key,
+            .Hash = hash,
+            .Header = std::move(header)
+        });
+        return result;
+    }
+
+    BindInfo& info = iter->second;
+    bool hashChanged = info.Hash != hash;
+    bool headerChanged = info.Header != header;
+    result.Changed = hashChanged || headerChanged || info.ServerId != serverId;
+    info.ServerId = serverId;
+    info.Domain = domain;
+    info.Key = key;
+    info.Hash = hash;
+    info.Header = std::move(header);
+    return result;
+}
+
+std::optional<ResourceId> AssetsManager::unbindServerResource(EnumAssets type, ResourceId serverId) {
+    std::lock_guard lock(MapMutex);
+    auto iterType = ServerToLocal.find(type);
+    if(iterType == ServerToLocal.end())
+        return std::nullopt;
+    auto iter = iterType->second.find(serverId);
+    if(iter == iterType->second.end())
+        return std::nullopt;
+
+    ResourceId localId = iter->second;
+    iterType->second.erase(iter);
+
+    auto iterBindType = LocalBinds.find(type);
+    if(iterBindType != LocalBinds.end())
+        iterBindType->second.erase(localId);
+
+    return localId;
+}
+
+void AssetsManager::clearServerBindings() {
+    std::lock_guard lock(MapMutex);
+    ServerToLocal.clear();
+    LocalBinds.clear();
+}
+
+std::optional<AssetsManager::ParsedHeader> AssetsManager::parseHeader(const std::vector<uint8_t>& data) {
+    size_t pos = 0;
+    auto readU8 = [&](uint8_t& out) -> bool {
+        if(pos + 1 > data.size())
+            return false;
+        out = data[pos++];
+        return true;
+    };
+    auto readU32 = [&](uint32_t& out) -> bool {
+        if(pos + 4 > data.size())
+            return false;
+        out = uint32_t(data[pos]) |
+              (uint32_t(data[pos + 1]) << 8) |
+              (uint32_t(data[pos + 2]) << 16) |
+              (uint32_t(data[pos + 3]) << 24);
+        pos += 4;
+        return true;
+    };
+
+    ParsedHeader out;
+    uint8_t c0, c1, version, type;
+    if(!readU8(c0) || !readU8(c1) || !readU8(version) || !readU8(type))
+        return std::nullopt;
+    if(c0 != 'a' || c1 != 'h' || version != 1)
+        return std::nullopt;
+    out.Type = static_cast<EnumAssets>(type);
+
+    uint32_t count = 0;
+    if(!readU32(count))
+        return std::nullopt;
+    out.ModelDeps.reserve(count);
+    for(uint32_t i = 0; i < count; i++) {
+        uint32_t id;
+        if(!readU32(id))
+            return std::nullopt;
+        out.ModelDeps.push_back(id);
+    }
+
+    if(!readU32(count))
+        return std::nullopt;
+    out.TextureDeps.reserve(count);
+    for(uint32_t i = 0; i < count; i++) {
+        uint32_t id;
+        if(!readU32(id))
+            return std::nullopt;
+        out.TextureDeps.push_back(id);
+    }
+
+    uint32_t extraSize = 0;
+    if(!readU32(extraSize))
+        return std::nullopt;
+    if(pos + extraSize > data.size())
+        return std::nullopt;
+    out.Extra.assign(data.begin() + pos, data.begin() + pos + extraSize);
+    return out;
+}
+
+std::vector<uint8_t> AssetsManager::buildHeader(EnumAssets type, const std::vector<uint32_t>& modelDeps,
+    const std::vector<uint32_t>& textureDeps, const std::vector<uint8_t>& extra)
+{
+    std::vector<uint8_t> data;
+    data.reserve(4 + 4 + modelDeps.size() * 4 + 4 + textureDeps.size() * 4 + 4 + extra.size());
+    data.push_back('a');
+    data.push_back('h');
+    data.push_back(1);
+    data.push_back(static_cast<uint8_t>(type));
+
+    auto writeU32 = [&](uint32_t value) {
+        data.push_back(uint8_t(value & 0xff));
+        data.push_back(uint8_t((value >> 8) & 0xff));
+        data.push_back(uint8_t((value >> 16) & 0xff));
+        data.push_back(uint8_t((value >> 24) & 0xff));
+    };
+
+    writeU32(static_cast<uint32_t>(modelDeps.size()));
+    for(uint32_t id : modelDeps)
+        writeU32(id);
+
+    writeU32(static_cast<uint32_t>(textureDeps.size()));
+    for(uint32_t id : textureDeps)
+        writeU32(id);
+
+    writeU32(static_cast<uint32_t>(extra.size()));
+    if(!extra.empty())
+        data.insert(data.end(), extra.begin(), extra.end());
+
+    return data;
+}
+
+std::vector<uint8_t> AssetsManager::rebindHeader(const std::vector<uint8_t>& header) const {
+    auto parsed = parseHeader(header);
+    if(!parsed)
+        return header;
+
+    std::vector<uint32_t> modelDeps;
+    modelDeps.reserve(parsed->ModelDeps.size());
+    for(uint32_t serverId : parsed->ModelDeps) {
+        auto localId = getLocalIdFromServer(EnumAssets::Model, serverId);
+        modelDeps.push_back(localId.value_or(0));
+    }
+
+    std::vector<uint32_t> textureDeps;
+    textureDeps.reserve(parsed->TextureDeps.size());
+    for(uint32_t serverId : parsed->TextureDeps) {
+        auto localId = getLocalIdFromServer(EnumAssets::Texture, serverId);
+        textureDeps.push_back(localId.value_or(0));
+    }
+
+    return buildHeader(parsed->Type, modelDeps, textureDeps, parsed->Extra);
 }
 
 coro<> AssetsManager::asyncDestructor() {

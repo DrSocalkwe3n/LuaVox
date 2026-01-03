@@ -499,6 +499,15 @@ void unCompressNodes(const std::u8string& compressed, Node* ptr);
 std::u8string compressLinear(const std::u8string& data);
 std::u8string unCompressLinear(const std::u8string& data);
 
+inline std::pair<std::string_view, std::string_view> parseDomainKey(const std::string_view value, const std::string_view defaultDomain = "core") {
+    size_t pos = value.find(':');
+
+    if(pos == std::string_view::npos)
+        return {defaultDomain, value};
+    else
+        return {value.substr(0, pos), value.substr(pos+1)};
+}
+
 inline std::pair<std::string, std::string> parseDomainKey(const std::string& value, const std::string_view defaultDomain = "core") {
     auto regResult = TOS::Str::match(value, "(?:([\\w\\d_]+):)?([\\w\\d/_.]+)");
     if(!regResult)
@@ -608,11 +617,13 @@ struct NodeStateInfo {
     int Variations = 0;
 };
 
+using ResourceHeader = std::u8string;
+
 /*
     Хранит распаршенное определение состояний нод.
     Не привязано ни к какому окружению.
 */
-struct PreparedNodeState {
+struct HeadlessNodeState {
     enum class Op {
         Add, Sub, Mul, Div, Mod,
         LT, LE, GT, GE, EQ, NE,
@@ -642,9 +653,7 @@ struct PreparedNodeState {
     };
 
     // Локальный идентификатор в именной ресурс
-    std::vector<std::pair<std::string, std::string>> LocalToModelKD;
-    // Локальный идентификатор в глобальный идентификатор
-    std::vector<AssetsModel> LocalToModel;
+    std::vector<std::string> LocalToModelKD;
     // Ноды выражений
     std::vector<Node> Nodes;
     // Условия -> вариации модели + веса
@@ -657,18 +666,33 @@ struct PreparedNodeState {
         >
     , 1> Routes;
 
-    PreparedNodeState(const std::string_view modid, const js::object& profile);
-    PreparedNodeState(const std::string_view modid, const sol::table& profile);
-    PreparedNodeState(const std::u8string_view data);
+    HeadlessNodeState() = default;
+    HeadlessNodeState(const HeadlessNodeState&) = default;
+    HeadlessNodeState(HeadlessNodeState&&) = default;
 
-    PreparedNodeState() = default;
-    PreparedNodeState(const PreparedNodeState&) = default;
-    PreparedNodeState(PreparedNodeState&&) = default;
+    HeadlessNodeState& operator=(const HeadlessNodeState&) = default;
+    HeadlessNodeState& operator=(HeadlessNodeState&&) = default;
 
-    PreparedNodeState& operator=(const PreparedNodeState&) = default;
-    PreparedNodeState& operator=(PreparedNodeState&&) = default;
+    /*
+        Парсит json формат с выделением все зависимостей в заголовок.
+        Требуется ресолвер идентификаторов моделей.
+    */
+    ResourceHeader parse(const js::object& profile, const std::function<AssetsModel(const std::string_view model)>& modelResolver);
 
-    // Пишет в сжатый двоичный формат
+    /*
+        Парсит lua формат с выделением зависимостей в заголовок.
+        Требуется ресолвер идентификаторов моделей.
+    */
+    ResourceHeader parse(const sol::table& profile, const std::function<AssetsModel(const std::string_view model)>& modelResolver);
+
+    /*
+        Загружает ресурс из двоичного формата.
+    */
+    void load(std::u8string_view data);
+
+    /*
+        Транслирует в двоичный формат.
+    */
     std::u8string dump() const;
 
     // Если зависит от случайного распределения по миру
@@ -761,7 +785,6 @@ struct PreparedNodeState {
             }
         }
 
-        
         std::move_only_function<int32_t(uint16_t nodeId)> calcNode;
 
         calcNode = [&](uint16_t nodeId) -> int32_t {
@@ -860,7 +883,7 @@ enum class EnumFace {
 /*
     Парсит json модель
 */
-struct PreparedModel {
+struct HeadlessModel {
     enum class EnumGuiLight {
         Default
     };
@@ -905,23 +928,42 @@ struct PreparedModel {
     
     std::vector<SubModel> SubModels;
 
-    // Json
-    PreparedModel(const std::string_view modid, const js::object& profile);
-    PreparedModel(const std::string_view modid, const sol::table& profile);
-    PreparedModel(const std::u8string& data);
+    HeadlessModel() = default;
+    HeadlessModel(const HeadlessModel&) = default;
+    HeadlessModel(HeadlessModel&&) = default;
 
-    PreparedModel() = default;
-    PreparedModel(const PreparedModel&) = default;
-    PreparedModel(PreparedModel&&) = default;
+    HeadlessModel& operator=(const HeadlessModel&) = default;
+    HeadlessModel& operator=(HeadlessModel&&) = default;
 
-    PreparedModel& operator=(const PreparedModel&) = default;
-    PreparedModel& operator=(PreparedModel&&) = default;
+    /*
+        Парсит json формат с выделением все зависимостей в заголовок.
+        Требуется ресолвер идентификаторов моделей.
+    */
+    ResourceHeader parse(
+        const js::object& profile,
+        const std::function<AssetsModel(const std::string_view model)>& modelResolver,
+        const std::function<std::vector<uint8_t>(const std::string_view texturePipelineSrc)>& textureResolver
+    );
 
-    // Пишет в сжатый двоичный формат
-    std::u8string dump() const;
+    /*
+        Парсит lua формат с выделением зависимостей в заголовок.
+        Требуется ресолвер идентификаторов моделей.
+    */
+    ResourceHeader parse(
+        const sol::table& profile, 
+        const std::function<AssetsModel(const std::string_view model)>& modelResolver,
+        const std::function<std::vector<uint8_t>(const std::string_view texturePipelineSrc)>& textureResolver
+    );
 
-private:
+    /*
+        Загружает ресурс из двоичного формата.
+    */
     void load(std::u8string_view data);
+
+    /*
+        Транслирует в двоичный формат.
+    */
+    std::u8string dump() const;
 };
 
 struct PreparedGLTF {

@@ -1567,7 +1567,7 @@ void GameServer::init(fs::path worldPath) {
         AssetsInit.Assets.push_back(mlt.LoadChain[index].Path / "assets");
     }
 
-    Content.AM.applyResourceChange(Content.AM.recheckResourcesSync(AssetsInit));
+    Content.AM.applyResourceChange(Content.AM.reloadResources(AssetsInit));
 
     LOG.info() << "Пре Инициализация";
 
@@ -1882,7 +1882,7 @@ void GameServer::stepModInitializations() {
 void GameServer::reloadMods() {
     LOG.info() << "Перезагрузка модов: ассеты и зависимости";
 
-    AssetsPreloader::ResourceChangeObj changes = Content.AM.recheckResourcesSync(AssetsInit);
+    AssetsPreloader::Out_reloadResources changes = Content.AM.reloadResources(AssetsInit);
     AssetsPreloader::Out_applyResourceChange applied = Content.AM.applyResourceChange(changes);
 
     size_t changedCount = 0;
@@ -2687,7 +2687,7 @@ void GameServer::stepSyncContent() {
     full.uniq();
 
     // Информируем о запрошенных ассетах
-    std::vector<std::tuple<EnumAssets, ResourceId, const std::string, const std::string, Resource>> resources;
+    std::vector<std::tuple<EnumAssets, ResourceId, std::string, std::string, Resource, std::u8string>> resources;
     for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++) {
         for(ResourceId resId : full.AssetsInfo[type]) {
             const AssetsPreloader::MediaResource* media = Content.AM.getResource((EnumAssets) type, resId);
@@ -2695,7 +2695,7 @@ void GameServer::stepSyncContent() {
                 continue;
 
             Resource resource(media->Resource->data(), media->Resource->size());
-            resources.emplace_back((EnumAssets) type, resId, media->Domain, media->Key, std::move(resource));
+            resources.emplace_back((EnumAssets) type, resId, media->Domain, media->Key, std::move(resource), media->Dependencies);
         }
     }
 
@@ -2705,8 +2705,8 @@ void GameServer::stepSyncContent() {
             continue;
 
         auto& [type, id, media] = *result;
-        Resource resource(media->Resource->data(), media->Resource->size());
-        resources.emplace_back(type, id, media->Domain, media->Key, std::move(resource));
+        Resource resource(*media->Resource);
+        resources.emplace_back(type, id, media->Domain, media->Key, std::move(resource), media->Header);
     }
 
     // Информируем о запрошенных профилях

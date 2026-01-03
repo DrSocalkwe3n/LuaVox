@@ -92,6 +92,7 @@ private:
         ResourceId Id;
         std::string Domain, Key;
         Hash_t Hash;
+        std::vector<uint8_t> Header;
     };
 
     struct TickData {

@@ -212,7 +212,11 @@ class RemoteClient {
         struct ResUses_t {
             // Счётчики использования двоичных кэшируемых ресурсов + хэш привязанный к идентификатору
             // Хэш используется для того, чтобы исключить повторные объявления неизменившихся ресурсов
-            std::map<ResourceId,      std::pair<uint32_t, Hash_t>>      AssetsUse[(int) EnumAssets::MAX_ENUM];
+            struct AssetBindState {
+                Hash_t Hash;
+                Hash_t HeaderHash;
+            };
+            std::map<ResourceId, std::pair<uint32_t, AssetBindState>> AssetsUse[(int) EnumAssets::MAX_ENUM];
 
             // Зависимость профилей контента от профилей ресурсов
             // Нужно чтобы пересчитать зависимости к профилям ресурсов
@@ -426,8 +430,16 @@ public:
     // Сюда приходят все обновления ресурсов движка
     // Глобально их можно запросить в выдаче pushPreparedPackets()
 
+    // Нужно передавать клиенту информацию о новых привязках
+    // id -> домен+ключ
+    // id -> hash+header
+
+    // По запросу клиента отправлять нужные ресурсы по hash
+
+    /// TODO: новый void informateAssets();
+
     // Оповещение о запрошенных (и не только) ассетах
-    void informateAssets(const std::vector<std::tuple<EnumAssets, ResourceId, const std::string, const std::string, Resource>>& resources);
+    void informateAssets(const std::vector<std::tuple<EnumAssets, ResourceId, std::string, std::string, Resource, std::vector<uint8_t>>>& resources);
 
     // Игровые определения
     void informateDefVoxel(const std::vector<std::pair<DefVoxelId, DefVoxel*>>& voxels)         { NetworkAndResource.lock()->informateDefVoxel(voxels); }

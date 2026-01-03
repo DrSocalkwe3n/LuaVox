@@ -1648,7 +1648,7 @@ void VulkanRenderSession::tickSync(const TickSyncData& data) {
     if(auto iter = data.Profiles_Lost.find(EnumDefContent::Voxel); iter != data.Profiles_Lost.end())
         mcpData.ChangedVoxels.insert(mcpData.ChangedVoxels.end(), iter->second.begin(), iter->second.end());
 
-    std::vector<std::tuple<AssetsModel, Resource>> modelResources;
+    std::vector<std::tuple<AssetsModel, Resource, const std::vector<uint8_t>*>> modelResources;
     std::vector<AssetsModel> modelLost;
     if(auto iter = data.Assets_ChangeOrAdd.find(EnumAssets::Model); iter != data.Assets_ChangeOrAdd.end()) {
         const auto& list = ServerSession->Assets[EnumAssets::Model];
@@ -1657,7 +1657,7 @@ void VulkanRenderSession::tickSync(const TickSyncData& data) {
             if(entryIter == list.end())
                 continue;
 
-            modelResources.emplace_back(id, entryIter->second.Res);
+            modelResources.emplace_back(id, entryIter->second.Res, &entryIter->second.Dependencies);
         }
     }
     if(auto iter = data.Assets_Lost.find(EnumAssets::Model); iter != data.Assets_Lost.end())
@@ -1698,7 +1698,7 @@ void VulkanRenderSession::tickSync(const TickSyncData& data) {
 
     std::vector<AssetsNodestate> changedNodestates;
     if(NSP) {
-        std::vector<std::tuple<AssetsNodestate, Resource>> nodestateResources;
+        std::vector<std::tuple<AssetsNodestate, Resource, const std::vector<uint8_t>*>> nodestateResources;
         std::vector<AssetsNodestate> nodestateLost;
 
         if(auto iter = data.Assets_ChangeOrAdd.find(EnumAssets::Nodestate); iter != data.Assets_ChangeOrAdd.end()) {
@@ -1708,7 +1708,7 @@ void VulkanRenderSession::tickSync(const TickSyncData& data) {
                 if(entryIter == list.end())
                     continue;
 
-                nodestateResources.emplace_back(id, entryIter->second.Res);
+                nodestateResources.emplace_back(id, entryIter->second.Res, &entryIter->second.Dependencies);
             }
         }
 

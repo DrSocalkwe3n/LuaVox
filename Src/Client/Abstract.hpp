@@ -163,6 +163,8 @@ struct AssetEntry {
     ResourceId Id;
     std::string Domain, Key;
     Resource Res;
+    Hash_t Hash = {};
+    std::vector<uint8_t> Dependencies;
 };
 
 /* 

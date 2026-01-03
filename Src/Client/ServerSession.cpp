@@ -358,6 +358,12 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
         resources.reserve(assets.size());
 
         for(AssetEntry& entry : assets) {
+            entry.Hash = entry.Res.hash();
+            if(const AssetsManager::BindInfo* bind = AM->getBind(entry.Type, entry.Id))
+                entry.Dependencies = AM->rebindHeader(bind->Header);
+            else
+                entry.Dependencies.clear();
+
             resources.push_back(entry.Res);
             AsyncContext.LoadedResources.emplace_back(std::move(entry));
             
@@ -430,12 +436,27 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                     needRequest.push_back(key.Hash);
                 }
             } else {
+                Hash_t actualHash = res->hash();
+                if(actualHash != key.Hash) {
+                    auto iter = std::lower_bound(AsyncContext.AlreadyLoading.begin(), AsyncContext.AlreadyLoading.end(), key.Hash);
+                    if(iter == AsyncContext.AlreadyLoading.end() || *iter != key.Hash) {
+                        AsyncContext.AlreadyLoading.insert(iter, key.Hash);
+                        needRequest.push_back(key.Hash);
+                    }
+                }
+
+                std::vector<uint8_t> deps;
+                if(const AssetsManager::BindInfo* bind = AM->getBind(key.Type, key.Id))
+                    deps = AM->rebindHeader(bind->Header);
+
                 AssetEntry entry {
                     .Type = key.Type,
                     .Id = key.Id,
                     .Domain = key.Domain,
                     .Key = key.Key,
-                    .Res = *res
+                    .Res = std::move(*res),
+                    .Hash = actualHash,
+                    .Dependencies = std::move(deps)
                 };
 
                 AsyncContext.LoadedResources.emplace_back(std::move(entry));
@@ -529,7 +550,7 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                 auto iter = niubdk.find(dk);
                 if(iter != niubdk.end()) {
                     // Есть ресурс
-                    needQuery = false;
+                    needQuery = iter->second.first.Hash != bind.Hash;
                 }
             }
 
@@ -951,12 +972,21 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
             AsyncContext.Binds.clear();
 
             for(AssetBindEntry& entry : abc.Binds) {
+                std::vector<uint8_t> deps;
+                if(!entry.Header.empty())
+                    deps = AM->rebindHeader(entry.Header);
+
                 MyAssets.ExistBinds[(int) entry.Type].insert(entry.Id);
                 result.Assets_ChangeOrAdd[entry.Type].push_back(entry.Id);
+
+                auto iterLoaded = IServerSession::Assets[entry.Type].find(entry.Id);
+                if(iterLoaded != IServerSession::Assets[entry.Type].end())
+                    iterLoaded->second.Dependencies = deps;
 
                 // Если ресурс был в кеше, то достаётся от туда
                 auto iter = MyAssets.NotInUse[(int) entry.Type].find(entry.Domain+':'+entry.Key);
                 if(iter != MyAssets.NotInUse[(int) entry.Type].end()) {
+                    iter->second.first.Dependencies = deps;
                     IServerSession::Assets[entry.Type][entry.Id] = std::get<0>(iter->second);
                     result.Assets_ChangeOrAdd[entry.Type].push_back(entry.Id);
                     MyAssets.NotInUse[(int) entry.Type].erase(iter);
@@ -1196,6 +1226,7 @@ void ServerSession::setRenderSession(IRenderSession* session) {
 }
 
 void ServerSession::resetResourceSyncState() {
+    AM->clearServerBindings();
     AsyncContext.AssetsLoading.clear();
     AsyncContext.AlreadyLoading.clear();
     for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++)
@@ -1300,11 +1331,27 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
             key = co_await sock.read<std::string>();
             Hash_t hash;
             co_await sock.read((std::byte*) hash.data(), hash.size());
+            uint32_t headerSize = co_await sock.read<uint32_t>();
+            std::vector<uint8_t> header;
+            if(headerSize > 0) {
+                header.resize(headerSize);
+                co_await sock.read((std::byte*) header.data(), header.size());
+            }
 
-            binds.emplace_back(
-                (EnumAssets) type, (ResourceId) id, std::move(domain),
-                std::move(key), hash
-            );
+            AssetsManager::BindResult bindResult = AM->bindServerResource(
+                (EnumAssets) type, (ResourceId) id, domain, key, hash, header);
+
+            if(!bindResult.Changed)
+                continue;
+
+            binds.emplace_back(AssetBindEntry{
+                .Type = (EnumAssets) type,
+                .Id = bindResult.LocalId,
+                .Domain = std::move(domain),
+                .Key = std::move(key),
+                .Hash = hash,
+                .Header = std::move(header)
+            });
 
             if(binds.back().Domain == "test"
                 && (binds.back().Type == EnumAssets::Nodestate
@@ -1339,7 +1386,11 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
             if(type >= (int) EnumAssets::MAX_ENUM)
                 protocolError();
 
-            abc.Lost[(int) type].push_back(id);
+            auto localId = AM->unbindServerResource((EnumAssets) type, id);
+            if(!localId)
+                continue;
+
+            abc.Lost[(int) type].push_back(*localId);
         }
 
         AsyncContext.AssetsBinds.lock()->emplace_back(std::move(abc));
@@ -1358,6 +1409,13 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
 
         std::string domain = co_await sock.read<std::string>();
         std::string key = co_await sock.read<std::string>();
+        ResourceId localId = 0;
+        if(auto mapped = AM->getLocalIdFromServer(type, id)) {
+            localId = *mapped;
+        } else {
+            localId = AM->getId(type, domain, key);
+            AM->bindServerResource(type, id, domain, key, hash, {});
+        }
 
         if(domain == "test"
             && (type == EnumAssets::Nodestate
@@ -1367,14 +1425,14 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
             uint32_t idx = debugResourceLogCount.fetch_add(1);
             if(idx < 128) {
                 LOG.debug() << "InitResSend type=" << assetTypeName(type)
-                    << " id=" << id
+                    << " id=" << localId
                     << " key=" << domain << ':' << key
                     << " size=" << size;
             }
         }
 
         AsyncContext.AssetsLoading[hash] = AssetLoading{
-            type, id, std::move(domain), std::move(key), 
+            type, localId, std::move(domain), std::move(key),
             std::u8string(size, '\0'), 0
         };
 
@@ -1410,9 +1468,14 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
                     }
                 }
 
-                AsyncContext.LoadedAssets.lock()->emplace_back(
-                    al.Type, al.Id, std::move(al.Domain), std::move(al.Key), std::move(al.Data)
-                );
+                AsyncContext.LoadedAssets.lock()->emplace_back(AssetEntry{
+                    .Type = al.Type,
+                    .Id = al.Id,
+                    .Domain = std::move(al.Domain),
+                    .Key = std::move(al.Key),
+                    .Res = std::move(al.Data),
+                    .Hash = hash
+                });
 
                 AsyncContext.AssetsLoading.erase(AsyncContext.AssetsLoading.find(hash));
 
@@ -1461,7 +1524,11 @@ coro<> ServerSession::rP_Definition(Net::AsyncSocket &sock) {
     {
         DefNode_t def;
         DefNodeId id = co_await sock.read<DefNodeId>();
-        def.NodestateId = co_await sock.read<uint32_t>();
+        ResourceId serverNodestate = co_await sock.read<uint32_t>();
+        if(auto localId = AM->getLocalIdFromServer(EnumAssets::Nodestate, serverNodestate))
+            def.NodestateId = *localId;
+        else
+            def.NodestateId = 0;
         def.TexId = id;
 
         if(id < 32) {

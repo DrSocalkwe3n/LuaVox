@@ -1,17 +1,22 @@
 #pragma once
 
 #include "Common/Abstract.hpp"
+#include <array>
 #include <cassert>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <queue>
 #include <string>
+#include <unordered_map>
 #include <sqlite3.h>
 #include <TOSLib.hpp>
 #include <TOSAsync.hpp>
 #include <filesystem>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 
 namespace LV::Client {
@@ -91,11 +96,32 @@ class AssetsManager : public IAsyncDestructible {
 public:
     using Ptr = std::shared_ptr<AssetsManager>;
 
+    struct ParsedHeader {
+        EnumAssets Type = EnumAssets::MAX_ENUM;
+        std::vector<uint32_t> ModelDeps;
+        std::vector<uint32_t> TextureDeps;
+        std::vector<uint8_t> Extra;
+    };
+
+    struct BindInfo {
+        ResourceId LocalId = 0;
+        ResourceId ServerId = 0;
+        std::string Domain;
+        std::string Key;
+        Hash_t Hash = {};
+        std::vector<uint8_t> Header;
+    };
+
     struct ResourceKey {
         Hash_t Hash;
         EnumAssets Type;
         std::string Domain, Key;
         ResourceId Id;
+    };
+
+    struct BindResult {
+        ResourceId LocalId = 0;
+        bool Changed = false;
     };
 
 public:
@@ -151,6 +177,20 @@ public:
         return IssuedAnError;
     }
 
+    // Получить или создать локальный идентификатор ресурса
+    ResourceId getId(EnumAssets type, const std::string& domain, const std::string& key);
+    std::optional<ResourceId> getLocalIdFromServer(EnumAssets type, ResourceId serverId) const;
+    const BindInfo* getBind(EnumAssets type, ResourceId localId) const;
+    BindResult bindServerResource(EnumAssets type, ResourceId serverId, const std::string& domain, const std::string& key,
+        const Hash_t& hash, std::vector<uint8_t> header);
+    std::optional<ResourceId> unbindServerResource(EnumAssets type, ResourceId serverId);
+    void clearServerBindings();
+
+    static std::optional<ParsedHeader> parseHeader(const std::vector<uint8_t>& data);
+    static std::vector<uint8_t> buildHeader(EnumAssets type, const std::vector<uint32_t>& modelDeps,
+        const std::vector<uint32_t>& textureDeps, const std::vector<uint8_t>& extra);
+    std::vector<uint8_t> rebindHeader(const std::vector<uint8_t>& header) const;
+
 private:
     Logger LOG = "Client>ResourceHandler";
     const fs::path
@@ -197,6 +237,11 @@ private:
 
     bool NeedShutdown = false, IssuedAnError = false;
     std::thread OffThread;
+    mutable std::mutex MapMutex;
+    std::unordered_map<EnumAssets, std::unordered_map<std::string, std::unordered_map<std::string, ResourceId>>> DKToId;
+    std::unordered_map<EnumAssets, std::unordered_map<ResourceId, ResourceId>> ServerToLocal;
+    std::unordered_map<EnumAssets, std::unordered_map<ResourceId, BindInfo>> LocalBinds;
+    std::array<ResourceId, (int) EnumAssets::MAX_ENUM> NextId = {};
 
 
     virtual coro<> asyncDestructor();

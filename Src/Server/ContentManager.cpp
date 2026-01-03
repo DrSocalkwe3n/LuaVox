@@ -4,7 +4,7 @@
 
 namespace LV::Server {
 
-ContentManager::ContentManager(AssetsManager &am)
+ContentManager::ContentManager(AssetsPreloader &am)
     : AM(am)
 {
     std::fill(std::begin(NextId), std::end(NextId), 1);

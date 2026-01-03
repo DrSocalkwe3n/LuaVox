@@ -5,7 +5,6 @@
 #include <Common/Net.hpp>
 #include "Abstract.hpp"
 #include "Common/Packets.hpp"
-#include "Server/AssetsManager.hpp"
 #include "Server/ContentManager.hpp"
 #include <Common/Abstract.hpp>
 #include <bitset>

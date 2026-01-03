@@ -3,7 +3,6 @@
 #include "Common/Net.hpp"
 #include "Common/Packets.hpp"
 #include "Server/Abstract.hpp"
-#include "Server/AssetsManager.hpp"
 #include "Server/ContentManager.hpp"
 #include "Server/RemoteClient.hpp"
 #include <algorithm>
@@ -1568,7 +1567,7 @@ void GameServer::init(fs::path worldPath) {
         AssetsInit.Assets.push_back(mlt.LoadChain[index].Path / "assets");
     }
 
-    Content.AM.applyResourceChange(Content.AM.recheckResources(AssetsInit));
+    Content.AM.applyResourceChange(Content.AM.recheckResourcesSync(AssetsInit));
 
     LOG.info() << "Пре Инициализация";
 
@@ -1883,8 +1882,8 @@ void GameServer::stepModInitializations() {
 void GameServer::reloadMods() {
     LOG.info() << "Перезагрузка модов: ассеты и зависимости";
 
-    AssetsManager::ResourceChangeObj changes = Content.AM.recheckResources(AssetsInit);
-    AssetsManager::Out_applyResourceChange applied = Content.AM.applyResourceChange(changes);
+    AssetsPreloader::ResourceChangeObj changes = Content.AM.recheckResourcesSync(AssetsInit);
+    AssetsPreloader::Out_applyResourceChange applied = Content.AM.applyResourceChange(changes);
 
     size_t changedCount = 0;
     size_t lostCount = 0;
@@ -2691,22 +2690,23 @@ void GameServer::stepSyncContent() {
     std::vector<std::tuple<EnumAssets, ResourceId, const std::string, const std::string, Resource>> resources;
     for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++) {
         for(ResourceId resId : full.AssetsInfo[type]) {
-            std::optional<std::tuple<Resource, const std::string&, const std::string&>> result = Content.AM.getResource((EnumAssets) type, resId);
-            if(!result)
+            const AssetsPreloader::MediaResource* media = Content.AM.getResource((EnumAssets) type, resId);
+            if(!media)
                 continue;
 
-            auto& [resource, domain, key] = *result;
-            resources.emplace_back((EnumAssets) type, resId, domain, key, resource);
+            Resource resource(media->Resource->data(), media->Resource->size());
+            resources.emplace_back((EnumAssets) type, resId, media->Domain, media->Key, std::move(resource));
         }
     }
 
     for(const Hash_t& hash : full.Hashes) {
-        std::optional<std::tuple<Resource, const std::string&, const std::string&, EnumAssets, ResourceId>> result = Content.AM.getResource(hash);
+        std::optional<std::tuple<EnumAssets, uint32_t, const AssetsPreloader::MediaResource*>> result = Content.AM.getResource(hash);
         if(!result)
             continue;
 
-        auto& [resource, domain, key, type, id] = *result;
-        resources.emplace_back(type, id, domain, key, resource);
+        auto& [type, id, media] = *result;
+        Resource resource(media->Resource->data(), media->Resource->size());
+        resources.emplace_back(type, id, media->Domain, media->Key, std::move(resource));
     }
 
     // Информируем о запрошенных профилях

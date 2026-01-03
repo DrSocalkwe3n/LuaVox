@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Server/AssetsManager.hpp"
+#include "Common/AssetsPreloader.hpp"
 #define SOL_EXCEPTIONS_SAFE_PROPAGATION 1
 
 #include <Common/Net.hpp>
@@ -24,7 +24,6 @@
 #include <unordered_map>
 
 #include "WorldDefManager.hpp"
-#include "AssetsManager.hpp"
 #include "ContentManager.hpp"
 #include "World.hpp"
 
@@ -74,7 +73,7 @@ class GameServer : public AsyncObject {
 
     struct ContentObj {
     public:
-        AssetsManager AM;
+        AssetsPreloader AM;
         ContentManager CM;
 
         // Если контент был перерегистрирован (исключая двоичные ресурсы), то профили будут повторно разосланы
@@ -266,7 +265,7 @@ class GameServer : public AsyncObject {
     std::vector<std::pair<std::string, sol::table>> ModInstances;
     // Идентификатор текущегго мода, находящевося в обработке
     std::string CurrentModId;
-    AssetsManager::AssetsRegister AssetsInit;
+    AssetsPreloader::AssetsRegister AssetsInit;
     DefEntityId PlayerEntityDefId = 0;
 
 public:

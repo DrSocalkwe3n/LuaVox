@@ -2,7 +2,7 @@
 
 #include "Common/Abstract.hpp"
 #include "Server/Abstract.hpp"
-#include "Server/AssetsManager.hpp"
+#include "Common/AssetsPreloader.hpp"
 #include <sol/table.hpp>
 #include <unordered_map>
 #include <unordered_set>
@@ -135,7 +135,7 @@ class ContentManager {
     void registerBase_Entity(ResourceId id, const std::string& domain, const std::string& key, const sol::table& profile);
 
 public:
-    ContentManager(AssetsManager &am);
+    ContentManager(AssetsPreloader &am);
     ~ContentManager();
 
     // Регистрирует определение контента
@@ -215,7 +215,7 @@ public:
 
 private:
     TOS::Logger LOG = "Server>ContentManager";
-    AssetsManager& AM;
+    AssetsPreloader& AM;
 };
 
 }

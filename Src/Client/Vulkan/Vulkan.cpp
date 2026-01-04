@@ -2291,6 +2291,8 @@ void Vulkan::gui_ConnectedToServer() {
 			double chunksKb = double(Game.Session->getVisibleCompressedChunksBytes()) / 1024.0;
 			ImGui::Text("chunks compressed: %.1f KB", chunksKb);
 
+			ImGui::Checkbox("Логи сетевых пакетов", &Game.Session->DebugLogPackets);
+
 			if(ImGui::Button("Delimeter"))
 				LOG.debug();
 

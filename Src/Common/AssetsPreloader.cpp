@@ -57,6 +57,10 @@ AssetsPreloader::Out_reloadResources AssetsPreloader::reloadResources(const Asse
     try {
         ReloadStatus secondStatus;
         return _reloadResources(instances, status ? *status : secondStatus);
+    } catch(const std::exception& exc) {
+        LOG.error() << exc.what();
+        assert(!"reloadResources: здесь не должно быть ошибок");
+        std::unreachable();
     } catch(...) {
         assert(!"reloadResources: здесь не должно быть ошибок");
         std::unreachable();

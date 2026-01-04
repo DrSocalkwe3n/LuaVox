@@ -177,6 +177,9 @@ struct AssetEntry {
 */
 class IServerSession {
 public:
+    // Включить логирование входящих сетевых пакетов на клиенте.
+    bool DebugLogPackets = false;
+
     // Используемые двоичные ресурсы
     std::unordered_map<EnumAssets, std::unordered_map<ResourceId, AssetEntry>> Assets;
 

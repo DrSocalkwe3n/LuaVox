@@ -38,6 +38,26 @@ const char* assetTypeName(EnumAssets type) {
     }
 }
 
+const char* toClientPacketName(ToClient type) {
+    switch(type) {
+    case ToClient::Init: return "Init";
+    case ToClient::Disconnect: return "Disconnect";
+    case ToClient::AssetsBindDK: return "AssetsBindDK";
+    case ToClient::AssetsBindHH: return "AssetsBindHH";
+    case ToClient::AssetsInitSend: return "AssetsInitSend";
+    case ToClient::AssetsNextSend: return "AssetsNextSend";
+    case ToClient::DefinitionsUpdate: return "DefinitionsUpdate";
+    case ToClient::ChunkVoxels: return "ChunkVoxels";
+    case ToClient::ChunkNodes: return "ChunkNodes";
+    case ToClient::ChunkLightPrism: return "ChunkLightPrism";
+    case ToClient::RemoveRegion: return "RemoveRegion";
+    case ToClient::Tick: return "Tick";
+    case ToClient::TestLinkCameraToEntity: return "TestLinkCameraToEntity";
+    case ToClient::TestUnlinkCamera: return "TestUnlinkCamera";
+    default: return "Unknown";
+    }
+}
+
 }
 
 ServerSession::ServerSession(asio::io_context &ioc, std::unique_ptr<Net::AsyncSocket>&& socket)
@@ -875,6 +895,8 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
         }
 
         result.Chunks_ChangeOrAdd = std::move(chunks_Changed);
+        for(auto& [wId, regions] : regions_Lost_Result)
+            result.Chunks_Lost[wId] = std::vector<Pos::GlobalRegion>(regions.begin(), regions.end());
 
 
         {
@@ -1232,6 +1254,11 @@ void ServerSession::protocolError() {
 
 coro<> ServerSession::readPacket(Net::AsyncSocket &sock) {
     uint8_t first = co_await sock.read<uint8_t>();
+
+    if(DebugLogPackets) {
+        ToClient type = static_cast<ToClient>(first);
+        LOG.debug() << "Recv packet=" << toClientPacketName(type) << " id=" << int(first);
+    }
 
     switch((ToClient) first) {
     case ToClient::Init:

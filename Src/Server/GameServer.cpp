@@ -44,6 +44,15 @@ namespace js = boost::json;
 
 namespace LV::Server {
 
+template <typename T, size_t N>
+bool hasAnyBindings(const std::array<std::vector<T>, N>& data) {
+    for(const auto& list : data) {
+        if(!list.empty())
+            return true;
+    }
+    return false;
+}
+
 std::string ModInfo::dump() const {
     js::object obj;
 
@@ -1694,7 +1703,7 @@ void GameServer::reloadMods() {
 
         {
             AssetsPreloader::Out_bakeId baked = Content.AM.bakeIdTables();
-            if(!baked.IdToDK.empty()) {
+            if(hasAnyBindings(baked.IdToDK)) {
                 packetsToSend.push_back(RemoteClient::makePacket_informateAssets_DK(baked.IdToDK));
             }
         }
@@ -2487,7 +2496,7 @@ void GameServer::stepSyncContent() {
     std::vector<Net::Packet> packetsToAll;
     {
         AssetsPreloader::Out_bakeId baked = Content.AM.bakeIdTables();
-        if(!baked.IdToDK.empty()) {
+        if(hasAnyBindings(baked.IdToDK)) {
             packetsToAll.push_back(RemoteClient::makePacket_informateAssets_DK(baked.IdToDK));
         }
     }

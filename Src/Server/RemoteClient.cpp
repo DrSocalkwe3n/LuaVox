@@ -389,10 +389,8 @@ void RemoteClient::NetworkAndResource_t::prepareWorldRemove(WorldId_t worldId)
 
 void RemoteClient::prepareCameraSetEntity(ServerEntityId_t entityId) {
     auto lock = NetworkAndResource.lock();
-    ClientEntityId_t cId = lock->ReMapEntities.toClient(entityId);
-    lock->checkPacketBorder(8);
-    lock->NextPacket << (uint8_t) ToClient::TestLinkCameraToEntity
-        << cId;
+    lock->checkPacketBorder(4);
+    lock->NextPacket << (uint8_t) ToClient::TestLinkCameraToEntity;
 }
 
 ResourceRequest RemoteClient::pushPreparedPackets() {

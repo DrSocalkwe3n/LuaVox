@@ -19,6 +19,45 @@
 
 namespace LV {
 
+
+namespace detail {
+
+// Позволяет использовать как std::string так и std::string_view в хэш таблицах
+struct TSVHash {
+    using is_transparent = void;
+
+    size_t operator()(std::string_view sv) const noexcept {
+        return std::hash<std::string_view>{}(sv);
+    }
+
+    size_t operator()(const std::string& s) const noexcept {
+        return std::hash<std::string_view>{}(s);
+    }
+};
+
+// Позволяет использовать как std::string так и std::string_view в хэш таблицах
+struct TSVEq {
+    using is_transparent = void;
+
+    bool operator()(std::string_view a, std::string_view b) const noexcept {
+        return a == b;
+    }
+
+    bool operator()(const std::string& a, std::string_view b) const noexcept {
+        return std::string_view(a) == b;
+    }
+
+    bool operator()(std::string_view a, const std::string& b) const noexcept {
+        return a == std::string_view(b);
+    }
+
+    bool operator()(const std::string& a, const std::string& b) const noexcept {
+        return a == b;
+    }
+};
+
+}
+
 namespace js = boost::json;
 
 namespace Pos {
@@ -514,29 +553,6 @@ inline std::pair<std::string, std::string> parseDomainKey(const std::string& val
     }
 }
 
-struct PrecompiledTexturePipeline {
-    // Локальные идентификаторы пайплайна в домен+ключ
-    std::vector<std::pair<std::string, std::string>> Assets;
-    // Чистый код текстурных преобразований, локальные идентификаторы связаны с Assets
-    std::u8string Pipeline;
-    // Pipeline содержит исходный текст (tex ...), нужен для компиляции на сервере
-    bool IsSource = false;
-};
-
-struct TexturePipeline {
-    // Разыменованые идентификаторы
-    std::vector<AssetsTexture> BinTextures;
-    // Чистый код текстурных преобразований, локальные идентификаторы связаны с BinTextures
-    std::u8string Pipeline;
-
-    bool operator==(const TexturePipeline& other) const {
-        return BinTextures == other.BinTextures && Pipeline == other.Pipeline;
-    }
-};
-
-// Компилятор текстурных потоков
-PrecompiledTexturePipeline compileTexturePipeline(const std::string &cmd, std::string_view defaultDomain = "core");
-
 struct NodestateEntry {
     std::string Name;
     int Variability = 0;                    // Количество возможный значений состояния
@@ -646,8 +662,6 @@ struct HeadlessNodeState {
         std::vector<Transformation> Transforms;
     };
 
-    // Локальный идентификатор в именной ресурс
-    std::vector<std::string> LocalToModelKD;
     // Ноды выражений
     std::vector<Node> Nodes;
     // Условия -> вариации модели + веса
@@ -865,7 +879,7 @@ private:
     bool HasVariability = false;
 
     uint16_t parseCondition(const std::string_view condition);
-    std::pair<float, std::variant<Model, VectorModel>> parseModel(const std::string_view modid, const js::object& obj);
+    std::pair<float, std::variant<Model, VectorModel>> parseModel(const js::object& obj, const std::function<uint16_t(const std::string_view model)>& modelResolver);
     std::vector<Transformation> parseTransormations(const js::array& arr);
 };
 
@@ -893,8 +907,7 @@ struct HeadlessModel {
     };
     
     std::unordered_map<std::string, FullTransformation> Display;
-    std::unordered_map<std::string, PrecompiledTexturePipeline> Textures;
-    std::unordered_map<std::string, TexturePipeline> CompiledTextures;
+    std::unordered_map<std::string, uint16_t> Textures;
 
     struct Cuboid {
         bool Shade;
@@ -916,7 +929,7 @@ struct HeadlessModel {
     std::vector<Cuboid> Cuboids;
     
     struct SubModel {
-        std::string Domain, Key;
+        uint16_t Id;
         std::optional<uint16_t> Scene; 
     };
     
@@ -962,8 +975,7 @@ struct HeadlessModel {
 
 struct PreparedGLTF {
     std::vector<std::string> TextureKey;
-    std::unordered_map<std::string, PrecompiledTexturePipeline> Textures;
-    std::unordered_map<std::string, TexturePipeline> CompiledTextures;
+    std::unordered_map<std::string, uint16_t> Textures;
     std::vector<Vertex> Vertices;
 
 
@@ -1058,21 +1070,6 @@ struct hash<LV::Hash_t> {
             v *= 1099511628211ULL;
         }
         return v;
-    }
-};
-
-template <>
-struct hash<LV::TexturePipeline> {
-    std::size_t operator()(const LV::TexturePipeline& tp) const noexcept {
-        size_t seed = 0;
-
-        for (const auto& tex : tp.BinTextures)
-            seed ^= std::hash<LV::AssetsTexture>{}(tex) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-
-        std::string_view sv(reinterpret_cast<const char*>(tp.Pipeline.data()), tp.Pipeline.size());
-        seed ^= std::hash<std::string_view>{}(sv) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-
-        return seed;
     }
 };
 }

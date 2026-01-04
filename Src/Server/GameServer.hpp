@@ -294,9 +294,6 @@ public:
     // Инициализация игрового протокола для сокета (onSocketAuthorized() может передать сокет в onSocketGame())
     coro<> pushSocketGameProtocol(tcp::socket socket, const std::string username);
 
-    TexturePipeline buildTexturePipeline(const std::string& pipeline);
-    std::string deBuildTexturePipeline(const TexturePipeline& pipeline);
-
 private:
     void init(fs::path worldPath);
     void prerun();

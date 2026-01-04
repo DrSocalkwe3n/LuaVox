@@ -46,44 +46,6 @@ static constexpr const char* EnumAssetsToDirectory(LV::EnumAssets value) {
 
 namespace LV {
 
-namespace detail {
-
-// Позволяет использовать как std::string так и std::string_view в хэш таблицах
-struct TSVHash {
-    using is_transparent = void;
-
-    size_t operator()(std::string_view sv) const noexcept {
-        return std::hash<std::string_view>{}(sv);
-    }
-
-    size_t operator()(const std::string& s) const noexcept {
-        return std::hash<std::string_view>{}(s);
-    }
-};
-
-// Позволяет использовать как std::string так и std::string_view в хэш таблицах
-struct TSVEq {
-    using is_transparent = void;
-
-    bool operator()(std::string_view a, std::string_view b) const noexcept {
-        return a == b;
-    }
-
-    bool operator()(const std::string& a, std::string_view b) const noexcept {
-        return std::string_view(a) == b;
-    }
-
-    bool operator()(std::string_view a, const std::string& b) const noexcept {
-        return a == std::string_view(b);
-    }
-
-    bool operator()(const std::string& a, const std::string& b) const noexcept {
-        return a == b;
-    }
-};
-
-}
-
 namespace fs = std::filesystem;
 using AssetType = EnumAssets;
 

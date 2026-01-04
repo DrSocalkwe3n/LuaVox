@@ -18,6 +18,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -25,51 +26,6 @@
 namespace LV {
 
 namespace fs = std::filesystem;
-
-PrecompiledTexturePipeline compileTexturePipeline(const std::string &cmd, std::string_view defaultDomain) {
-    PrecompiledTexturePipeline result;
-
-    std::string_view view(cmd);
-    const size_t trimPos = view.find_first_not_of(" \t\r\n");
-    if(trimPos == std::string_view::npos)
-        MAKE_ERROR("Пустая текстурная команда");
-
-    view = view.substr(trimPos);
-
-    const bool isPipeline = view.size() >= 3
-        && view.compare(0, 3, "tex") == 0
-        && (view.size() == 3 || std::isspace(static_cast<unsigned char>(view[3])));
-
-    if(!isPipeline) {
-        auto [domain, key] = parseDomainKey(std::string(view), defaultDomain);
-        result.Assets.emplace_back(std::move(domain), std::move(key));
-        return result;
-    }
-
-    TexturePipelineProgram program;
-    std::string err;
-    if(!program.compile(std::string(view), &err)) {
-        MAKE_ERROR("Ошибка разбора pipeline: " << err);
-    }
-
-    result.IsSource = true;
-    result.Pipeline.assign(reinterpret_cast<const char8_t*>(view.data()), view.size());
-
-    std::unordered_set<std::string> seen;
-    for(const auto& patch : program.patches()) {
-        auto [domain, key] = parseDomainKey(patch.Name, defaultDomain);
-        std::string token;
-        token.reserve(domain.size() + key.size() + 1);
-        token.append(domain);
-        token.push_back(':');
-        token.append(key);
-        if(seen.insert(token).second)
-            result.Assets.emplace_back(std::move(domain), std::move(key));
-    }
-
-    return result;
-}
-
 
 std::u8string compressVoxels_byte(const std::vector<VoxelCube>& voxels) {
     std::u8string compressed;
@@ -868,7 +824,21 @@ std::u8string unCompressLinear(std::u8string_view data) {
     return *(std::u8string*) &outString;
 }
 
-PreparedNodeState::PreparedNodeState(const std::string_view modid, const js::object& profile) {
+ResourceHeader HeadlessNodeState::parse(const js::object& profile, const std::function<AssetsModel(const std::string_view model)>& modelResolver) {
+    std::vector<AssetsModel> headerIds;
+    
+    std::function<uint16_t(const std::string_view model)> headerResolver =
+        [&](const std::string_view model) -> uint16_t {
+            AssetsModel id = modelResolver(model);
+            auto iter = std::find(headerIds.begin(), headerIds.end(), id);
+            if(iter == headerIds.end()) {
+                headerIds.push_back(id);
+                return headerIds.size()-1;
+            }
+
+            return iter-headerIds.begin();
+        };
+    
     for(auto& [condition, variability] : profile) {
         // Распарсить условие
         uint16_t node = parseCondition(condition);
@@ -881,39 +851,40 @@ PreparedNodeState::PreparedNodeState(const std::string_view modid, const js::obj
         if(variability.is_array()) {
             // Варианты условия
             for(const js::value& model : variability.as_array()) {
-                models.push_back(parseModel(modid, model.as_object()));
+                models.push_back(parseModel(model.as_object(), headerResolver));
             }
 
             HasVariability = true;
         } else if (variability.is_object()) {
             // Один список моделей на условие
-            models.push_back(parseModel(modid, variability.as_object()));
+            models.push_back(parseModel(variability.as_object(), headerResolver));
         } else {
             MAKE_ERROR("Условию должен соответствовать список или объект");
         }
 
         Routes.emplace_back(node, std::move(models));
     }
+
+    ResourceHeader rh;
+    rh.reserve(headerIds.size()*sizeof(AssetsModel));
+
+    for(AssetsModel id : headerIds) {
+        rh += std::u8string_view((const char8_t*) &id, sizeof(AssetsModel));
+    }
+
+    return rh;
 }
 
-PreparedNodeState::PreparedNodeState(const std::string_view modid, const sol::table& profile) {
-
+ResourceHeader HeadlessNodeState::parse(const sol::table& profile, const std::function<AssetsModel(const std::string_view model)>& modelResolver) {
+    return std::u8string();
 }
 
-PreparedNodeState::PreparedNodeState(const std::u8string_view data) {
+void HeadlessNodeState::load(const std::u8string_view data) {
     Net::LinearReader lr(data);
 
     lr.read<uint16_t>();
 
     uint16_t size;
-    lr >> size;
-
-    LocalToModel.reserve(size);
-    for(int counter = 0; counter < size; counter++) {
-        AssetsModel modelId;
-        lr >> modelId;
-        LocalToModel.push_back(modelId);
-    }
 
     lr >> size;
     Nodes.reserve(size);
@@ -1026,20 +997,11 @@ PreparedNodeState::PreparedNodeState(const std::u8string_view data) {
     lr.checkUnreaded();
 }
 
-std::u8string PreparedNodeState::dump() const {
+std::u8string HeadlessNodeState::dump() const {
     Net::Packet result;
 
     const char magic[] = "bn";
     result.write(reinterpret_cast<const std::byte*>(magic), 2);
-
-    // ResourceToLocalId
-    assert(LocalToModelKD.size() < (1 << 16));
-    assert(LocalToModelKD.size() == LocalToModel.size());
-    result << uint16_t(LocalToModel.size());
-
-    for(AssetsModel modelId : LocalToModel) {
-        result << modelId;
-    }
 
     // Nodes
     assert(Nodes.size() < (1 << 16));
@@ -1112,7 +1074,7 @@ std::u8string PreparedNodeState::dump() const {
     return result.complite();
 }
 
-uint16_t PreparedNodeState::parseCondition(const std::string_view expression) {
+uint16_t HeadlessNodeState::parseCondition(const std::string_view expression) {
     enum class EnumTokenKind {
         LParen, RParen,
         Plus, Minus, Star, Slash, Percent,
@@ -1424,55 +1386,11 @@ uint16_t PreparedNodeState::parseCondition(const std::string_view expression) {
     };
 
     return lambdaParse(0);
-
-    // std::unordered_map<std::string, int> vars;
-    // std::function<int(uint16_t)> lambdaCalcNode = [&](uint16_t nodeId) -> int {
-    //     const Node& node = Nodes[nodeId];
-    //     if(const Node::Num* value = std::get_if<Node::Num>(&node.v)) {
-    //         return value->v;
-    //     } else if(const Node::Var* value = std::get_if<Node::Var>(&node.v)) {
-    //         auto iter = vars.find(value->name);
-    //         if(iter == vars.end())
-    //             MAKE_ERROR("Неопознанное состояние");
-
-    //         return iter->second;
-    //     } else if(const Node::Unary* value = std::get_if<Node::Unary>(&node.v)) {
-    //         int rNodeValue = lambdaCalcNode(value->rhs);
-    //         switch(value->op) {
-    //         case Op::Not: return !rNodeValue;
-    //         case Op::Pos: return +rNodeValue;
-    //         case Op::Neg: return -rNodeValue;
-    //         default:
-    //             std::unreachable();
-    //         }
-    //     } else if(const Node::Binary* value = std::get_if<Node::Binary>(&node.v)) {
-    //         int lNodeValue = lambdaCalcNode(value->lhs);
-    //         int rNodeValue = lambdaCalcNode(value->rhs);
-
-    //         switch(value->op) {
-    //         case Op::Add: return lNodeValue+rNodeValue;
-    //         case Op::Sub: return lNodeValue-rNodeValue;
-    //         case Op::Mul: return lNodeValue*rNodeValue;
-    //         case Op::Div: return lNodeValue/rNodeValue;
-    //         case Op::Mod: return lNodeValue%rNodeValue;
-    //         case Op::LT:  return lNodeValue<rNodeValue;
-    //         case Op::LE:  return lNodeValue<=rNodeValue;
-    //         case Op::GT:  return lNodeValue>rNodeValue;
-    //         case Op::GE:  return lNodeValue>=rNodeValue;
-    //         case Op::EQ:  return lNodeValue==rNodeValue;
-    //         case Op::NE:  return lNodeValue!=rNodeValue;
-    //         case Op::And: return lNodeValue&&rNodeValue;
-    //         case Op::Or:  return lNodeValue||rNodeValue;
-    //         default:
-    //             std::unreachable();
-    //         }
-    //     } else {
-    //         std::unreachable();
-    //     }
-    // };
 }
 
-std::pair<float, std::variant<HeadlessNodeState::Model, HeadlessNodeState::VectorModel>> HeadlessNodeState::parseModel(const std::string_view modid, const js::object& obj) {
+std::pair<float, std::variant<HeadlessNodeState::Model, HeadlessNodeState::VectorModel>>
+    HeadlessNodeState::parseModel(const js::object& obj, const std::function<uint16_t(const std::string_view model)>& modelResolver)
+{
     // ModelToLocalId
 
     bool uvlock;
@@ -1497,22 +1415,7 @@ std::pair<float, std::variant<HeadlessNodeState::Model, HeadlessNodeState::Vecto
         Model result;
         result.UVLock = false;
         result.Transforms = std::move(transforms);
-
-        auto [domain, key] = parseDomainKey((std::string) *model_key, modid);
-        
-        uint16_t resId = 0;
-        for(auto& [lDomain, lKey] : LocalToModelKD) {
-            if(lDomain == domain && lKey == key)
-                break;
-
-            resId++;
-        }
-
-        if(resId == LocalToModelKD.size()) {
-            LocalToModelKD.emplace_back(domain, key);
-        }
-
-        result.Id = resId;
+        result.Id = modelResolver(*model_key);
 
         return {weight, result};
     } else if(model.is_array()) {
@@ -1533,21 +1436,7 @@ std::pair<float, std::variant<HeadlessNodeState::Model, HeadlessNodeState::Vecto
                 subModel.Transforms = parseTransormations(transformations_val->as_array());
             }
 
-            auto [domain, key] = parseDomainKey((std::string) js_obj.at("model").as_string(), modid);
-        
-            uint16_t resId = 0;
-            for(auto& [lDomain, lKey] : LocalToModelKD) {
-                if(lDomain == domain && lKey == key)
-                    break;
-
-                resId++;
-            }
-
-            if(resId == LocalToModelKD.size()) {
-                LocalToModelKD.emplace_back(domain, key);
-            }
-
-            subModel.Id = resId;
+            subModel.Id = modelResolver((std::string) js_obj.at("model").as_string());
             result.Models.push_back(std::move(subModel));
         }
 
@@ -1557,7 +1446,7 @@ std::pair<float, std::variant<HeadlessNodeState::Model, HeadlessNodeState::Vecto
     }
 }
 
-std::vector<Transformation> PreparedNodeState::parseTransormations(const js::array& arr) {
+std::vector<Transformation> HeadlessNodeState::parseTransormations(const js::array& arr) {
     std::vector<Transformation> result;
 
     for(const js::value& js_value : arr) {
@@ -1596,7 +1485,42 @@ std::vector<Transformation> PreparedNodeState::parseTransormations(const js::arr
 }
 
 
-PreparedModel::PreparedModel(const std::string_view modid, const js::object& profile) {
+ResourceHeader HeadlessModel::parse(
+    const js::object& profile,
+    const std::function<AssetsModel(const std::string_view model)>& modelResolver,
+    const std::function<std::vector<uint8_t>(const std::string_view texturePipelineSrc)>& textureResolver
+) {
+    std::vector<AssetsModel> headerIdsModels;
+    
+    std::function<uint16_t(const std::string_view model)> headerResolverModel =
+        [&](const std::string_view model) -> uint16_t {
+            AssetsModel id = modelResolver(model);
+            auto iter = std::find(headerIdsModels.begin(), headerIdsModels.end(), id);
+            if(iter == headerIdsModels.end()) {
+                headerIdsModels.push_back(id);
+                return headerIdsModels.size()-1;
+            }
+
+            return iter-headerIdsModels.begin();
+        };
+
+    std::vector<std::vector<uint8_t>> headerIdsTextures;
+    std::unordered_map<std::string, uint32_t, detail::TSVHash, detail::TSVEq> textureToLocal;
+
+    std::function<uint16_t(const std::string_view texturePipelineSrc)> headerResolverTexture =
+        [&](const std::string_view texturePipelineSrc) -> uint16_t {
+            auto iter = textureToLocal.find(texturePipelineSrc);
+            if(iter != textureToLocal.end()) {
+                return iter->second;
+            }
+
+            std::vector<uint8_t> program = textureResolver(texturePipelineSrc);
+            headerIdsTextures.push_back(program);
+            uint16_t id = textureToLocal[(std::string) texturePipelineSrc] = headerIdsTextures.size()-1;
+            return id;
+        };
+
+
     if(profile.contains("gui_light")) {
         std::string_view gui_light = profile.at("gui_light").as_string();
 
@@ -1649,7 +1573,7 @@ PreparedModel::PreparedModel(const std::string_view modid, const js::object& pro
         const js::object& textures = textures_val->as_object();
 
         for(const auto& [key, value] : textures) {
-            Textures[key] = compileTexturePipeline((std::string) value.as_string(), modid);
+            Textures[key] = headerResolverTexture(value.as_string());
         }
     }
 
@@ -1802,19 +1726,17 @@ PreparedModel::PreparedModel(const std::string_view modid, const js::object& pro
 
         for(const js::value& value : submodels) {
             if(const auto model_key = value.try_as_string()) {
-                auto [domain, key] = parseDomainKey((std::string) *model_key, modid);
-                SubModels.push_back({std::move(domain), std::move(key), std::nullopt});
+                SubModels.emplace_back(headerResolverModel(*model_key), std::nullopt);
             } else {
                 const js::object& obj = value.as_object();
                 const std::string model_key_str = (std::string) obj.at("model").as_string();
-                auto [domain, key] = parseDomainKey(model_key_str, modid);
 
                 std::optional<uint16_t> scene;
                 if(const auto scene_val = obj.try_at("scene")) {
                     scene = static_cast<uint16_t>(scene_val->to_number<int>());
                 }
 
-                SubModels.push_back({std::move(domain), std::move(key), scene});
+                SubModels.emplace_back(headerResolverModel(model_key_str), scene);
             }
         }
     }
@@ -1826,14 +1748,10 @@ PreparedModel::PreparedModel(const std::string_view modid, const js::object& pro
             SubModel result;
 
             if(auto path = sub_val.try_as_string()) {
-                auto [domain, key] = parseDomainKey((std::string) path.value(), modid);
-                result.Domain = std::move(domain);
-                result.Key = std::move(key);
+                result.Id = headerResolverModel(path.value());
             } else {
                 const js::object& sub = sub_val.as_object();
-                auto [domain, key] = parseDomainKey((std::string) sub.at("path").as_string(), modid);
-                result.Domain = std::move(domain);
-                result.Key = std::move(key);
+                result.Id = headerResolverModel(sub.at("path").as_string());
 
                 if(boost::system::result<const js::value&> scene_val = profile.try_at("scene"))
                     result.Scene = scene_val->to_number<uint16_t>();
@@ -1842,13 +1760,42 @@ PreparedModel::PreparedModel(const std::string_view modid, const js::object& pro
             SubModels.emplace_back(std::move(result));
         }
     }
+
+    // Заголовок
+    TOS::ByteBuffer rh;
+
+    {
+        uint32_t fullSize = 0;
+        for(const auto& vector : headerIdsTextures)
+            fullSize += vector.size();
+        rh.reserve(2+headerIdsModels.size()*sizeof(AssetsModel)+2+(4)*headerIdsTextures.size()+fullSize);
+    }
+
+    TOS::ByteBuffer::Writer wr;
+    wr << uint16_t(headerIdsModels.size());
+    for(AssetsModel id : headerIdsModels)
+        wr << id;
+
+    wr << uint16_t(headerIdsTextures.size());
+    for(const auto& pipe : headerIdsTextures) {
+        wr << uint32_t(pipe.size());
+        wr << pipe;
+    }
+
+    TOS::ByteBuffer buff = wr.complite();
+
+    return std::u8string((const char8_t*) buff.data(), buff.size());
 }
 
-PreparedModel::PreparedModel(const std::string_view modid, const sol::table& profile) {
+ResourceHeader HeadlessModel::parse(
+    const sol::table& profile,
+    const std::function<AssetsModel(const std::string_view model)>& modelResolver,
+    const std::function<std::vector<uint8_t>(const std::string_view texturePipelineSrc)>& textureResolver
+) {
     std::unreachable();
 }
 
-PreparedModel::PreparedModel(const std::u8string& data) {
+void HeadlessModel::load(const std::u8string_view data) {
     Net::LinearReader lr(data);
 
     lr.read<uint16_t>();
@@ -1895,17 +1842,10 @@ PreparedModel::PreparedModel(const std::u8string& data) {
     for(int counter = 0; counter < size; counter++) {
         std::string tkey;
         lr >> tkey;
-        TexturePipeline pipe;
+        uint16_t id;
+        lr >> id;
 
-        uint16_t size;
-        lr >> size;
-        pipe.BinTextures.reserve(size);
-        for(int iter = 0; iter < size; iter++)
-            pipe.BinTextures.push_back(lr.read<ResourceId>());
-
-        lr >> (std::string&) pipe.Pipeline;
-
-        CompiledTextures.insert({tkey, std::move(pipe)});
+        Textures.insert({tkey, id});
     }
 
     lr >> size;
@@ -1962,7 +1902,7 @@ PreparedModel::PreparedModel(const std::u8string& data) {
     SubModels.reserve(size8);
     for(int counter = 0; counter < size8; counter++) {
         SubModel sub;
-        lr >> sub.Domain >> sub.Key;
+        lr >> sub.Id;
         uint16_t val = lr.read<uint16_t>();
         if(val != uint16_t(-1)) {
             sub.Scene = val;
@@ -1974,7 +1914,7 @@ PreparedModel::PreparedModel(const std::u8string& data) {
     lr.checkUnreaded();
 }
 
-std::u8string PreparedModel::dump() const {
+std::u8string HeadlessModel::dump() const {
     Net::Packet result;
 
     result << 'b' << 'm';
@@ -2013,19 +1953,9 @@ std::u8string PreparedModel::dump() const {
     assert(Textures.size() < (1 << 16));
     result << uint16_t(Textures.size());
 
-    assert(CompiledTextures.size() == Textures.size());
-
-    for(const auto& [tkey, dk] : CompiledTextures) {
+    for(const auto& [tkey, id] : Textures) {
         assert(tkey.size() < 32);
-        result << tkey;
-
-        assert(dk.BinTextures.size() < 512);
-        result << uint16_t(dk.BinTextures.size());
-        for(size_t iter = 0; iter < dk.BinTextures.size(); iter++) {
-            result << dk.BinTextures[iter];
-        }
-
-        result << (const std::string&) dk.Pipeline;
+        result << tkey << id;
     }
 
     assert(Cuboids.size() < (1 << 16));
@@ -2064,10 +1994,7 @@ std::u8string PreparedModel::dump() const {
     assert(SubModels.size() < 256);
     result << uint8_t(SubModels.size());
     for(const SubModel& model : SubModels) {
-        assert(model.Domain.size() < 32);
-        assert(model.Key.size() < 32);
-
-        result << model.Domain << model.Key;
+        result << model.Id;
         if(model.Scene)
             result << uint16_t(*model.Scene);
         else

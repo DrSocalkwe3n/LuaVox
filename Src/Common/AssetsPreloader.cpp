@@ -421,6 +421,31 @@ AssetsPreloader::Out_bakeId AssetsPreloader::bakeIdTables() {
     return result;
 }
 
+AssetsPreloader::Out_fullSync AssetsPreloader::collectFullSync() const {
+    Out_fullSync out;
+
+    for(size_t type = 0; type < static_cast<size_t>(AssetType::MAX_ENUM); ++type) {
+        out.IdToDK[type] = IdToDK[type];
+    }
+
+    for(size_t type = 0; type < static_cast<size_t>(AssetType::MAX_ENUM); ++type) {
+        for(const auto& [id, resource] : MediaResources[type]) {
+            out.HashHeaders[type].push_back(BindHashHeaderInfo{
+                .Id = id,
+                .Hash = resource.Hash,
+                .Header = resource.Header
+            });
+            out.Resources.emplace_back(
+                static_cast<AssetType>(type),
+                id,
+                &resource
+            );
+        }
+    }
+
+    return out;
+}
+
 std::tuple<AssetsNodestate, std::vector<AssetsModel>, std::vector<AssetsTexture>>
 AssetsPreloader::getNodeDependency(const std::string& domain, const std::string& key) {
     (void)domain;

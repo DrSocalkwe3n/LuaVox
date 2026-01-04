@@ -38,69 +38,6 @@ const char* assetTypeName(EnumAssets type) {
     }
 }
 
-std::optional<DefNodeId> debugExpectedGeneratedNodeId(int rx, int ry, int rz) {
-    if(ry == 1 && rz == 0)
-        return DefNodeId(0);
-    if(rx == 0 && ry == 1)
-        return DefNodeId(0);
-    if(rx == 0 && rz == 0)
-        return DefNodeId(1);
-    if(ry == 0 && rz == 0)
-        return DefNodeId(2);
-    if(rx == 0 && ry == 0)
-        return DefNodeId(3);
-    return std::nullopt;
-}
-
-void debugCheckGeneratedChunkNodes(WorldId_t worldId,
-    Pos::GlobalChunk chunkPos,
-    const std::array<Node, 16 * 16 * 16>& chunk)
-{
-    if(chunkPos[0] != 0 && chunkPos[1] != 0 && chunkPos[2] != 0)
-        return;
-
-    static std::atomic<uint32_t> warnCount = 0;
-    if(warnCount.load() >= 16)
-        return;
-
-    Pos::bvec4u localChunk = chunkPos & 0x3;
-    const int baseX = int(localChunk[0]) * 16;
-    const int baseY = int(localChunk[1]) * 16;
-    const int baseZ = int(localChunk[2]) * 16;
-    const int globalBaseX = int(chunkPos[0]) * 16;
-    const int globalBaseY = int(chunkPos[1]) * 16;
-    const int globalBaseZ = int(chunkPos[2]) * 16;
-
-    for(int z = 0; z < 16; z++)
-        for(int y = 0; y < 16; y++)
-            for(int x = 0; x < 16; x++) {
-                int rx = baseX + x;
-                int ry = baseY + y;
-                int rz = baseZ + z;
-                int gx = globalBaseX + x;
-                int gy = globalBaseY + y;
-                int gz = globalBaseZ + z;
-                std::optional<DefNodeId> expected = debugExpectedGeneratedNodeId(rx, ry, rz);
-                if(!expected)
-                    continue;
-
-                const Node& node = chunk[x + y * 16 + z * 16 * 16];
-                if(node.NodeId != *expected) {
-                    uint32_t index = warnCount.fetch_add(1);
-                    if(index < 16) {
-                        TOS::Logger("Client>WorldDebug").warn()
-                            << "Generated node mismatch world " << worldId
-                            << " chunk " << int(chunkPos[0]) << ',' << int(chunkPos[1]) << ',' << int(chunkPos[2])
-                            << " at local " << rx << ',' << ry << ',' << rz
-                            << " global " << gx << ',' << gy << ',' << gz
-                            << " expected " << *expected
-                            << " got " << node.NodeId;
-                    }
-                    return;
-                }
-            }
-}
-
 }
 
 ServerSession::ServerSession(asio::io_context &ioc, std::unique_ptr<Net::AsyncSocket>&& socket)
@@ -919,7 +856,6 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
 
                     auto& chunkNodes = caocvr[pos];
                     unCompressNodes(val, chunkNodes.data());
-                    debugCheckGeneratedChunkNodes(wId, pos, chunkNodes);
                     c.push_back(pos);
                 }
             }

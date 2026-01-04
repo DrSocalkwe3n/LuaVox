@@ -143,6 +143,20 @@ public:
         > IdToDK;
     };
 
+    struct Out_fullSync {
+        std::array<
+            std::vector<BindDomainKeyInfo>,
+            static_cast<size_t>(AssetType::MAX_ENUM)
+        > IdToDK;
+
+        std::array<
+            std::vector<BindHashHeaderInfo>,
+            static_cast<size_t>(AssetType::MAX_ENUM)
+        > HashHeaders;
+
+        std::vector<std::tuple<AssetType, ResourceId, const MediaResource*>> Resources;
+    };
+
     struct ReloadStatus {
         /// TODO: callback'и для обновления статусов
         /// TODO: многоуровневый статус std::vector<std::string>. Этапы/Шаги/Объекты 
@@ -217,6 +231,9 @@ public:
         Out_bakeId <- Нужно отправить подключенным клиентам новые привязки id -> домен+ключ
     */
     Out_bakeId bakeIdTables();
+
+    // Выдаёт полный список привязок и ресурсов для новых клиентов.
+    Out_fullSync collectFullSync() const;
 
     /*
         Выдаёт пакет со всеми текущими привязками id -> домен+ключ.

@@ -1582,6 +1582,7 @@ void GameServer::requestModsReload() {
 }
 
 void GameServer::stepConnections() {
+    std::vector<std::shared_ptr<RemoteClient>> newClients;
     // Подключить новых игроков
     if(!External.NewConnectedPlayers.no_lock_readable().empty()) {
         auto lock = External.NewConnectedPlayers.lock_write();
@@ -1589,9 +1590,25 @@ void GameServer::stepConnections() {
         for(std::shared_ptr<RemoteClient>& client : *lock) {
             co_spawn(client->run());
             Game.RemoteClients.push_back(client);
+            newClients.push_back(client);
         }
 
         lock->clear();
+    }
+
+    if(!newClients.empty()) {
+        AssetsPreloader::Out_fullSync fullSync = Content.AM.collectFullSync();
+        std::array<std::vector<ResourceId>, static_cast<size_t>(EnumAssets::MAX_ENUM)> lost{};
+
+        std::vector<Net::Packet> packets = RemoteClient::makePackets_informateAssets_DK(fullSync.IdToDK);
+        packets.push_back(RemoteClient::makePacket_informateAssets_HH(fullSync.HashHeaders, lost));
+
+        for(const std::shared_ptr<RemoteClient>& client : newClients) {
+            if(!packets.empty()) {
+                auto copy = packets;
+                client->pushPackets(&copy);
+            }
+        }
     }
 
     BackingChunkPressure.endCollectChanges();
@@ -1676,8 +1693,10 @@ void GameServer::reloadMods() {
 
         {
             AssetsPreloader::Out_bakeId baked = Content.AM.bakeIdTables();
-            if(!baked.IdToDK.empty())
-                packetsToSend.push_back(RemoteClient::makePacket_informateAssets_DK(baked.IdToDK));
+            if(!baked.IdToDK.empty()) {
+                std::vector<Net::Packet> dkPackets = RemoteClient::makePackets_informateAssets_DK(baked.IdToDK);
+                packetsToSend.insert(packetsToSend.end(), dkPackets.begin(), dkPackets.end());
+            }
         }
     }
 
@@ -2469,7 +2488,8 @@ void GameServer::stepSyncContent() {
     {
         AssetsPreloader::Out_bakeId baked = Content.AM.bakeIdTables();
         if(!baked.IdToDK.empty()) {
-            packetsToAll.push_back(RemoteClient::makePacket_informateAssets_DK(baked.IdToDK));
+            std::vector<Net::Packet> dkPackets = RemoteClient::makePackets_informateAssets_DK(baked.IdToDK);
+            packetsToAll.insert(packetsToAll.end(), dkPackets.begin(), dkPackets.end());
         }
     }
 

@@ -2474,6 +2474,19 @@ void GameServer::stepSyncContent() {
     }
 
     // Оповещаем о двоичных ресурсах по запросу
+    auto assetTypeName = [](EnumAssets type) {
+        switch(type) {
+        case EnumAssets::Nodestate: return "nodestate";
+        case EnumAssets::Model: return "model";
+        case EnumAssets::Texture: return "texture";
+        case EnumAssets::Particle: return "particle";
+        case EnumAssets::Animation: return "animation";
+        case EnumAssets::Sound: return "sound";
+        case EnumAssets::Font: return "font";
+        default: return "unknown";
+        }
+    };
+
     std::vector<AssetBinaryInfo> binaryResources;
     for(const Hash_t& hash : full.Hashes) {
         std::optional<
@@ -2484,6 +2497,14 @@ void GameServer::stepSyncContent() {
             continue;
 
         auto& [type, id, media] = *result;
+        LOG.debug() << "Server sending type=" << assetTypeName(type)
+            << " id=" << id
+            << " key=" << media->Domain << ':' << media->Key
+            << " hash=" << int(media->Hash[0]) << '.'
+            << int(media->Hash[1]) << '.'
+            << int(media->Hash[2]) << '.'
+            << int(media->Hash[3])
+            << " size=" << media->Resource->size();
         Resource resource(*media->Resource);
         binaryResources.push_back(AssetBinaryInfo{
             .Data = std::move(resource),

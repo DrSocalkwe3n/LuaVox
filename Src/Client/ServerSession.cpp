@@ -474,6 +474,13 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
             if(idx < 128) {
                 LOG.debug() << "Send ResourceRequest count=" << needRequest.size();
             }
+            for(const auto& hash : needRequest) {
+                LOG.debug() << "Client request hash="
+                    << int(hash[0]) << '.'
+                    << int(hash[1]) << '.'
+                    << int(hash[2]) << '.'
+                    << int(hash[3]);
+            }
 
             Net::Packet p;
             p << (uint8_t) ToServer::L1::System << (uint8_t) ToServer::L2System::ResourceRequest;
@@ -610,6 +617,15 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                     << int(firstDebug.Hash[1]) << '.'
                     << int(firstDebug.Hash[2]) << '.'
                     << int(firstDebug.Hash[3]);
+            }
+            for(const auto& entry : needToLoad) {
+                LOG.debug() << "Client wants type=" << assetTypeName(entry.Type)
+                    << " id=" << entry.Id
+                    << " key=" << entry.Domain << ':' << entry.Key
+                    << " hash=" << int(entry.Hash[0]) << '.'
+                    << int(entry.Hash[1]) << '.'
+                    << int(entry.Hash[2]) << '.'
+                    << int(entry.Hash[3]);
             }
             AM->pushReads(std::move(needToLoad));
         }
@@ -1523,6 +1539,15 @@ coro<> ServerSession::rP_AssetsInitSend(Net::AsyncSocket &sock) {
         type, localId, std::move(domain), std::move(key),
         std::u8string(size, '\0'), 0
     };
+    LOG.debug() << "Server started sending type=" << assetTypeName(type)
+        << " id=" << localId
+        << " key=" << AsyncContext.AssetsLoading[hash].Domain << ':'
+        << AsyncContext.AssetsLoading[hash].Key
+        << " hash=" << int(hash[0]) << '.'
+        << int(hash[1]) << '.'
+        << int(hash[2]) << '.'
+        << int(hash[3])
+        << " size=" << size;
 
     co_return;
 }
@@ -1564,14 +1589,28 @@ coro<> ServerSession::rP_AssetsNextSend(Net::AsyncSocket &sock) {
             }
         }
 
+        const EnumAssets type = al.Type;
+        const ResourceId id = al.Id;
+        const std::string domain = al.Domain;
+        const std::string key = al.Key;
+        const size_t resSize = al.Data.size();
+
         AsyncContext.LoadedAssets.lock()->emplace_back(AssetEntry{
-            .Type = al.Type,
-            .Id = al.Id,
+            .Type = type,
+            .Id = id,
             .Domain = std::move(al.Domain),
             .Key = std::move(al.Key),
             .Res = std::move(al.Data),
             .Hash = hash
         });
+        LOG.debug() << "Client received type=" << assetTypeName(type)
+            << " id=" << id
+            << " key=" << domain << ':' << key
+            << " hash=" << int(hash[0]) << '.'
+            << int(hash[1]) << '.'
+            << int(hash[2]) << '.'
+            << int(hash[3])
+            << " size=" << resSize;
     }
 
     AsyncContext.AssetsLoading.erase(AsyncContext.AssetsLoading.find(hash));

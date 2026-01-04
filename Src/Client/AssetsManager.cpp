@@ -12,6 +12,19 @@ namespace LV::Client {
 
 namespace {
 
+static const char* assetTypeName(EnumAssets type) {
+    switch(type) {
+    case EnumAssets::Nodestate: return "nodestate";
+    case EnumAssets::Model: return "model";
+    case EnumAssets::Texture: return "texture";
+    case EnumAssets::Particle: return "particle";
+    case EnumAssets::Animation: return "animation";
+    case EnumAssets::Sound: return "sound";
+    case EnumAssets::Font: return "font";
+    default: return "unknown";
+    }
+}
+
 static const char* enumAssetsToDirectory(LV::EnumAssets value) {
     switch(value) {
     case LV::EnumAssets::Nodestate: return "nodestate";
@@ -789,6 +802,14 @@ void AssetsManager::pushReads(std::vector<ResourceKey> reads) {
     for(ResourceKey& key : reads) {
         std::optional<PackResource> pack = findPackResource(key.Type, key.Domain, key.Key);
         if(pack && pack->Hash == key.Hash) {
+            LOG.debug() << "Pack hit type=" << assetTypeName(key.Type)
+                << " id=" << key.Id
+                << " key=" << key.Domain << ':' << key.Key
+                << " hash=" << int(key.Hash[0]) << '.'
+                << int(key.Hash[1]) << '.'
+                << int(key.Hash[2]) << '.'
+                << int(key.Hash[3])
+                << " size=" << pack->Res.size();
             ReadyReads.emplace_back(std::move(key), pack->Res);
             continue;
         }
@@ -817,8 +838,27 @@ std::vector<std::pair<AssetsManager::ResourceKey, std::optional<Resource>>> Asse
         auto iter = PendingReadsByHash.find(hash);
         if(iter == PendingReadsByHash.end())
             continue;
-        for(ResourceKey& key : iter->second)
+        for(ResourceKey& key : iter->second) {
+            if(res) {
+                LOG.debug() << "Cache hit type=" << assetTypeName(key.Type)
+                    << " id=" << key.Id
+                    << " key=" << key.Domain << ':' << key.Key
+                    << " hash=" << int(hash[0]) << '.'
+                    << int(hash[1]) << '.'
+                    << int(hash[2]) << '.'
+                    << int(hash[3])
+                    << " size=" << res->size();
+            } else {
+                LOG.debug() << "Cache miss type=" << assetTypeName(key.Type)
+                    << " id=" << key.Id
+                    << " key=" << key.Domain << ':' << key.Key
+                    << " hash=" << int(hash[0]) << '.'
+                    << int(hash[1]) << '.'
+                    << int(hash[2]) << '.'
+                    << int(hash[3]);
+            }
             out.emplace_back(std::move(key), res);
+        }
         PendingReadsByHash.erase(iter);
     }
 

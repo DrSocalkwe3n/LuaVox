@@ -472,6 +472,13 @@ coro<> RemoteClient::rP_System(Net::AsyncSocket &sock) {
                 LOG.debug() << "ResourceRequest count=" << count;
             }
         }
+        for(const auto& hash : hashes) {
+            LOG.debug() << "Client requested hash="
+                << int(hash[0]) << '.'
+                << int(hash[1]) << '.'
+                << int(hash[2]) << '.'
+                << int(hash[3]);
+        }
         co_return;
     }
     case ToServer::L2System::ReloadMods:

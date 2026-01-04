@@ -1,11 +1,7 @@
 #include "AssetsManager.hpp"
 #include <algorithm>
 #include <cassert>
-#include <cstring>
-#include <functional>
 #include <fstream>
-#include <unordered_set>
-#include "Common/Net.hpp"
 #include "Common/TexturePipelineProgram.hpp"
 
 namespace LV::Client {
@@ -73,425 +69,217 @@ static std::u8string readOptionalMeta(const fs::path& path) {
     return readFileBytes(metaPath);
 }
 
-static std::vector<uint32_t> collectTexturePipelineIds(const std::vector<uint8_t>& code);
-
-struct ParsedModelHeader {
-    std::vector<AssetsManager::AssetId> ModelDeps;
-    std::vector<std::vector<uint8_t>> TexturePipelines;
-    std::vector<AssetsManager::AssetId> TextureDeps;
-};
-
-std::optional<std::vector<AssetsManager::AssetId>> parseNodestateHeaderBytes(const std::vector<uint8_t>& header) {
-    if(header.empty() || header.size() % sizeof(AssetsManager::AssetId) != 0)
-        return std::nullopt;
-
-    const size_t count = header.size() / sizeof(AssetsManager::AssetId);
-    std::vector<AssetsManager::AssetId> deps;
-    deps.resize(count);
-    for(size_t i = 0; i < count; ++i) {
-        AssetsManager::AssetId raw = 0;
-        std::memcpy(&raw, header.data() + i * sizeof(AssetsManager::AssetId), sizeof(AssetsManager::AssetId));
-        deps[i] = raw;
-    }
-    return deps;
-}
-
-std::optional<ParsedModelHeader> parseModelHeaderBytes(const std::vector<uint8_t>& header) {
-    if(header.empty())
-        return std::nullopt;
-
-    ParsedModelHeader result;
-    try {
-        TOS::ByteBuffer buffer(header.size(), header.data());
-        auto reader = buffer.reader();
-
-        uint16_t modelCount = reader.readUInt16();
-        result.ModelDeps.reserve(modelCount);
-        for(uint16_t i = 0; i < modelCount; ++i)
-            result.ModelDeps.push_back(reader.readUInt32());
-
-        uint16_t texCount = reader.readUInt16();
-        result.TexturePipelines.reserve(texCount);
-        for(uint16_t i = 0; i < texCount; ++i) {
-            uint32_t size32 = reader.readUInt32();
-            TOS::ByteBuffer pipe;
-            reader.readBuffer(pipe);
-            if(pipe.size() != size32)
-                return std::nullopt;
-            result.TexturePipelines.emplace_back(pipe.begin(), pipe.end());
-        }
-
-        std::unordered_set<AssetsManager::AssetId> seen;
-        for(const auto& pipe : result.TexturePipelines) {
-            for(uint32_t id : collectTexturePipelineIds(pipe)) {
-                if(seen.insert(id).second)
-                    result.TextureDeps.push_back(id);
-            }
-        }
-    } catch(const std::exception&) {
-        return std::nullopt;
-    }
-
-    return result;
-}
-
-struct PipelineRemapResult {
-    bool Ok = true;
-    std::string Error;
-};
-
-PipelineRemapResult remapTexturePipelineIds(std::vector<uint8_t>& code,
-    const std::function<uint32_t(uint32_t)>& mapId)
-{
-    struct Range {
-        size_t Start = 0;
-        size_t End = 0;
-    };
-
-    enum class SrcKind : uint8_t { TexId = 0, Sub = 1 };
-    enum class Op : uint8_t {
-        End = 0,
-        Base_Tex  = 1,
-        Base_Fill = 2,
-        Base_Anim = 3,
-        Resize    = 10,
-        Transform = 11,
-        Opacity   = 12,
-        NoAlpha   = 13,
-        MakeAlpha = 14,
-        Invert    = 15,
-        Brighten  = 16,
-        Contrast  = 17,
-        Multiply  = 18,
-        Screen    = 19,
-        Colorize  = 20,
-        Anim      = 21,
-        Overlay   = 30,
-        Mask      = 31,
-        LowPart   = 32,
-        Combine   = 40
-    };
-
-    struct SrcMeta {
-        SrcKind Kind = SrcKind::TexId;
-        uint32_t TexId = 0;
-        uint32_t Off = 0;
-        uint32_t Len = 0;
-        size_t TexIdOffset = 0;
-    };
-
-    const size_t size = code.size();
-    std::vector<Range> visited;
-
-    auto read8 = [&](size_t& ip, uint8_t& out) -> bool {
-        if(ip >= size)
-            return false;
-        out = code[ip++];
-        return true;
-    };
-
-    auto read16 = [&](size_t& ip, uint16_t& out) -> bool {
-        if(ip + 1 >= size)
-            return false;
-        out = uint16_t(code[ip]) | (uint16_t(code[ip + 1]) << 8);
-        ip += 2;
-        return true;
-    };
-
-    auto read24 = [&](size_t& ip, uint32_t& out) -> bool {
-        if(ip + 2 >= size)
-            return false;
-        out = uint32_t(code[ip]) |
-            (uint32_t(code[ip + 1]) << 8) |
-            (uint32_t(code[ip + 2]) << 16);
-        ip += 3;
-        return true;
-    };
-
-    auto read32 = [&](size_t& ip, uint32_t& out) -> bool {
-        if(ip + 3 >= size)
-            return false;
-        out = uint32_t(code[ip]) |
-            (uint32_t(code[ip + 1]) << 8) |
-            (uint32_t(code[ip + 2]) << 16) |
-            (uint32_t(code[ip + 3]) << 24);
-        ip += 4;
-        return true;
-    };
-
-    auto readSrc = [&](size_t& ip, SrcMeta& out) -> bool {
-        uint8_t kind = 0;
-        if(!read8(ip, kind))
-            return false;
-        out.Kind = static_cast<SrcKind>(kind);
-        if(out.Kind == SrcKind::TexId) {
-            out.TexIdOffset = ip;
-            return read24(ip, out.TexId);
-        }
-        if(out.Kind == SrcKind::Sub) {
-            return read24(ip, out.Off) && read24(ip, out.Len);
-        }
-        return false;
-    };
-
-    auto patchTexId = [&](const SrcMeta& src) -> bool {
-        if(src.Kind != SrcKind::TexId)
-            return true;
-        uint32_t newId = mapId(src.TexId);
-        if(newId >= (1u << 24))
-            return false;
-        if(src.TexIdOffset + 2 >= code.size())
-            return false;
-        code[src.TexIdOffset + 0] = uint8_t(newId & 0xFFu);
-        code[src.TexIdOffset + 1] = uint8_t((newId >> 8) & 0xFFu);
-        code[src.TexIdOffset + 2] = uint8_t((newId >> 16) & 0xFFu);
-        return true;
-    };
-
-    std::move_only_function<bool(size_t, size_t)> scan;
-    scan = [&](size_t start, size_t end) -> bool {
-        if(start >= end || end > size)
-            return true;
-        for(const auto& r : visited) {
-            if(r.Start == start && r.End == end)
-                return true;
-        }
-        visited.push_back(Range{start, end});
-
-        size_t ip = start;
-        while(ip < end) {
-            uint8_t opByte = 0;
-            if(!read8(ip, opByte))
-                return false;
-            Op op = static_cast<Op>(opByte);
-            switch(op) {
-            case Op::End:
-                return true;
-
-            case Op::Base_Tex: {
-                SrcMeta src{};
-                if(!readSrc(ip, src))
-                    return false;
-                if(!patchTexId(src))
-                    return false;
-                if(src.Kind == SrcKind::Sub) {
-                    size_t subStart = src.Off;
-                    size_t subEnd = subStart + src.Len;
-                    if(!scan(subStart, subEnd))
-                        return false;
-                }
-            } break;
-
-            case Op::Base_Fill: {
-                uint16_t tmp16 = 0;
-                uint32_t tmp32 = 0;
-                if(!read16(ip, tmp16))
-                    return false;
-                if(!read16(ip, tmp16))
-                    return false;
-                if(!read32(ip, tmp32))
-                    return false;
-            } break;
-
-            case Op::Base_Anim: {
-                SrcMeta src{};
-                if(!readSrc(ip, src))
-                    return false;
-                if(!patchTexId(src))
-                    return false;
-                uint16_t tmp16 = 0;
-                uint8_t tmp8 = 0;
-                if(!read16(ip, tmp16))
-                    return false;
-                if(!read16(ip, tmp16))
-                    return false;
-                if(!read16(ip, tmp16))
-                    return false;
-                if(!read16(ip, tmp16))
-                    return false;
-                if(!read8(ip, tmp8))
-                    return false;
-                if(src.Kind == SrcKind::Sub) {
-                    size_t subStart = src.Off;
-                    size_t subEnd = subStart + src.Len;
-                    if(!scan(subStart, subEnd))
-                        return false;
-                }
-            } break;
-
-            case Op::Resize: {
-                uint16_t tmp16 = 0;
-                if(!read16(ip, tmp16))
-                    return false;
-                if(!read16(ip, tmp16))
-                    return false;
-            } break;
-
-            case Op::Transform:
-            case Op::Opacity:
-            case Op::Invert: {
-                uint8_t tmp8 = 0;
-                if(!read8(ip, tmp8))
-                    return false;
-            } break;
-
-            case Op::NoAlpha:
-            case Op::Brighten:
-                break;
-
-            case Op::MakeAlpha:
-                if(ip + 2 >= size)
-                    return false;
-                ip += 3;
-                break;
-
-            case Op::Contrast:
-                if(ip + 1 >= size)
-                    return false;
-                ip += 2;
-                break;
-
-            case Op::Multiply:
-            case Op::Screen: {
-                uint32_t tmp32 = 0;
-                if(!read32(ip, tmp32))
-                    return false;
-            } break;
-
-            case Op::Colorize: {
-                uint32_t tmp32 = 0;
-                uint8_t tmp8 = 0;
-                if(!read32(ip, tmp32))
-                    return false;
-                if(!read8(ip, tmp8))
-                    return false;
-            } break;
-
-            case Op::Anim: {
-                uint16_t tmp16 = 0;
-                uint8_t tmp8 = 0;
-                if(!read16(ip, tmp16))
-                    return false;
-                if(!read16(ip, tmp16))
-                    return false;
-                if(!read16(ip, tmp16))
-                    return false;
-                if(!read16(ip, tmp16))
-                    return false;
-                if(!read8(ip, tmp8))
-                    return false;
-            } break;
-
-            case Op::Overlay:
-            case Op::Mask: {
-                SrcMeta src{};
-                if(!readSrc(ip, src))
-                    return false;
-                if(!patchTexId(src))
-                    return false;
-                if(src.Kind == SrcKind::Sub) {
-                    size_t subStart = src.Off;
-                    size_t subEnd = subStart + src.Len;
-                    if(!scan(subStart, subEnd))
-                        return false;
-                }
-            } break;
-
-            case Op::LowPart: {
-                uint8_t tmp8 = 0;
-                if(!read8(ip, tmp8))
-                    return false;
-                SrcMeta src{};
-                if(!readSrc(ip, src))
-                    return false;
-                if(!patchTexId(src))
-                    return false;
-                if(src.Kind == SrcKind::Sub) {
-                    size_t subStart = src.Off;
-                    size_t subEnd = subStart + src.Len;
-                    if(!scan(subStart, subEnd))
-                        return false;
-                }
-            } break;
-
-            case Op::Combine: {
-                uint16_t tmp16 = 0;
-                if(!read16(ip, tmp16))
-                    return false;
-                if(!read16(ip, tmp16))
-                    return false;
-                uint16_t count = 0;
-                if(!read16(ip, count))
-                    return false;
-                for(uint16_t i = 0; i < count; ++i) {
-                    if(!read16(ip, tmp16))
-                        return false;
-                    if(!read16(ip, tmp16))
-                        return false;
-                    SrcMeta src{};
-                    if(!readSrc(ip, src))
-                        return false;
-                    if(!patchTexId(src))
-                        return false;
-                    if(src.Kind == SrcKind::Sub) {
-                        size_t subStart = src.Off;
-                        size_t subEnd = subStart + src.Len;
-                        if(!scan(subStart, subEnd))
-                            return false;
-                    }
-                }
-            } break;
-
-            default:
-                return false;
-            }
-        }
-
-        return true;
-    };
-
-    if(!scan(0, size))
-        return {false, "Invalid texture pipeline bytecode"};
-
-    return {};
-}
-
-static std::vector<uint32_t> collectTexturePipelineIds(const std::vector<uint8_t>& code) {
-    std::vector<uint32_t> out;
-    std::unordered_set<uint32_t> seen;
-
-    auto addId = [&](uint32_t id) {
-        if(seen.insert(id).second)
-            out.push_back(id);
-    };
-
-    std::vector<uint8_t> copy = code;
-    auto result = remapTexturePipelineIds(copy, [&](uint32_t id) {
-        addId(id);
-        return id;
-    });
-
-    if(!result.Ok)
-        return {};
-
-    return out;
-}
-
 } // namespace
-
 AssetsManager::AssetsManager(asio::io_context& ioc, const fs::path& cachePath,
     size_t maxCacheDirectorySize, size_t maxLifeTime)
     : Cache(AssetsCacheManager::Create(ioc, cachePath, maxCacheDirectorySize, maxLifeTime))
 {
     for(size_t i = 0; i < static_cast<size_t>(AssetType::MAX_ENUM); ++i)
-        NextLocalId[i] = 1;
+        Types[i].NextLocalId = 1;
+    initSources();
+}
+
+void AssetsManager::initSources() {
+    using SourceResult = AssetsManager::SourceResult;
+    using SourceStatus = AssetsManager::SourceStatus;
+    using SourceReady = AssetsManager::SourceReady;
+    using ResourceKey = AssetsManager::ResourceKey;
+    using PackResource = AssetsManager::PackResource;
+
+    class PackSource final : public IResourceSource {
+    public:
+        explicit PackSource(AssetsManager* manager) : Manager(manager) {}
+
+        SourceResult tryGet(const ResourceKey& key) override {
+            std::optional<PackResource> pack = Manager->findPackResource(key.Type, key.Domain, key.Key);
+            if(pack && pack->Hash == key.Hash)
+                return {SourceStatus::Hit, pack->Res, 0};
+            return {SourceStatus::Miss, std::nullopt, 0};
+        }
+
+        void collectReady(std::vector<SourceReady>&) override {}
+
+        bool isAsync() const override {
+            return false;
+        }
+
+        void startPending(std::vector<Hash_t>) override {}
+
+    private:
+        AssetsManager* Manager = nullptr;
+    };
+
+    class MemorySource final : public IResourceSource {
+    public:
+        explicit MemorySource(AssetsManager* manager) : Manager(manager) {}
+
+        SourceResult tryGet(const ResourceKey& key) override {
+            auto iter = Manager->MemoryResourcesByHash.find(key.Hash);
+            if(iter == Manager->MemoryResourcesByHash.end())
+                return {SourceStatus::Miss, std::nullopt, 0};
+            return {SourceStatus::Hit, iter->second, 0};
+        }
+
+        void collectReady(std::vector<SourceReady>&) override {}
+
+        bool isAsync() const override {
+            return false;
+        }
+
+        void startPending(std::vector<Hash_t>) override {}
+
+    private:
+        AssetsManager* Manager = nullptr;
+    };
+
+    class CacheSource final : public IResourceSource {
+    public:
+        CacheSource(AssetsManager* manager, size_t sourceIndex)
+            : Manager(manager), SourceIndex(sourceIndex) {}
+
+        SourceResult tryGet(const ResourceKey&) override {
+            return {SourceStatus::Pending, std::nullopt, SourceIndex};
+        }
+
+        void collectReady(std::vector<SourceReady>& out) override {
+            std::vector<std::pair<Hash_t, std::optional<Resource>>> cached = Manager->Cache->pullReads();
+            out.reserve(out.size() + cached.size());
+            for(auto& [hash, res] : cached)
+                out.push_back(SourceReady{hash, res, SourceIndex});
+        }
+
+        bool isAsync() const override {
+            return true;
+        }
+
+        void startPending(std::vector<Hash_t> hashes) override {
+            if(!hashes.empty())
+                Manager->Cache->pushReads(std::move(hashes));
+        }
+
+    private:
+        AssetsManager* Manager = nullptr;
+        size_t SourceIndex = 0;
+    };
+
+    Sources.clear();
+    PackSourceIndex = Sources.size();
+    Sources.push_back(SourceEntry{std::make_unique<PackSource>(this), 0});
+    MemorySourceIndex = Sources.size();
+    Sources.push_back(SourceEntry{std::make_unique<MemorySource>(this), 0});
+    CacheSourceIndex = Sources.size();
+    Sources.push_back(SourceEntry{std::make_unique<CacheSource>(this, CacheSourceIndex), 0});
+}
+
+void AssetsManager::collectReadyFromSources() {
+    std::vector<SourceReady> ready;
+    for(auto& entry : Sources)
+        entry.Source->collectReady(ready);
+
+    for(SourceReady& item : ready) {
+        auto iter = PendingReadsByHash.find(item.Hash);
+        if(iter == PendingReadsByHash.end())
+            continue;
+        if(item.Value)
+            registerSourceHit(item.Hash, item.SourceIndex);
+        for(ResourceKey& key : iter->second) {
+            if(item.SourceIndex == CacheSourceIndex) {
+                if(item.Value) {
+                    LOG.debug() << "Cache hit type=" << assetTypeName(key.Type)
+                        << " id=" << key.Id
+                        << " key=" << key.Domain << ':' << key.Key
+                        << " hash=" << int(item.Hash[0]) << '.'
+                        << int(item.Hash[1]) << '.'
+                        << int(item.Hash[2]) << '.'
+                        << int(item.Hash[3])
+                        << " size=" << item.Value->size();
+                } else {
+                    LOG.debug() << "Cache miss type=" << assetTypeName(key.Type)
+                        << " id=" << key.Id
+                        << " key=" << key.Domain << ':' << key.Key
+                        << " hash=" << int(item.Hash[0]) << '.'
+                        << int(item.Hash[1]) << '.'
+                        << int(item.Hash[2]) << '.'
+                        << int(item.Hash[3]);
+                }
+            }
+            ReadyReads.emplace_back(std::move(key), item.Value);
+        }
+        PendingReadsByHash.erase(iter);
+    }
+}
+
+AssetsManager::SourceResult AssetsManager::querySources(const ResourceKey& key) {
+    auto cacheIter = SourceCacheByHash.find(key.Hash);
+    if(cacheIter != SourceCacheByHash.end()) {
+        const size_t cachedIndex = cacheIter->second.SourceIndex;
+        if(cachedIndex < Sources.size()
+            && cacheIter->second.Generation == Sources[cachedIndex].Generation)
+        {
+            SourceResult cached = Sources[cachedIndex].Source->tryGet(key);
+            cached.SourceIndex = cachedIndex;
+            if(cached.Status != SourceStatus::Miss)
+                return cached;
+        }
+        SourceCacheByHash.erase(cacheIter);
+    }
+
+    SourceResult pending;
+    pending.Status = SourceStatus::Miss;
+    for(size_t i = 0; i < Sources.size(); ++i) {
+        SourceResult res = Sources[i].Source->tryGet(key);
+        res.SourceIndex = i;
+        if(res.Status == SourceStatus::Hit) {
+            registerSourceHit(key.Hash, i);
+            return res;
+        }
+        if(res.Status == SourceStatus::Pending && pending.Status == SourceStatus::Miss)
+            pending = res;
+    }
+
+    return pending;
+}
+
+void AssetsManager::registerSourceHit(const Hash_t& hash, size_t sourceIndex) {
+    if(sourceIndex >= Sources.size())
+        return;
+    if(Sources[sourceIndex].Source->isAsync())
+        return;
+    SourceCacheByHash[hash] = SourceCacheEntry{
+        .SourceIndex = sourceIndex,
+        .Generation = Sources[sourceIndex].Generation
+    };
+}
+
+void AssetsManager::invalidateSourceCache(size_t sourceIndex) {
+    if(sourceIndex >= Sources.size())
+        return;
+    Sources[sourceIndex].Generation++;
+    for(auto iter = SourceCacheByHash.begin(); iter != SourceCacheByHash.end(); ) {
+        if(iter->second.SourceIndex == sourceIndex)
+            iter = SourceCacheByHash.erase(iter);
+        else
+            ++iter;
+    }
+}
+
+void AssetsManager::invalidateAllSourceCache() {
+    for(auto& entry : Sources)
+        entry.Generation++;
+    SourceCacheByHash.clear();
+}
+
+void AssetsManager::tickSources() {
+    collectReadyFromSources();
 }
 
 AssetsManager::PackReloadResult AssetsManager::reloadPacks(const PackRegister& reg) {
     PackReloadResult result;
-    auto oldPacks = PackResources;
-    for(auto& table : PackResources)
-        table.clear();
+    std::array<PackTable, static_cast<size_t>(AssetType::MAX_ENUM)> oldPacks;
+    for(size_t type = 0; type < static_cast<size_t>(AssetType::MAX_ENUM); ++type) {
+        oldPacks[type] = Types[type].PackResources;
+        Types[type].PackResources.clear();
+    }
 
     for(const fs::path& instance : reg.Packs) {
         try {
@@ -522,7 +310,7 @@ AssetsManager::PackReloadResult AssetsManager::reloadPacks(const PackRegister& r
                     if(!fs::exists(assetPath) || !fs::is_directory(assetPath))
                         continue;
 
-                    auto& typeTable = PackResources[type][domain];
+                    auto& typeTable = Types[type].PackResources[domain];
                     for(auto fbegin = fs::recursive_directory_iterator(assetPath),
                              fend = fs::recursive_directory_iterator();
                         fbegin != fend; ++fbegin) {
@@ -532,7 +320,7 @@ AssetsManager::PackReloadResult AssetsManager::reloadPacks(const PackRegister& r
                         if(assetType == AssetType::Texture && file.extension() == ".meta")
                             continue;
 
-                        std::string key = fs::relative(file, assetPath).string();
+                        std::string key = fs::relative(file, assetPath).generic_string();
                         if(typeTable.contains(key))
                             continue;
 
@@ -630,7 +418,7 @@ AssetsManager::PackReloadResult AssetsManager::reloadPacks(const PackRegister& r
     }
 
     for(size_t type = 0; type < static_cast<size_t>(AssetType::MAX_ENUM); ++type) {
-        for(const auto& [domain, keyTable] : PackResources[type]) {
+        for(const auto& [domain, keyTable] : Types[type].PackResources) {
             for(const auto& [key, res] : keyTable) {
                 bool changed = true;
                 auto oldDomain = oldPacks[type].find(domain);
@@ -647,9 +435,9 @@ AssetsManager::PackReloadResult AssetsManager::reloadPacks(const PackRegister& r
 
         for(const auto& [domain, keyTable] : oldPacks[type]) {
             for(const auto& [key, res] : keyTable) {
-                auto newDomain = PackResources[type].find(domain);
+                auto newDomain = Types[type].PackResources.find(domain);
                 bool lost = true;
-                if(newDomain != PackResources[type].end()) {
+                if(newDomain != Types[type].PackResources.end()) {
                     if(newDomain->second.contains(key))
                         lost = false;
                 }
@@ -659,6 +447,7 @@ AssetsManager::PackReloadResult AssetsManager::reloadPacks(const PackRegister& r
         }
     }
 
+    invalidateAllSourceCache();
     return result;
 }
 
@@ -667,7 +456,7 @@ AssetsManager::BindResult AssetsManager::bindServerResource(AssetType type, Asse
 {
     BindResult result;
     AssetId localFromDK = getOrCreateLocalId(type, domain, key);
-    auto& map = ServerToLocal[static_cast<size_t>(type)];
+    auto& map = Types[static_cast<size_t>(type)].ServerToLocal;
     AssetId localFromServer = 0;
     if(serverId < map.size())
         localFromServer = map[serverId];
@@ -680,7 +469,7 @@ AssetsManager::BindResult AssetsManager::bindServerResource(AssetType type, Asse
         map.resize(serverId + 1, 0);
     map[serverId] = localId;
 
-    auto& infoList = BindInfos[static_cast<size_t>(type)];
+    auto& infoList = Types[static_cast<size_t>(type)].BindInfos;
     if(localId >= infoList.size())
         infoList.resize(localId + 1);
 
@@ -703,7 +492,7 @@ AssetsManager::BindResult AssetsManager::bindServerResource(AssetType type, Asse
 }
 
 std::optional<AssetsManager::AssetId> AssetsManager::unbindServerResource(AssetType type, AssetId serverId) {
-    auto& map = ServerToLocal[static_cast<size_t>(type)];
+    auto& map = Types[static_cast<size_t>(type)].ServerToLocal;
     if(serverId >= map.size())
         return std::nullopt;
     AssetId localId = map[serverId];
@@ -714,15 +503,15 @@ std::optional<AssetsManager::AssetId> AssetsManager::unbindServerResource(AssetT
 }
 
 void AssetsManager::clearServerBindings() {
-    for(auto& table : ServerToLocal)
-        table.clear();
-    for(auto& table : BindInfos)
-        table.clear();
+    for(auto& typeData : Types) {
+        typeData.ServerToLocal.clear();
+        typeData.BindInfos.clear();
+    }
 }
 
 const AssetsManager::BindInfo* AssetsManager::getBind(AssetType type, AssetId localId) const {
     localId = resolveLocalId(type, localId);
-    const auto& table = BindInfos[static_cast<size_t>(type)];
+    const auto& table = Types[static_cast<size_t>(type)].BindInfos;
     if(localId >= table.size())
         return nullptr;
     if(!table[localId])
@@ -731,9 +520,6 @@ const AssetsManager::BindInfo* AssetsManager::getBind(AssetType type, AssetId lo
 }
 
 std::vector<uint8_t> AssetsManager::rebindHeader(AssetType type, const std::vector<uint8_t>& header, bool serverIds) {
-    if(header.empty())
-        return {};
-
     auto mapModelId = [&](AssetId id) -> AssetId {
         if(serverIds) {
             auto localId = getLocalIdFromServer(AssetType::Model, id);
@@ -758,134 +544,76 @@ std::vector<uint8_t> AssetsManager::rebindHeader(AssetType type, const std::vect
         return resolveLocalIdMutable(AssetType::Texture, id);
     };
 
-    if(type == AssetType::Nodestate) {
-        if(header.size() % sizeof(AssetId) != 0)
-            return header;
-        std::vector<uint8_t> out(header.size());
-        const size_t count = header.size() / sizeof(AssetId);
-        for(size_t i = 0; i < count; ++i) {
-            AssetId raw = 0;
-            std::memcpy(&raw, header.data() + i * sizeof(AssetId), sizeof(AssetId));
-            AssetId mapped = mapModelId(raw);
-            std::memcpy(out.data() + i * sizeof(AssetId), &mapped, sizeof(AssetId));
-        }
-        return out;
-    }
+    auto warn = [&](const std::string& msg) {
+        LOG.warn() << msg;
+    };
 
-    if(type == AssetType::Model) {
-        try {
-            TOS::ByteBuffer buffer(header.size(), header.data());
-            auto reader = buffer.reader();
-
-            uint16_t modelCount = reader.readUInt16();
-            std::vector<AssetId> models;
-            models.reserve(modelCount);
-            for(uint16_t i = 0; i < modelCount; ++i) {
-                AssetId id = reader.readUInt32();
-                models.push_back(mapModelId(id));
-            }
-
-            uint16_t texCount = reader.readUInt16();
-            std::vector<std::vector<uint8_t>> pipelines;
-            pipelines.reserve(texCount);
-            for(uint16_t i = 0; i < texCount; ++i) {
-                uint32_t size32 = reader.readUInt32();
-                TOS::ByteBuffer pipe;
-                reader.readBuffer(pipe);
-                if(pipe.size() != size32) {
-                    LOG.warn() << "Несовпадение длины pipeline: " << size32 << " vs " << pipe.size();
-                }
-                std::vector<uint8_t> code(pipe.begin(), pipe.end());
-                auto result = remapTexturePipelineIds(code, [&](uint32_t id) {
-                    return mapTextureId(static_cast<AssetId>(id));
-                });
-                if(!result.Ok) {
-                    LOG.warn() << "Ошибка ребинда pipeline: " << result.Error;
-                }
-                pipelines.emplace_back(std::move(code));
-            }
-
-            TOS::ByteBuffer::Writer wr;
-            wr << uint16_t(models.size());
-            for(AssetId id : models)
-                wr << id;
-            wr << uint16_t(pipelines.size());
-            for(const auto& pipe : pipelines) {
-                wr << uint32_t(pipe.size());
-                TOS::ByteBuffer pipeBuff(pipe.begin(), pipe.end());
-                wr << pipeBuff;
-            }
-
-            TOS::ByteBuffer out = wr.complite();
-            return std::vector<uint8_t>(out.begin(), out.end());
-        } catch(const std::exception& exc) {
-            LOG.warn() << "Ошибка ребинда заголовка модели: " << exc.what();
-            return header;
-        }
-    }
-
-    return header;
+    return AssetsHeaderCodec::rebindHeader(type, header, mapModelId, mapTextureId, warn);
 }
 
 std::optional<AssetsManager::ParsedHeader> AssetsManager::parseHeader(AssetType type, const std::vector<uint8_t>& header) {
-    if(header.empty())
-        return std::nullopt;
+    return AssetsHeaderCodec::parseHeader(type, header);
+}
 
-    ParsedHeader result;
-    result.Type = type;
+void AssetsManager::pushResources(std::vector<Resource> resources) {
+    for(const Resource& res : resources) {
+        Hash_t hash = res.hash();
+        MemoryResourcesByHash[hash] = res;
+        SourceCacheByHash.erase(hash);
+        registerSourceHit(hash, MemorySourceIndex);
 
-    if(type == AssetType::Nodestate) {
-        auto deps = parseNodestateHeaderBytes(header);
-        if(!deps)
-            return std::nullopt;
-        result.ModelDeps = std::move(*deps);
-        return result;
+        auto iter = PendingReadsByHash.find(hash);
+        if(iter != PendingReadsByHash.end()) {
+            for(ResourceKey& key : iter->second)
+                ReadyReads.emplace_back(std::move(key), res);
+            PendingReadsByHash.erase(iter);
+        }
     }
 
-    if(type == AssetType::Model) {
-        auto parsed = parseModelHeaderBytes(header);
-        if(!parsed)
-            return std::nullopt;
-        result.ModelDeps = std::move(parsed->ModelDeps);
-        result.TexturePipelines = std::move(parsed->TexturePipelines);
-        result.TextureDeps = std::move(parsed->TextureDeps);
-        return result;
-    }
-
-    return std::nullopt;
+    Cache->pushResources(std::move(resources));
 }
 
 void AssetsManager::pushReads(std::vector<ResourceKey> reads) {
-    std::vector<Hash_t> forCache;
-    forCache.reserve(reads.size());
+    std::unordered_map<size_t, std::vector<Hash_t>> pendingBySource;
 
     for(ResourceKey& key : reads) {
-        std::optional<PackResource> pack = findPackResource(key.Type, key.Domain, key.Key);
-        if(pack && pack->Hash == key.Hash) {
-            LOG.debug() << "Pack hit type=" << assetTypeName(key.Type)
-                << " id=" << key.Id
-                << " key=" << key.Domain << ':' << key.Key
-                << " hash=" << int(key.Hash[0]) << '.'
-                << int(key.Hash[1]) << '.'
-                << int(key.Hash[2]) << '.'
-                << int(key.Hash[3])
-                << " size=" << pack->Res.size();
-            ReadyReads.emplace_back(std::move(key), pack->Res);
+        SourceResult res = querySources(key);
+        if(res.Status == SourceStatus::Hit) {
+            if(res.SourceIndex == PackSourceIndex && res.Value) {
+                LOG.debug() << "Pack hit type=" << assetTypeName(key.Type)
+                    << " id=" << key.Id
+                    << " key=" << key.Domain << ':' << key.Key
+                    << " hash=" << int(key.Hash[0]) << '.'
+                    << int(key.Hash[1]) << '.'
+                    << int(key.Hash[2]) << '.'
+                    << int(key.Hash[3])
+                    << " size=" << res.Value->size();
+            }
+            ReadyReads.emplace_back(std::move(key), res.Value);
             continue;
         }
 
-        auto& list = PendingReadsByHash[key.Hash];
-        bool isFirst = list.empty();
-        list.push_back(std::move(key));
-        if(isFirst)
-            forCache.push_back(list.front().Hash);
+        if(res.Status == SourceStatus::Pending) {
+            auto& list = PendingReadsByHash[key.Hash];
+            bool isFirst = list.empty();
+            list.push_back(std::move(key));
+            if(isFirst)
+                pendingBySource[res.SourceIndex].push_back(list.front().Hash);
+            continue;
+        }
+
+        ReadyReads.emplace_back(std::move(key), std::nullopt);
     }
 
-    if(!forCache.empty())
-        Cache->pushReads(std::move(forCache));
+    for(auto& [sourceIndex, hashes] : pendingBySource) {
+        if(sourceIndex < Sources.size())
+            Sources[sourceIndex].Source->startPending(std::move(hashes));
+    }
 }
 
 std::vector<std::pair<AssetsManager::ResourceKey, std::optional<Resource>>> AssetsManager::pullReads() {
+    tickSources();
+
     std::vector<std::pair<ResourceKey, std::optional<Resource>>> out;
     out.reserve(ReadyReads.size());
 
@@ -893,40 +621,11 @@ std::vector<std::pair<AssetsManager::ResourceKey, std::optional<Resource>>> Asse
         out.emplace_back(std::move(entry));
     ReadyReads.clear();
 
-    std::vector<std::pair<Hash_t, std::optional<Resource>>> cached = Cache->pullReads();
-    for(auto& [hash, res] : cached) {
-        auto iter = PendingReadsByHash.find(hash);
-        if(iter == PendingReadsByHash.end())
-            continue;
-        for(ResourceKey& key : iter->second) {
-            if(res) {
-                LOG.debug() << "Cache hit type=" << assetTypeName(key.Type)
-                    << " id=" << key.Id
-                    << " key=" << key.Domain << ':' << key.Key
-                    << " hash=" << int(hash[0]) << '.'
-                    << int(hash[1]) << '.'
-                    << int(hash[2]) << '.'
-                    << int(hash[3])
-                    << " size=" << res->size();
-            } else {
-                LOG.debug() << "Cache miss type=" << assetTypeName(key.Type)
-                    << " id=" << key.Id
-                    << " key=" << key.Domain << ':' << key.Key
-                    << " hash=" << int(hash[0]) << '.'
-                    << int(hash[1]) << '.'
-                    << int(hash[2]) << '.'
-                    << int(hash[3]);
-            }
-            out.emplace_back(std::move(key), res);
-        }
-        PendingReadsByHash.erase(iter);
-    }
-
     return out;
 }
 
 AssetsManager::AssetId AssetsManager::getOrCreateLocalId(AssetType type, std::string_view domain, std::string_view key) {
-    auto& table = DKToLocal[static_cast<size_t>(type)];
+    auto& table = Types[static_cast<size_t>(type)].DKToLocal;
     auto iterDomain = table.find(domain);
     if(iterDomain == table.end()) {
         iterDomain = table.emplace(
@@ -945,7 +644,7 @@ AssetsManager::AssetId AssetsManager::getOrCreateLocalId(AssetType type, std::st
     AssetId id = allocateLocalId(type);
     keyTable.emplace(std::string(key), id);
 
-    auto& dk = LocalToDK[static_cast<size_t>(type)];
+    auto& dk = Types[static_cast<size_t>(type)].LocalToDK;
     if(id >= dk.size())
         dk.resize(id + 1);
     dk[id] = DomainKey{std::string(domain), std::string(key), true};
@@ -954,7 +653,7 @@ AssetsManager::AssetId AssetsManager::getOrCreateLocalId(AssetType type, std::st
 }
 
 std::optional<AssetsManager::AssetId> AssetsManager::getLocalIdFromServer(AssetType type, AssetId serverId) const {
-    const auto& map = ServerToLocal[static_cast<size_t>(type)];
+    const auto& map = Types[static_cast<size_t>(type)].ServerToLocal;
     if(serverId >= map.size())
         return std::nullopt;
     AssetId local = map[serverId];
@@ -966,7 +665,7 @@ std::optional<AssetsManager::AssetId> AssetsManager::getLocalIdFromServer(AssetT
 AssetsManager::AssetId AssetsManager::resolveLocalId(AssetType type, AssetId localId) const {
     if(localId == 0)
         return 0;
-    const auto& parents = LocalParent[static_cast<size_t>(type)];
+    const auto& parents = Types[static_cast<size_t>(type)].LocalParent;
     if(localId >= parents.size())
         return localId;
     AssetId cur = localId;
@@ -976,15 +675,15 @@ AssetsManager::AssetId AssetsManager::resolveLocalId(AssetType type, AssetId loc
 }
 
 AssetsManager::AssetId AssetsManager::allocateLocalId(AssetType type) {
-    auto& next = NextLocalId[static_cast<size_t>(type)];
+    auto& next = Types[static_cast<size_t>(type)].NextLocalId;
     AssetId id = next++;
 
-    auto& parents = LocalParent[static_cast<size_t>(type)];
+    auto& parents = Types[static_cast<size_t>(type)].LocalParent;
     if(id >= parents.size())
         parents.resize(id + 1, 0);
     parents[id] = id;
 
-    auto& dk = LocalToDK[static_cast<size_t>(type)];
+    auto& dk = Types[static_cast<size_t>(type)].LocalToDK;
     if(id >= dk.size())
         dk.resize(id + 1);
 
@@ -994,7 +693,7 @@ AssetsManager::AssetId AssetsManager::allocateLocalId(AssetType type) {
 AssetsManager::AssetId AssetsManager::resolveLocalIdMutable(AssetType type, AssetId localId) {
     if(localId == 0)
         return 0;
-    auto& parents = LocalParent[static_cast<size_t>(type)];
+    auto& parents = Types[static_cast<size_t>(type)].LocalParent;
     if(localId >= parents.size())
         return localId;
     AssetId root = localId;
@@ -1017,7 +716,7 @@ void AssetsManager::unionLocalIds(AssetType type, AssetId fromId, AssetId toId, 
     if(fromRoot == 0 || toRoot == 0 || fromRoot == toRoot)
         return;
 
-    auto& parents = LocalParent[static_cast<size_t>(type)];
+    auto& parents = Types[static_cast<size_t>(type)].LocalParent;
     if(fromRoot >= parents.size() || toRoot >= parents.size())
         return;
 
@@ -1025,7 +724,7 @@ void AssetsManager::unionLocalIds(AssetType type, AssetId fromId, AssetId toId, 
     if(reboundFrom)
         *reboundFrom = fromRoot;
 
-    auto& dk = LocalToDK[static_cast<size_t>(type)];
+    auto& dk = Types[static_cast<size_t>(type)].LocalToDK;
     if(fromRoot < dk.size()) {
         const DomainKey& fromDK = dk[fromRoot];
         if(fromDK.Known) {
@@ -1034,7 +733,7 @@ void AssetsManager::unionLocalIds(AssetType type, AssetId fromId, AssetId toId, 
             DomainKey& toDK = dk[toRoot];
             if(!toDK.Known) {
                 toDK = fromDK;
-                DKToLocal[static_cast<size_t>(type)][toDK.Domain][toDK.Key] = toRoot;
+                Types[static_cast<size_t>(type)].DKToLocal[toDK.Domain][toDK.Key] = toRoot;
             } else if(toDK.Domain != fromDK.Domain || toDK.Key != fromDK.Key) {
                 LOG.warn() << "Конфликт домен/ключ при ребинде: "
                     << fromDK.Domain << ':' << fromDK.Key << " vs "
@@ -1043,7 +742,7 @@ void AssetsManager::unionLocalIds(AssetType type, AssetId fromId, AssetId toId, 
         }
     }
 
-    auto& binds = BindInfos[static_cast<size_t>(type)];
+    auto& binds = Types[static_cast<size_t>(type)].BindInfos;
     if(fromRoot < binds.size()) {
         if(toRoot >= binds.size())
             binds.resize(toRoot + 1);
@@ -1055,7 +754,7 @@ void AssetsManager::unionLocalIds(AssetType type, AssetId fromId, AssetId toId, 
 std::optional<AssetsManager::PackResource> AssetsManager::findPackResource(AssetType type,
     std::string_view domain, std::string_view key) const
 {
-    const auto& typeTable = PackResources[static_cast<size_t>(type)];
+    const auto& typeTable = Types[static_cast<size_t>(type)].PackResources;
     auto iterDomain = typeTable.find(domain);
     if(iterDomain == typeTable.end())
         return std::nullopt;

@@ -126,7 +126,7 @@ AssetsPreloader::Out_reloadResources AssetsPreloader::_reloadResources(const Ass
                             if (assetType == AssetType::Texture && file.extension() == ".meta")
                                 continue;
 
-                            std::string key = fs::relative(file, assetPath).string();
+                            std::string key = fs::relative(file, assetPath).generic_string();
                             if (firstStage.contains(key))
                                 continue;
 
@@ -197,7 +197,7 @@ AssetsPreloader::Out_reloadResources AssetsPreloader::_reloadResources(const Ass
                 fs::path pKeyPath = fs::path(pKeyRaw);
                 if(pKeyPath.extension().empty())
                     pKeyPath += ".json";
-                std::string pKey = pKeyPath.string();
+                std::string pKey = pKeyPath.generic_string();
 
                 std::optional<js::object> parent = loadModelProfile(pDomain, pKey, visiting);
                 if(parent) {

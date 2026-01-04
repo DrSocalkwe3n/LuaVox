@@ -258,11 +258,74 @@ void RemoteClient::shutdown(EnumDisconnect type, const std::string reason) {
 
 void RemoteClient::NetworkAndResource_t::prepareRegionsRemove(WorldId_t worldId, std::vector<Pos::GlobalRegion> regionPoses)
 {
+    auto worldIter = ChunksToSend.find(worldId);
+    if(worldIter != ChunksToSend.end()) {
+        for(const Pos::GlobalRegion &regionPos : regionPoses)
+            worldIter->second.erase(regionPos);
+
+        if(worldIter->second.empty())
+            ChunksToSend.erase(worldIter);
+    }
+
     for(Pos::GlobalRegion regionPos : regionPoses) {
         checkPacketBorder(16);
         NextPacket << (uint8_t) ToClient::RemoveRegion
             << worldId << regionPos.pack();
     }
+}
+
+void RemoteClient::NetworkAndResource_t::flushChunksToPackets()
+{
+    for(auto &worldPair : ChunksToSend) {
+        const WorldId_t worldId = worldPair.first;
+        auto &regions = worldPair.second;
+
+        for(auto &regionPair : regions) {
+            const Pos::GlobalRegion regionPos = regionPair.first;
+            auto &voxels = regionPair.second.first;
+            auto &nodes = regionPair.second.second;
+
+            for(auto &chunkPair : voxels) {
+                const Pos::bvec4u chunkPos = chunkPair.first;
+                const std::u8string &compressed = chunkPair.second;
+
+                Pos::GlobalChunk globalPos = (Pos::GlobalChunk) regionPos;
+                globalPos <<= 2;
+                globalPos += (Pos::GlobalChunk) chunkPos;
+
+                const size_t size = 1 + sizeof(WorldId_t)
+                    + sizeof(Pos::GlobalChunk::Pack)
+                    + sizeof(uint32_t)
+                    + compressed.size();
+                checkPacketBorder(static_cast<uint16_t>(std::min<size_t>(size, 64000)));
+
+                NextPacket << (uint8_t) ToClient::ChunkVoxels
+                    << worldId << globalPos.pack() << uint32_t(compressed.size());
+                NextPacket.write((const std::byte*) compressed.data(), compressed.size());
+            }
+
+            for(auto &chunkPair : nodes) {
+                const Pos::bvec4u chunkPos = chunkPair.first;
+                const std::u8string &compressed = chunkPair.second;
+
+                Pos::GlobalChunk globalPos = (Pos::GlobalChunk) regionPos;
+                globalPos <<= 2;
+                globalPos += (Pos::GlobalChunk) chunkPos;
+
+                const size_t size = 1 + sizeof(WorldId_t)
+                    + sizeof(Pos::GlobalChunk::Pack)
+                    + sizeof(uint32_t)
+                    + compressed.size();
+                checkPacketBorder(static_cast<uint16_t>(std::min<size_t>(size, 64000)));
+
+                NextPacket << (uint8_t) ToClient::ChunkNodes
+                    << worldId << globalPos.pack() << uint32_t(compressed.size());
+                NextPacket.write((const std::byte*) compressed.data(), compressed.size());
+            }
+        }
+    }
+
+    ChunksToSend.clear();
 }
 
 void RemoteClient::NetworkAndResource_t::prepareEntitiesUpdate(const std::vector<std::tuple<ServerEntityId_t, const Entity*>>& entities)
@@ -337,6 +400,7 @@ ResourceRequest RemoteClient::pushPreparedPackets() {
 
     {
         auto lock = NetworkAndResource.lock();
+        lock->flushChunksToPackets();
 
         if(lock->NextPacket.size())
             lock->SimplePackets.push_back(std::move(lock->NextPacket));

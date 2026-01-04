@@ -233,6 +233,8 @@ class RemoteClient {
             ChunksToSend[worldId][regionPos].second[chunkPos] = compressed_nodes;
         }
 
+        void flushChunksToPackets();
+
         void prepareEntitiesRemove(const std::vector<ServerEntityId_t>& entityId);
         void prepareRegionsRemove(WorldId_t worldId, std::vector<Pos::GlobalRegion> regionPoses);
         void prepareWorldRemove(WorldId_t worldId);

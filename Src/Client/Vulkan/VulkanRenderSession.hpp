@@ -5,6 +5,8 @@
 #include "Common/Abstract.hpp"
 #include <Client/Vulkan/Vulkan.hpp>
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <bitset>
 #include <condition_variable>
 #include <cstring>
@@ -134,14 +136,6 @@ public:
             Models.erase(iterModel);
         }
         
-        std::unordered_map<std::string, ResourceId> modelKeyToId;
-        if(modelAssets) {
-            modelKeyToId.reserve(modelAssets->size());
-            for(const auto& [id, entry] : *modelAssets) {
-                modelKeyToId.emplace(entry.Domain + ':' + entry.Key, id);
-            }
-        }
-
         for(const auto& [key, resource, deps] : newOrChanged) {
             result.push_back(key);
 
@@ -173,19 +167,39 @@ public:
                 return pipe;
             };
                 
+            size_t dataSize = 0;
+            std::array<uint8_t, 4> prefix = {};
             try {
                 std::u8string_view data((const char8_t*) resource.data(), resource.size());
+                dataSize = data.size();
+                if(!data.empty()) {
+                    const size_t prefixLen = std::min<size_t>(prefix.size(), data.size());
+                    for(size_t i = 0; i < prefixLen; ++i)
+                        prefix[i] = static_cast<uint8_t>(data[i]);
+                }
                 if(data.starts_with((const char8_t*) "bm")) {
                     type = "InternalBinary";
                     // Компилированная модель внутреннего формата
-                    LV::PreparedModel pm((std::u8string) data);
+                    HeadlessModel hm;
+                    hm.load(data);
                     model.TextureMap.clear();
-                    model.TextureMap.reserve(pm.CompiledTextures.size());
-                    for(auto& [tkey, pipe] : pm.CompiledTextures)
-                        model.TextureMap.emplace(tkey, remapPipeline(std::move(pipe)));
+                    model.TextureMap.reserve(hm.Textures.size());
+                    for(const auto& [tkey, id] : hm.Textures) {
+                        TexturePipeline pipe;
+                        if(header && id < header->TexturePipelines.size()) {
+                            pipe.Pipeline = header->TexturePipelines[id];
+                        } else {
+                            LOG.warn() << "Model texture pipeline id out of range: model=" << key
+                                << " local=" << id
+                                << " pipelines=" << (header ? header->TexturePipelines.size() : 0);
+                            pipe.BinTextures.push_back(id);
+                            pipe = remapPipeline(std::move(pipe));
+                        }
+                        model.TextureMap.emplace(tkey, std::move(pipe));
+                    }
                     model.TextureKeys = {};
 
-                    for(const PreparedModel::Cuboid& cb : pm.Cuboids) {
+                    for(const HeadlessModel::Cuboid& cb : hm.Cuboids) {
                         glm::vec3 min = glm::min(cb.From, cb.To), max = glm::max(cb.From, cb.To);
                         
                         for(const auto& [face, params] : cb.Faces) {
@@ -265,13 +279,16 @@ public:
                         }
                     }
 
-                    if(!pm.SubModels.empty() && modelAssets) {
-                        model.Depends.reserve(pm.SubModels.size());
-                        for(const auto& sub : pm.SubModels) {
-                            auto iter = modelKeyToId.find(sub.Domain + ':' + sub.Key);
-                            if(iter == modelKeyToId.end())
+                    if(!hm.SubModels.empty()) {
+                        model.Depends.reserve(hm.SubModels.size());
+                        for(const auto& sub : hm.SubModels) {
+                            if(!header || sub.Id >= header->ModelDeps.size()) {
+                                LOG.warn() << "Model sub-model id out of range: model=" << key
+                                    << " local=" << sub.Id
+                                    << " deps=" << (header ? header->ModelDeps.size() : 0);
                                 continue;
-                            model.Depends.emplace_back(iter->second, Transformations{});
+                            }
+                            model.Depends.emplace_back(header->ModelDeps[sub.Id], Transformations{});
                         }
                     }
 
@@ -295,6 +312,35 @@ public:
             } catch(const std::exception& exc) {
                 LOG.warn() << "Не удалось распарсить модель " << type << ":\n\t" << exc.what();
                 continue;
+            }
+
+            {
+                static std::atomic<uint32_t> debugModelLogCount = 0;
+                uint32_t idx = debugModelLogCount.fetch_add(1);
+                if(idx < 128) {
+                    size_t vertexCount = 0;
+                    for(const auto& [_, verts] : model.Vertecies)
+                        vertexCount += verts.size();
+                    size_t texDepsCount = textureDeps ? textureDeps->size() : 0;
+                    LOG.debug() << "Model loaded id=" << key
+                        << " verts=" << vertexCount
+                        << " texKeys=" << model.TextureKeys.size()
+                        << " texDeps=" << texDepsCount;
+                }
+            }
+
+            if(model.Vertecies.empty()) {
+                static std::atomic<uint32_t> debugEmptyModelLogCount = 0;
+                uint32_t idx = debugEmptyModelLogCount.fetch_add(1);
+                if(idx < 128) {
+                    LOG.warn() << "Model has empty geometry id=" << key
+                        << " type=" << type
+                        << " size=" << dataSize
+                        << " prefix=" << int(prefix[0]) << '.'
+                        << int(prefix[1]) << '.'
+                        << int(prefix[2]) << '.'
+                        << int(prefix[3]);
+                }
             }
 
             Models.insert_or_assign(key, std::move(model));
@@ -625,13 +671,24 @@ public:
                 std::move(pixels)
             ));
 
+            bool animated = false;
             if(auto anim = getDefaultAnimation(update.Key, width, height)) {
                 AnimatedSources[key] = *anim;
+                animated = true;
             } else {
                 AnimatedSources.erase(key);
             }
 
             NeedsUpload = true;
+
+            static std::atomic<uint32_t> debugTextureLogCount = 0;
+            uint32_t idx = debugTextureLogCount.fetch_add(1);
+            if(idx < 128) {
+                LOG.debug() << "Texture loaded id=" << key
+                    << " key=" << update.Domain << ':' << update.Key
+                    << " size=" << width << 'x' << height
+                    << " animated=" << (animated ? 1 : 0);
+            }
         }
 
         for(AssetsTexture key : lost) {
@@ -897,7 +954,7 @@ public:
             }
 
             if(deps && !deps->empty()) {
-                auto header = AssetsManager::parseHeader(EnumAssets::Model, *deps);
+                auto header = AssetsManager::parseHeader(EnumAssets::Nodestate, *deps);
                 if(header && header->Type == EnumAssets::Nodestate) {
                     nodestate.LocalToModel.assign(header->ModelDeps.begin(), header->ModelDeps.end());
                 }
@@ -968,6 +1025,11 @@ public:
 
         auto appendModel = [&](AssetsModel modelId, const std::vector<Transformation>& transforms, std::unordered_map<EnumFace, std::vector<NodeVertexStatic>>& out) {
             ModelProvider::Model model = MP.getModel(modelId);
+            if(model.Vertecies.empty()) {
+                if(MissingModelGeometryLogged.insert(modelId).second) {
+                    LOG.warn() << "Model has no geometry id=" << modelId;
+                }
+            }
             Transformations trf{transforms};
 
             for(auto& [l, r] : model.Vertecies) {
@@ -1015,13 +1077,28 @@ public:
 
                 if(const PreparedNodeState::Model* ptr = std::get_if<PreparedNodeState::Model>(&m)) {
                     AssetsModel modelId;
-                    if(resolveModelId(ptr->Id, modelId))
+                    if(resolveModelId(ptr->Id, modelId)) {
                         appendModel(modelId, ptr->Transforms, out);
+                    } else {
+                        uint64_t missKey = (uint64_t(id) << 32) | ptr->Id;
+                        if(MissingLocalModelMapLogged.insert(missKey).second) {
+                            LOG.warn() << "Missing model mapping nodestate=" << id
+                                << " local=" << ptr->Id
+                                << " locals=" << nodestate.LocalToModel.size();
+                        }
+                    }
                 } else if(const PreparedNodeState::VectorModel* ptr = std::get_if<PreparedNodeState::VectorModel>(&m)) {
                     for(const auto& sub : ptr->Models) {
                         AssetsModel modelId;
-                        if(!resolveModelId(sub.Id, modelId))
+                        if(!resolveModelId(sub.Id, modelId)) {
+                            uint64_t missKey = (uint64_t(id) << 32) | sub.Id;
+                            if(MissingLocalModelMapLogged.insert(missKey).second) {
+                                LOG.warn() << "Missing model mapping nodestate=" << id
+                                    << " local=" << sub.Id
+                                    << " locals=" << nodestate.LocalToModel.size();
+                            }
                             continue;
+                        }
 
                         std::vector<Transformation> transforms = sub.Transforms;
                         transforms.insert(transforms.end(), ptr->Transforms.begin(), ptr->Transforms.end());
@@ -1058,6 +1135,8 @@ private:
     TextureProvider& TP;
     std::unordered_map<AssetsNodestate, PreparedNodeState> Nodestates;
     std::unordered_set<AssetsNodestate> MissingNodestateLogged;
+    std::unordered_set<uint64_t> MissingLocalModelMapLogged;
+    std::unordered_set<AssetsModel> MissingModelGeometryLogged;
     std::unordered_set<uint64_t> EmptyRouteLogged;
 };
 

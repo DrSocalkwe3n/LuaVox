@@ -140,6 +140,14 @@ void ChunkMeshGenerator::run(uint8_t id) {
                 }
             };
 
+            std::vector<NodeStateInfo> metaStatesInfo;
+            {
+                NodeStateInfo info;
+                info.Name = "meta";
+                info.Variations = 256;
+                metaStatesInfo.push_back(std::move(info));
+            }
+
             // Воксели пока не рендерим
             if(auto iterWorld = SS->Content.Worlds.find(wId); iterWorld != SS->Content.Worlds.end()) {
                 Pos::GlobalRegion rPos = pos >> 2;
@@ -186,6 +194,38 @@ void ChunkMeshGenerator::run(uint8_t id) {
                         const DefNode_t* profile = getNodeProfile(node.NodeId);
                         if(profile->TexId != 0) {
                             return (nodeFullCuboidCache[node.Data] = true);
+                        }
+
+                        if(NSP && profile->NodestateId != 0 && NSP->hasNodestate(profile->NodestateId)) {
+                            std::unordered_map<std::string, int32_t> states;
+                            int32_t meta = node.Meta;
+                            states.emplace("meta", meta);
+                            const auto routes = NSP->getModelsForNode(profile->NodestateId, metaStatesInfo, states);
+                            bool isFull = !routes.empty();
+                            if(isFull) {
+                                for(const auto& variants : routes) {
+                                    for(const auto& [weight, faces] : variants) {
+                                        (void)weight;
+                                        auto hasFace = [&](EnumFace face) -> bool {
+                                            auto iterFace = faces.find(face);
+                                            return iterFace != faces.end() && !iterFace->second.empty();
+                                        };
+                                        if(!hasFace(EnumFace::Up)
+                                            || !hasFace(EnumFace::Down)
+                                            || !hasFace(EnumFace::East)
+                                            || !hasFace(EnumFace::West)
+                                            || !hasFace(EnumFace::South)
+                                            || !hasFace(EnumFace::North))
+                                        {
+                                            isFull = false;
+                                            break;
+                                        }
+                                    }
+                                    if(!isFull)
+                                        break;
+                                }
+                            }
+                            return (nodeFullCuboidCache[node.Data] = isFull);
                         }
 
                         return (nodeFullCuboidCache[node.Data] = false);
@@ -324,14 +364,6 @@ void ChunkMeshGenerator::run(uint8_t id) {
 
                 std::unordered_map<uint32_t, ModelCacheEntry> modelCache;
                 std::unordered_map<AssetsTexture, uint32_t> baseTextureCache;
-
-                std::vector<NodeStateInfo> metaStatesInfo;
-                {
-                    NodeStateInfo info;
-                    info.Name = "meta";
-                    info.Variations = 256;
-                    metaStatesInfo.push_back(std::move(info));
-                }
 
                 auto isFaceCovered = [&](EnumFace face, int covered) -> bool {
                     switch(face) {

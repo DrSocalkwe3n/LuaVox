@@ -79,12 +79,17 @@ private:
         std::unordered_map<std::string, std::pair<AssetEntry, uint64_t>> NotInUse[(int) EnumAssets::MAX_ENUM];
     } MyAssets;
 
-    struct AssetLoading {
+    struct AssetLoadingEntry {
         EnumAssets Type;
         ResourceId Id;
-        std::string Domain, Key;
+        std::string Domain;
+        std::string Key;
+    };
+
+    struct AssetLoading {
+        std::vector<AssetLoadingEntry> Entries;
         std::u8string Data;
-        size_t Offset;
+        size_t Offset = 0;
     };
 
     struct AssetBindEntry {

@@ -73,6 +73,68 @@ static std::u8string readOptionalMeta(const fs::path& path) {
     return readFileBytes(metaPath);
 }
 
+static std::vector<uint32_t> collectTexturePipelineIds(const std::vector<uint8_t>& code);
+
+struct ParsedModelHeader {
+    std::vector<AssetsManager::AssetId> ModelDeps;
+    std::vector<std::vector<uint8_t>> TexturePipelines;
+    std::vector<AssetsManager::AssetId> TextureDeps;
+};
+
+std::optional<std::vector<AssetsManager::AssetId>> parseNodestateHeaderBytes(const std::vector<uint8_t>& header) {
+    if(header.empty() || header.size() % sizeof(AssetsManager::AssetId) != 0)
+        return std::nullopt;
+
+    const size_t count = header.size() / sizeof(AssetsManager::AssetId);
+    std::vector<AssetsManager::AssetId> deps;
+    deps.resize(count);
+    for(size_t i = 0; i < count; ++i) {
+        AssetsManager::AssetId raw = 0;
+        std::memcpy(&raw, header.data() + i * sizeof(AssetsManager::AssetId), sizeof(AssetsManager::AssetId));
+        deps[i] = raw;
+    }
+    return deps;
+}
+
+std::optional<ParsedModelHeader> parseModelHeaderBytes(const std::vector<uint8_t>& header) {
+    if(header.empty())
+        return std::nullopt;
+
+    ParsedModelHeader result;
+    try {
+        TOS::ByteBuffer buffer(header.size(), header.data());
+        auto reader = buffer.reader();
+
+        uint16_t modelCount = reader.readUInt16();
+        result.ModelDeps.reserve(modelCount);
+        for(uint16_t i = 0; i < modelCount; ++i)
+            result.ModelDeps.push_back(reader.readUInt32());
+
+        uint16_t texCount = reader.readUInt16();
+        result.TexturePipelines.reserve(texCount);
+        for(uint16_t i = 0; i < texCount; ++i) {
+            uint32_t size32 = reader.readUInt32();
+            TOS::ByteBuffer pipe;
+            reader.readBuffer(pipe);
+            if(pipe.size() != size32)
+                return std::nullopt;
+            result.TexturePipelines.emplace_back(pipe.begin(), pipe.end());
+        }
+
+        std::unordered_set<AssetsManager::AssetId> seen;
+        for(const auto& pipe : result.TexturePipelines) {
+            for(uint32_t id : collectTexturePipelineIds(pipe)) {
+                if(seen.insert(id).second)
+                    result.TextureDeps.push_back(id);
+            }
+        }
+    } catch(const std::exception&) {
+        return std::nullopt;
+    }
+
+    return result;
+}
+
 struct PipelineRemapResult {
     bool Ok = true;
     std::string Error;
@@ -508,9 +570,23 @@ AssetsManager::PackReloadResult AssetsManager::reloadPacks(const PackRegister& r
                                         auto [mDomain, mKey] = parseDomainKey(model, entry.Domain);
                                         return getOrCreateLocalId(AssetType::Model, mDomain, mKey);
                                     };
+                                    auto normalizeTexturePipelineSrc = [](std::string_view src) -> std::string {
+                                        std::string out(src);
+                                        auto isSpace = [](unsigned char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; };
+                                        size_t start = 0;
+                                        while(start < out.size() && isSpace(static_cast<unsigned char>(out[start])))
+                                            ++start;
+                                        if(out.compare(start, 3, "tex") != 0) {
+                                            std::string pref = "tex ";
+                                            pref += out.substr(start);
+                                            return pref;
+                                        }
+                                        return out;
+                                    };
+
                                     auto textureResolver = [&](std::string_view textureSrc) -> std::vector<uint8_t> {
                                         TexturePipelineProgram tpp;
-                                        if(!tpp.compile(std::string(textureSrc)))
+                                        if(!tpp.compile(normalizeTexturePipelineSrc(textureSrc)))
                                             return {};
                                         auto textureIdResolver = [&](std::string_view name) -> std::optional<uint32_t> {
                                             auto [tDomain, tKey] = parseDomainKey(name, entry.Domain);
@@ -759,52 +835,21 @@ std::optional<AssetsManager::ParsedHeader> AssetsManager::parseHeader(AssetType 
     result.Type = type;
 
     if(type == AssetType::Nodestate) {
-        if(header.size() % sizeof(AssetId) != 0)
+        auto deps = parseNodestateHeaderBytes(header);
+        if(!deps)
             return std::nullopt;
-        const size_t count = header.size() / sizeof(AssetId);
-        result.ModelDeps.resize(count);
-        for(size_t i = 0; i < count; ++i) {
-            AssetId raw = 0;
-            std::memcpy(&raw, header.data() + i * sizeof(AssetId), sizeof(AssetId));
-            result.ModelDeps[i] = raw;
-        }
+        result.ModelDeps = std::move(*deps);
         return result;
     }
 
     if(type == AssetType::Model) {
-        try {
-            TOS::ByteBuffer buffer(header.size(), header.data());
-            auto reader = buffer.reader();
-
-            uint16_t modelCount = reader.readUInt16();
-            result.ModelDeps.reserve(modelCount);
-            for(uint16_t i = 0; i < modelCount; ++i)
-                result.ModelDeps.push_back(reader.readUInt32());
-
-            uint16_t texCount = reader.readUInt16();
-            result.TexturePipelines.reserve(texCount);
-            for(uint16_t i = 0; i < texCount; ++i) {
-                uint32_t size32 = reader.readUInt32();
-                TOS::ByteBuffer pipe;
-                reader.readBuffer(pipe);
-                if(pipe.size() != size32) {
-                    return std::nullopt;
-                }
-                result.TexturePipelines.emplace_back(pipe.begin(), pipe.end());
-            }
-
-            std::unordered_set<AssetId> seen;
-            for(const auto& pipe : result.TexturePipelines) {
-                for(uint32_t id : collectTexturePipelineIds(pipe)) {
-                    if(seen.insert(id).second)
-                        result.TextureDeps.push_back(id);
-                }
-            }
-
-            return result;
-        } catch(const std::exception&) {
+        auto parsed = parseModelHeaderBytes(header);
+        if(!parsed)
             return std::nullopt;
-        }
+        result.ModelDeps = std::move(parsed->ModelDeps);
+        result.TexturePipelines = std::move(parsed->TexturePipelines);
+        result.TextureDeps = std::move(parsed->TextureDeps);
+        return result;
     }
 
     return std::nullopt;

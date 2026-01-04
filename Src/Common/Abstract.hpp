@@ -982,37 +982,6 @@ struct TexturePipeline {
     }
 };
 
-struct PreparedModel {
-    struct SubModel {
-        std::string Domain;
-        std::string Key;
-    };
-
-    using Cuboid = HeadlessModel::Cuboid;
-
-    std::unordered_map<std::string, TexturePipeline> CompiledTextures;
-    std::vector<Cuboid> Cuboids;
-    std::vector<SubModel> SubModels;
-
-    PreparedModel() = default;
-    PreparedModel(const std::u8string& data) { load(data); }
-    PreparedModel(std::u8string_view data) { load(data); }
-
-    void load(std::u8string_view data) {
-        HeadlessModel model;
-        model.load(data);
-        Cuboids = model.Cuboids;
-
-        CompiledTextures.clear();
-        CompiledTextures.reserve(model.Textures.size());
-        for(const auto& [key, id] : model.Textures) {
-            TexturePipeline pipe;
-            pipe.BinTextures.push_back(id);
-            CompiledTextures.emplace(key, std::move(pipe));
-        }
-    }
-};
-
 struct PreparedNodeState : public HeadlessNodeState {
     using HeadlessNodeState::Model;
     using HeadlessNodeState::VectorModel;
@@ -1022,30 +991,6 @@ struct PreparedNodeState : public HeadlessNodeState {
     PreparedNodeState() = default;
     PreparedNodeState(std::u8string_view data) { load(data); }
     PreparedNodeState(const std::u8string& data) { load(data); }
-};
-
-struct PreparedGLTF {
-    std::vector<std::string> TextureKey;
-    std::unordered_map<std::string, uint16_t> Textures;
-    std::vector<Vertex> Vertices;
-
-
-    PreparedGLTF(const std::string_view modid, const js::object& gltf);
-    PreparedGLTF(const std::string_view modid, Resource glb);
-    PreparedGLTF(std::u8string_view data);
-
-    PreparedGLTF() = default;
-    PreparedGLTF(const PreparedGLTF&) = default;
-    PreparedGLTF(PreparedGLTF&&) = default;
-
-    PreparedGLTF& operator=(const PreparedGLTF&) = default;
-    PreparedGLTF& operator=(PreparedGLTF&&) = default;
-
-    // Пишет в сжатый двоичный формат
-    std::u8string dump() const;
-
-private:
-    void load(std::u8string_view data);
 };
 
 enum struct TexturePipelineCMD : uint8_t {

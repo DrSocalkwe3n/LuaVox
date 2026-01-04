@@ -1741,26 +1741,6 @@ ResourceHeader HeadlessModel::parse(
         }
     }
 
-    if(boost::system::result<const js::value&> subModels_val = profile.try_at("sub_models")) {
-        const js::array& subModels = subModels_val->as_array();
-
-        for(const js::value& sub_val : subModels) {
-            SubModel result;
-
-            if(auto path = sub_val.try_as_string()) {
-                result.Id = headerResolverModel(path.value());
-            } else {
-                const js::object& sub = sub_val.as_object();
-                result.Id = headerResolverModel(sub.at("path").as_string());
-
-                if(boost::system::result<const js::value&> scene_val = profile.try_at("scene"))
-                    result.Scene = scene_val->to_number<uint16_t>();
-            }
-
-            SubModels.emplace_back(std::move(result));
-        }
-    }
-
     // Заголовок
     TOS::ByteBuffer rh;
 
@@ -2002,37 +1982,6 @@ std::u8string HeadlessModel::dump() const {
     }
 
     return result.complite();
-}
-
-PreparedGLTF::PreparedGLTF(const std::string_view modid, const js::object& gltf) {
-    // gltf
-
-    // Сцена по умолчанию
-    // Сцены -> Ноды
-    // Ноды -> Ноды, меши, матрицы, translation, rotation
-    // Меши -> Примитивы
-    // Примитивы -> Материал, вершинные данные
-    // Материалы -> текстуры
-    // Текстуры
-    // Буферы
-}
-
-PreparedGLTF::PreparedGLTF(const std::string_view modid, Resource glb) {
-
-}
-
-PreparedGLTF::PreparedGLTF(std::u8string_view data) {
-
-    // lr.checkUnreaded();
-}
-
-
-std::u8string PreparedGLTF::dump() const {
-    std::unreachable();
-}
-
-void PreparedGLTF::load(std::u8string_view data) {
-
 }
 
 struct Resource::InlineMMap {

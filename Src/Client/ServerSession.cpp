@@ -1424,68 +1424,73 @@ coro<> ServerSession::rP_AssetsInitSend(Net::AsyncSocket &sock) {
     Hash_t hash;
     co_await sock.read((std::byte*) hash.data(), hash.size());
 
-    bool found = false;
-    EnumAssets type = EnumAssets::Texture;
-    std::string domain;
-    std::string key;
+    std::vector<AssetLoadingEntry> matches;
 
-    for(int typeIndex = 0; typeIndex < (int) EnumAssets::MAX_ENUM && !found; ++typeIndex) {
+    for(int typeIndex = 0; typeIndex < (int) EnumAssets::MAX_ENUM; ++typeIndex) {
         auto& waitingByDomain = AsyncContext.ResourceWait[typeIndex];
-        for(auto iterDomain = waitingByDomain.begin(); iterDomain != waitingByDomain.end() && !found; ) {
+        for(auto iterDomain = waitingByDomain.begin(); iterDomain != waitingByDomain.end(); ) {
             auto& entries = iterDomain->second;
-            for(size_t i = 0; i < entries.size(); ++i) {
+            for(size_t i = 0; i < entries.size(); ) {
                 if(entries[i].second == hash) {
-                    type = static_cast<EnumAssets>(typeIndex);
-                    domain = iterDomain->first;
-                    key = entries[i].first;
+                    EnumAssets type = static_cast<EnumAssets>(typeIndex);
+                    const std::string& domain = iterDomain->first;
+                    const std::string& key = entries[i].first;
+                    ResourceId localId = AM->getOrCreateLocalId(type, domain, key);
+                    matches.push_back(AssetLoadingEntry{
+                        .Type = type,
+                        .Id = localId,
+                        .Domain = domain,
+                        .Key = key
+                    });
                     entries.erase(entries.begin() + i);
-                    if(entries.empty())
-                        iterDomain = waitingByDomain.erase(iterDomain);
-                    else
-                        ++iterDomain;
-                    found = true;
-                    break;
+                } else {
+                    ++i;
                 }
             }
-            if(!found)
+            if(entries.empty())
+                iterDomain = waitingByDomain.erase(iterDomain);
+            else
                 ++iterDomain;
         }
     }
 
-    if(!found) {
+    if(matches.empty()) {
         LOG.warn() << "AssetsInitSend for unknown hash " << int(hash[0]) << '.'
             << int(hash[1]) << '.' << int(hash[2]) << '.' << int(hash[3]);
         AsyncContext.AssetsLoading[hash] = AssetLoading{
-            EnumAssets::Texture, 0, {}, {},
-            std::u8string(size, '\0'), 0
+            .Entries = {},
+            .Data = std::u8string(size, '\0'),
+            .Offset = 0
         };
         co_return;
     }
 
-    ResourceId localId = AM->getOrCreateLocalId(type, domain, key);
+    AssetLoadingEntry first = matches.front();
 
-    if(domain == "test"
-        && (type == EnumAssets::Nodestate
-            || type == EnumAssets::Model
-            || type == EnumAssets::Texture))
+    if(first.Domain == "test"
+        && (first.Type == EnumAssets::Nodestate
+            || first.Type == EnumAssets::Model
+            || first.Type == EnumAssets::Texture))
     {
         uint32_t idx = debugResourceLogCount.fetch_add(1);
         if(idx < 128) {
-            LOG.debug() << "AssetsInitSend type=" << assetTypeName(type)
-                << " id=" << localId
-                << " key=" << domain << ':' << key
-                << " size=" << size;
+            LOG.debug() << "AssetsInitSend type=" << assetTypeName(first.Type)
+                << " id=" << first.Id
+                << " key=" << first.Domain << ':' << first.Key
+                << " size=" << size
+                << " matches=" << matches.size();
         }
     }
 
     AsyncContext.AssetsLoading[hash] = AssetLoading{
-        type, localId, std::move(domain), std::move(key),
-        std::u8string(size, '\0'), 0
+        .Entries = std::move(matches),
+        .Data = std::u8string(size, '\0'),
+        .Offset = 0
     };
-    LOG.debug() << "Server started sending type=" << assetTypeName(type)
-        << " id=" << localId
-        << " key=" << AsyncContext.AssetsLoading[hash].Domain << ':'
-        << AsyncContext.AssetsLoading[hash].Key
+    LOG.debug() << "Server started sending type=" << assetTypeName(first.Type)
+        << " id=" << first.Id
+        << " key=" << first.Domain << ':'
+        << first.Key
         << " hash=" << int(hash[0]) << '.'
         << int(hash[1]) << '.'
         << int(hash[2]) << '.'
@@ -1517,43 +1522,47 @@ coro<> ServerSession::rP_AssetsNextSend(Net::AsyncSocket &sock) {
     if(al.Offset != al.Data.size())
         co_return;
 
-    if(!al.Domain.empty() || !al.Key.empty()) {
-        if(al.Domain == "test"
-            && (al.Type == EnumAssets::Nodestate
-                || al.Type == EnumAssets::Model
-                || al.Type == EnumAssets::Texture))
-        {
-            uint32_t idx = debugResourceLogCount.fetch_add(1);
-            if(idx < 128) {
-                LOG.debug() << "Resource loaded type=" << assetTypeName(al.Type)
-                    << " id=" << al.Id
-                    << " key=" << al.Domain << ':' << al.Key
-                    << " size=" << al.Data.size();
-            }
-        }
-
-        const EnumAssets type = al.Type;
-        const ResourceId id = al.Id;
-        const std::string domain = al.Domain;
-        const std::string key = al.Key;
+    if(!al.Entries.empty()) {
         const size_t resSize = al.Data.size();
+        Resource res(std::move(al.Data));
 
-        AsyncContext.LoadedAssets.lock()->emplace_back(AssetEntry{
-            .Type = type,
-            .Id = id,
-            .Domain = std::move(al.Domain),
-            .Key = std::move(al.Key),
-            .Res = std::move(al.Data),
-            .Hash = hash
-        });
-        LOG.debug() << "Client received type=" << assetTypeName(type)
-            << " id=" << id
-            << " key=" << domain << ':' << key
-            << " hash=" << int(hash[0]) << '.'
-            << int(hash[1]) << '.'
-            << int(hash[2]) << '.'
-            << int(hash[3])
-            << " size=" << resSize;
+        for(AssetLoadingEntry& entry : al.Entries) {
+            if(entry.Domain == "test"
+                && (entry.Type == EnumAssets::Nodestate
+                    || entry.Type == EnumAssets::Model
+                    || entry.Type == EnumAssets::Texture))
+            {
+                uint32_t idx = debugResourceLogCount.fetch_add(1);
+                if(idx < 128) {
+                    LOG.debug() << "Resource loaded type=" << assetTypeName(entry.Type)
+                        << " id=" << entry.Id
+                        << " key=" << entry.Domain << ':' << entry.Key
+                        << " size=" << resSize;
+                }
+            }
+
+            const EnumAssets type = entry.Type;
+            const ResourceId id = entry.Id;
+            const std::string domain = entry.Domain;
+            const std::string key = entry.Key;
+
+            AsyncContext.LoadedAssets.lock()->emplace_back(AssetEntry{
+                .Type = type,
+                .Id = id,
+                .Domain = std::move(entry.Domain),
+                .Key = std::move(entry.Key),
+                .Res = res,
+                .Hash = hash
+            });
+            LOG.debug() << "Client received type=" << assetTypeName(type)
+                << " id=" << id
+                << " key=" << domain << ':' << key
+                << " hash=" << int(hash[0]) << '.'
+                << int(hash[1]) << '.'
+                << int(hash[2]) << '.'
+                << int(hash[3])
+                << " size=" << resSize;
+        }
     }
 
     AsyncContext.AssetsLoading.erase(AsyncContext.AssetsLoading.find(hash));

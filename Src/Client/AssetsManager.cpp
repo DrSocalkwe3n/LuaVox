@@ -591,12 +591,15 @@ AssetsManager::BindResult AssetsManager::bindServerResource(AssetType type, Asse
 {
     BindResult result;
     AssetId localFromDK = getOrCreateLocalId(type, domain, key);
-    AssetId localFromServer = ensureServerLocalId(type, serverId);
+    auto& map = ServerToLocal[static_cast<size_t>(type)];
+    AssetId localFromServer = 0;
+    if(serverId < map.size())
+        localFromServer = map[serverId];
 
-    unionLocalIds(type, localFromServer, localFromDK, &result.ReboundFrom);
+    if(localFromServer != 0)
+        unionLocalIds(type, localFromServer, localFromDK, &result.ReboundFrom);
     AssetId localId = resolveLocalIdMutable(type, localFromDK);
 
-    auto& map = ServerToLocal[static_cast<size_t>(type)];
     if(serverId >= map.size())
         map.resize(serverId + 1, 0);
     map[serverId] = localId;
@@ -656,14 +659,26 @@ std::vector<uint8_t> AssetsManager::rebindHeader(AssetType type, const std::vect
         return {};
 
     auto mapModelId = [&](AssetId id) -> AssetId {
-        if(serverIds)
-            return ensureServerLocalId(AssetType::Model, id);
+        if(serverIds) {
+            auto localId = getLocalIdFromServer(AssetType::Model, id);
+            if(!localId) {
+                assert(!"Missing server bind for model id");
+                MAKE_ERROR("Нет бинда сервера для модели id=" << id);
+            }
+            return *localId;
+        }
         return resolveLocalIdMutable(AssetType::Model, id);
     };
 
     auto mapTextureId = [&](AssetId id) -> AssetId {
-        if(serverIds)
-            return ensureServerLocalId(AssetType::Texture, id);
+        if(serverIds) {
+            auto localId = getLocalIdFromServer(AssetType::Texture, id);
+            if(!localId) {
+                assert(!"Missing server bind for texture id");
+                MAKE_ERROR("Нет бинда сервера для текстуры id=" << id);
+            }
+            return *localId;
+        }
         return resolveLocalIdMutable(AssetType::Texture, id);
     };
 
@@ -893,10 +908,6 @@ AssetsManager::AssetId AssetsManager::getOrCreateLocalId(AssetType type, std::st
     return id;
 }
 
-AssetsManager::AssetId AssetsManager::getOrCreateLocalFromServer(AssetType type, AssetId serverId) {
-    return ensureServerLocalId(type, serverId);
-}
-
 std::optional<AssetsManager::AssetId> AssetsManager::getLocalIdFromServer(AssetType type, AssetId serverId) const {
     const auto& map = ServerToLocal[static_cast<size_t>(type)];
     if(serverId >= map.size())
@@ -933,15 +944,6 @@ AssetsManager::AssetId AssetsManager::allocateLocalId(AssetType type) {
         dk.resize(id + 1);
 
     return id;
-}
-
-AssetsManager::AssetId AssetsManager::ensureServerLocalId(AssetType type, AssetId serverId) {
-    auto& map = ServerToLocal[static_cast<size_t>(type)];
-    if(serverId >= map.size())
-        map.resize(serverId + 1, 0);
-    if(map[serverId] == 0)
-        map[serverId] = allocateLocalId(type);
-    return resolveLocalIdMutable(type, map[serverId]);
 }
 
 AssetsManager::AssetId AssetsManager::resolveLocalIdMutable(AssetType type, AssetId localId) {

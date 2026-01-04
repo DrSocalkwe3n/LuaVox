@@ -142,7 +142,7 @@ private:
         TickData ThisTickEntry;
 
     // Сюда обращается ветка обновления IServerSession, накапливая данные до SyncTick
-        // Ресурсы, ожидающие ответа от менеджера кеша
+        // Ресурсы, ожидающие либо кеш, либо сервер; используются для сопоставления hash->domain/key
         std::unordered_map<std::string, std::vector<std::pair<std::string, Hash_t>>> ResourceWait[(int) EnumAssets::MAX_ENUM];
         // Полученные изменения связок в ожидании стадии синхронизации такта
         std::vector<AssetsBindsChange> Binds;

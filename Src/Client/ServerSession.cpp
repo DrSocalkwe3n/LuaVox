@@ -330,7 +330,13 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
         std::vector<Hash_t> needRequest;
 
         for(auto& [key, res] : resources) {
-            {
+            bool cacheHit = false;
+            Hash_t actualHash = {};
+            if(res) {
+                actualHash = res->hash();
+                cacheHit = actualHash == key.Hash;
+            }
+            if(cacheHit) {
                 auto& waitingByDomain = AsyncContext.ResourceWait[(int) key.Type];
                 auto iterDomain = waitingByDomain.find(key.Domain);
                 if(iterDomain != waitingByDomain.end()) {
@@ -377,7 +383,6 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                     needRequest.push_back(key.Hash);
                 }
             } else {
-                Hash_t actualHash = res->hash();
                 if(actualHash != key.Hash) {
                     auto iter = std::lower_bound(AsyncContext.AlreadyLoading.begin(), AsyncContext.AlreadyLoading.end(), key.Hash);
                     if(iter == AsyncContext.AlreadyLoading.end() || *iter != key.Hash) {
@@ -1341,12 +1346,14 @@ coro<> ServerSession::rP_AssetsBindHH(Net::AsyncSocket &sock) {
             std::vector<uint8_t> header(headerStr.begin(), headerStr.end());
 
             auto& table = ServerIdToDK[typeIndex];
+            assert(id <= table.size());
             if(id >= table.size()) {
                 LOG.warn() << "AssetsBindHH without domain/key for id=" << id;
                 continue;
             }
 
             const auto& [domain, key] = table[id];
+            assert(!domain.empty() && !key.empty());
             if(domain.empty() && key.empty()) {
                 LOG.warn() << "AssetsBindHH missing domain/key for id=" << id;
                 continue;

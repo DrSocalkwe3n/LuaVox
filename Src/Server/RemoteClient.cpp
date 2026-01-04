@@ -59,6 +59,7 @@ Net::Packet RemoteClient::makePacket_informateAssets_DK(
 
     // Сжатие
     std::u8string compressed = compressLinear(pack.complite());
+    pack.clear();
     pack << uint8_t(ToClient::AssetsBindDK) << (const std::string&) compressed;
 
     return pack;

@@ -1600,7 +1600,8 @@ void GameServer::stepConnections() {
         AssetsPreloader::Out_fullSync fullSync = Content.AM.collectFullSync();
         std::array<std::vector<ResourceId>, static_cast<size_t>(EnumAssets::MAX_ENUM)> lost{};
 
-        std::vector<Net::Packet> packets = RemoteClient::makePackets_informateAssets_DK(fullSync.IdToDK);
+        std::vector<Net::Packet> packets;
+        packets.push_back(RemoteClient::makePacket_informateAssets_DK(fullSync.IdToDK));
         packets.push_back(RemoteClient::makePacket_informateAssets_HH(fullSync.HashHeaders, lost));
 
         for(const std::shared_ptr<RemoteClient>& client : newClients) {
@@ -1694,8 +1695,7 @@ void GameServer::reloadMods() {
         {
             AssetsPreloader::Out_bakeId baked = Content.AM.bakeIdTables();
             if(!baked.IdToDK.empty()) {
-                std::vector<Net::Packet> dkPackets = RemoteClient::makePackets_informateAssets_DK(baked.IdToDK);
-                packetsToSend.insert(packetsToSend.end(), dkPackets.begin(), dkPackets.end());
+                packetsToSend.push_back(RemoteClient::makePacket_informateAssets_DK(baked.IdToDK));
             }
         }
     }
@@ -2488,8 +2488,7 @@ void GameServer::stepSyncContent() {
     {
         AssetsPreloader::Out_bakeId baked = Content.AM.bakeIdTables();
         if(!baked.IdToDK.empty()) {
-            std::vector<Net::Packet> dkPackets = RemoteClient::makePackets_informateAssets_DK(baked.IdToDK);
-            packetsToAll.insert(packetsToAll.end(), dkPackets.begin(), dkPackets.end());
+            packetsToAll.push_back(RemoteClient::makePacket_informateAssets_DK(baked.IdToDK));
         }
     }
 

@@ -101,7 +101,6 @@ public:
     std::vector<std::pair<ResourceKey, std::optional<Resource>>> pullReads();
 
     AssetId getOrCreateLocalId(AssetType type, std::string_view domain, std::string_view key);
-    AssetId getOrCreateLocalFromServer(AssetType type, AssetId serverId);
     std::optional<AssetId> getLocalIdFromServer(AssetType type, AssetId serverId) const;
 
 private:
@@ -127,7 +126,6 @@ private:
         size_t maxCacheDirectorySize, size_t maxLifeTime);
 
     AssetId allocateLocalId(AssetType type);
-    AssetId ensureServerLocalId(AssetType type, AssetId serverId);
     AssetId resolveLocalIdMutable(AssetType type, AssetId localId);
     AssetId resolveLocalId(AssetType type, AssetId localId) const;
     void unionLocalIds(AssetType type, AssetId fromId, AssetId toId, std::optional<AssetId>* reboundFrom);

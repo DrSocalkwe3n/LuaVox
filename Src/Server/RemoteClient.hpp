@@ -411,13 +411,6 @@ private:
     void protocolError();
     coro<> readPacket(Net::AsyncSocket &sock);
     coro<> rP_System(Net::AsyncSocket &sock);
-
-    // void incrementProfile(const std::vector<TextureId_t> &textures, const std::vector<ModelId_t> &model,
-    //     const std::vector<SoundId_t> &sounds, const std::vector<FontId_t> &font
-    // );
-    // void decrementProfile(std::vector<TextureId_t> &&textures, std::vector<ModelId_t> &&model,
-    //     std::vector<SoundId_t> &&sounds, std::vector<FontId_t> &&font
-    // );
 };
 
 

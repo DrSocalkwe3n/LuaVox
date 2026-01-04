@@ -421,4 +421,11 @@ AssetsPreloader::Out_bakeId AssetsPreloader::bakeIdTables() {
     return result;
 }
 
+std::tuple<AssetsNodestate, std::vector<AssetsModel>, std::vector<AssetsTexture>>
+AssetsPreloader::getNodeDependency(const std::string& domain, const std::string& key) {
+    (void)domain;
+    (void)key;
+    return {0, {}, {}};
+}
+
 }

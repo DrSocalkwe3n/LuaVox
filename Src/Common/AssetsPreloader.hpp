@@ -14,7 +14,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#include "Client/Vulkan/AtlasPipeline/TexturePipelineProgram.hpp"
+#include "Common/TexturePipelineProgram.hpp"
 #include "Common/Abstract.hpp"
 #include "Common/Async.hpp"
 #include "TOSAsync.hpp"

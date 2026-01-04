@@ -149,11 +149,8 @@ public:
             ModelObject model;
             std::string type = "unknown";
             std::optional<AssetsManager::ParsedHeader> header;
-            if(deps && !deps->empty()) {
-                header = AssetsManager::parseHeader(*deps);
-                if(header && header->Type != EnumAssets::Model)
-                    header.reset();
-            }
+            if(deps && !deps->empty())
+                header = AssetsManager::parseHeader(EnumAssets::Model, *deps);
             const std::vector<uint32_t>* textureDeps = header ? &header->TextureDeps : nullptr;
             auto remapTextureId = [&](uint32_t placeholder) -> uint32_t {
                 if(!textureDeps || placeholder >= textureDeps->size())
@@ -900,7 +897,7 @@ public:
             }
 
             if(deps && !deps->empty()) {
-                auto header = AssetsManager::parseHeader(*deps);
+                auto header = AssetsManager::parseHeader(EnumAssets::Model, *deps);
                 if(header && header->Type == EnumAssets::Nodestate) {
                     nodestate.LocalToModel.assign(header->ModelDeps.begin(), header->ModelDeps.end());
                 }

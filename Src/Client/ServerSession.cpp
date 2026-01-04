@@ -364,7 +364,7 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
         for(AssetEntry& entry : assets) {
             entry.Hash = entry.Res.hash();
             if(const AssetsManager::BindInfo* bind = AM->getBind(entry.Type, entry.Id))
-                entry.Dependencies = AM->rebindHeader(bind->Header);
+                entry.Dependencies = AM->rebindHeader(entry.Type, bind->Header);
             else
                 entry.Dependencies.clear();
 
@@ -451,7 +451,7 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
 
                 std::vector<uint8_t> deps;
                 if(const AssetsManager::BindInfo* bind = AM->getBind(key.Type, key.Id))
-                    deps = AM->rebindHeader(bind->Header);
+                    deps = AM->rebindHeader(key.Type, bind->Header);
 
                 AssetEntry entry {
                     .Type = key.Type,
@@ -575,7 +575,13 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
             // Под рукой нет ресурса, отправим на проверку в AssetsManager
             if(needQuery) {
                 AsyncContext.ResourceWait[(int) bind.Type][bind.Domain].emplace_back(bind.Key, bind.Hash);
-                needToLoad.emplace_back(bind.Hash, bind.Type, bind.Domain, bind.Key, bind.Id);
+                needToLoad.push_back(AssetsManager::ResourceKey{
+                    .Hash = bind.Hash,
+                    .Type = bind.Type,
+                    .Domain = bind.Domain,
+                    .Key = bind.Key,
+                    .Id = bind.Id
+                });
             }
         }
 
@@ -978,7 +984,7 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
             for(AssetBindEntry& entry : abc.Binds) {
                 std::vector<uint8_t> deps;
                 if(!entry.Header.empty())
-                    deps = AM->rebindHeader(entry.Header);
+                    deps = AM->rebindHeader(entry.Type, entry.Header);
 
                 MyAssets.ExistBinds[(int) entry.Type].insert(entry.Id);
                 result.Assets_ChangeOrAdd[entry.Type].push_back(entry.Id);
@@ -1270,179 +1276,142 @@ void ServerSession::protocolError() {
 coro<> ServerSession::readPacket(Net::AsyncSocket &sock) {
     uint8_t first = co_await sock.read<uint8_t>();
 
-    switch((ToClient::L1) first) {
-    case ToClient::L1::System: co_await rP_System(sock);            co_return;
-    case ToClient::L1::Resource: co_await rP_Resource(sock);        co_return;
-    case ToClient::L1::Definition: co_await rP_Definition(sock);    co_return;
-    case ToClient::L1::Content: co_await rP_Content(sock);          co_return;
+    switch((ToClient) first) {
+    case ToClient::Init:
+        co_return;
+    case ToClient::Disconnect:
+        co_await rP_Disconnect(sock);
+        co_return;
+    case ToClient::AssetsBindDK:
+        co_await rP_AssetsBindDK(sock);
+        co_return;
+    case ToClient::AssetsBindHH:
+        co_await rP_AssetsBindHH(sock);
+        co_return;
+    case ToClient::AssetsInitSend:
+        co_await rP_AssetsInitSend(sock);
+        co_return;
+    case ToClient::AssetsNextSend:
+        co_await rP_AssetsNextSend(sock);
+        co_return;
+    case ToClient::DefinitionsUpdate:
+        co_await rP_DefinitionsUpdate(sock);
+        co_return;
+    case ToClient::ChunkVoxels:
+        co_await rP_ChunkVoxels(sock);
+        co_return;
+    case ToClient::ChunkNodes:
+        co_await rP_ChunkNodes(sock);
+        co_return;
+    case ToClient::ChunkLightPrism:
+        co_await rP_ChunkLightPrism(sock);
+        co_return;
+    case ToClient::RemoveRegion:
+        co_await rP_RemoveRegion(sock);
+        co_return;
+    case ToClient::Tick:
+        co_await rP_Tick(sock);
+        co_return;
+    case ToClient::TestLinkCameraToEntity:
+        co_await rP_TestLinkCameraToEntity(sock);
+        co_return;
+    case ToClient::TestUnlinkCamera:
+        co_await rP_TestUnlinkCamera(sock);
+        co_return;
     default:
         protocolError();
     }
 }
 
-coro<> ServerSession::rP_System(Net::AsyncSocket &sock) {
-    uint8_t second = co_await sock.read<uint8_t>();
+coro<> ServerSession::rP_Disconnect(Net::AsyncSocket &sock) {
+    EnumDisconnect type = (EnumDisconnect) co_await sock.read<uint8_t>();
+    std::string reason = co_await sock.read<std::string>();
 
-    switch((ToClient::L2System) second) {
-    case ToClient::L2System::Init:
+    if(type == EnumDisconnect::ByInterface)
+        reason = "по запросу интерфейса " + reason;
+    else if(type == EnumDisconnect::CriticalError)
+        reason = "на сервере произошла критическая ошибка " + reason;
+    else if(type == EnumDisconnect::ProtocolError)
+        reason = "ошибка протокола (сервер) " + reason;
 
-        co_return;
-    case ToClient::L2System::Disconnect:
-    {
-        EnumDisconnect type = (EnumDisconnect) co_await sock.read<uint8_t>();
-        std::string reason = co_await sock.read<std::string>();
-
-        if(type == EnumDisconnect::ByInterface)
-            reason = "по запросу интерфейса " + reason;
-        else if(type == EnumDisconnect::CriticalError)
-            reason = "на сервере произошла критическая ошибка " + reason;
-        else if(type == EnumDisconnect::ProtocolError)
-            reason = "ошибка протокола (сервер) " + reason;
-
-        LOG.info() << "Отключение от сервера: " << reason;
-
-        co_return;
-    }
-    case ToClient::L2System::LinkCameraToEntity:
-
-        co_return;
-    case ToClient::L2System::UnlinkCamera:
-
-        co_return;
-    case ToClient::L2System::SyncTick:
-        AsyncContext.TickSequence.lock()->push_back(std::move(AsyncContext.ThisTickEntry));
-        co_return;
-    default:
-        protocolError();
-    }
+    LOG.info() << "Отключение от сервера: " << reason;
+    co_return;
 }
 
-coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
-    static std::atomic<uint32_t> debugResourceLogCount = 0;
-    uint8_t second = co_await sock.read<uint8_t>();
+coro<> ServerSession::rP_AssetsBindDK(Net::AsyncSocket &sock) {
+    std::string compressed = co_await sock.read<std::string>();
+    std::u8string in((const char8_t*) compressed.data(), compressed.size());
+    std::u8string data = unCompressLinear(in);
+    Net::LinearReader lr(data);
 
-    switch((ToClient::L2Resource) second) {
-    case ToClient::L2Resource::Bind:
-    {
-        uint32_t count = co_await sock.read<uint32_t>();
-        std::vector<AssetBindEntry> binds;
-        binds.reserve(count);
+    uint16_t domainsCount = lr.read<uint16_t>();
+    std::vector<std::string> domains;
+    domains.reserve(domainsCount);
+    for(uint16_t i = 0; i < domainsCount; ++i)
+        domains.push_back(lr.read<std::string>());
 
-        for(size_t iter = 0; iter < count; iter++) {
-            uint8_t type = co_await sock.read<uint8_t>();
-
-            if(type >= (int) EnumAssets::MAX_ENUM)
-                protocolError();
-
-            uint32_t id = co_await sock.read<uint32_t>();
-            std::string domain, key;
-            domain = co_await sock.read<std::string>();
-            key = co_await sock.read<std::string>();
-            Hash_t hash;
-            co_await sock.read((std::byte*) hash.data(), hash.size());
-            uint32_t headerSize = co_await sock.read<uint32_t>();
-            std::vector<uint8_t> header;
-            if(headerSize > 0) {
-                header.resize(headerSize);
-                co_await sock.read((std::byte*) header.data(), header.size());
-            }
-
-            AssetsManager::BindResult bindResult = AM->bindServerResource(
-                (EnumAssets) type, (ResourceId) id, domain, key, hash, header);
-
-            if(!bindResult.Changed)
+    for(size_t type = 0; type < static_cast<size_t>(EnumAssets::MAX_ENUM); ++type) {
+        uint32_t count = lr.read<uint32_t>();
+        for(uint32_t i = 0; i < count; ++i) {
+            uint16_t domainId = lr.read<uint16_t>();
+            std::string key = lr.read<std::string>();
+            if(domainId >= domains.size())
                 continue;
-
-            binds.emplace_back(AssetBindEntry{
-                .Type = (EnumAssets) type,
-                .Id = bindResult.LocalId,
-                .Domain = std::move(domain),
-                .Key = std::move(key),
-                .Hash = hash,
-                .Header = std::move(header)
-            });
-
-            if(binds.back().Domain == "test"
-                && (binds.back().Type == EnumAssets::Nodestate
-                    || binds.back().Type == EnumAssets::Model
-                    || binds.back().Type == EnumAssets::Texture))
-            {
-                uint32_t idx = debugResourceLogCount.fetch_add(1);
-                if(idx < 128) {
-                    LOG.debug() << "Bind asset type=" << assetTypeName(binds.back().Type)
-                        << " id=" << binds.back().Id
-                        << " key=" << binds.back().Domain << ':' << binds.back().Key
-                        << " hash=" << int(binds.back().Hash[0]) << '.'
-                        << int(binds.back().Hash[1]) << '.'
-                        << int(binds.back().Hash[2]) << '.'
-                        << int(binds.back().Hash[3]);
-                }
-            }
-        }
-
-        AsyncContext.AssetsBinds.lock()->push_back(AssetsBindsChange(binds, {}));
-        co_return;
-    }
-    case ToClient::L2Resource::BindDK:
-    {
-        uint32_t count = co_await sock.read<uint32_t>();
-        for(size_t iter = 0; iter < count; iter++) {
-            uint8_t type = co_await sock.read<uint8_t>();
-            if(type >= (int) EnumAssets::MAX_ENUM)
-                protocolError();
-
-            std::string domain = co_await sock.read<std::string>();
-            std::string key = co_await sock.read<std::string>();
 
             ResourceId serverId = NextServerId[type]++;
             auto& table = ServerIdToDK[type];
             if(table.size() <= serverId)
-                table.resize(serverId+1);
-            table[serverId] = {std::move(domain), std::move(key)};
+                table.resize(serverId + 1);
+            table[serverId] = {domains[domainId], std::move(key)};
         }
-        co_return;
     }
-    case ToClient::L2Resource::BindHash:
-    {
+
+    co_return;
+}
+
+coro<> ServerSession::rP_AssetsBindHH(Net::AsyncSocket &sock) {
+    static std::atomic<uint32_t> debugResourceLogCount = 0;
+    AssetsBindsChange abc;
+
+    for(size_t typeIndex = 0; typeIndex < static_cast<size_t>(EnumAssets::MAX_ENUM); ++typeIndex) {
         uint32_t count = co_await sock.read<uint32_t>();
+        if(count == 0)
+            continue;
+
         std::vector<AssetBindEntry> binds;
         binds.reserve(count);
 
-        for(size_t iter = 0; iter < count; iter++) {
-            uint8_t type = co_await sock.read<uint8_t>();
-            if(type >= (int) EnumAssets::MAX_ENUM)
-                protocolError();
-
+        for(size_t iter = 0; iter < count; ++iter) {
             uint32_t id = co_await sock.read<uint32_t>();
             Hash_t hash;
             co_await sock.read((std::byte*) hash.data(), hash.size());
-            uint32_t headerSize = co_await sock.read<uint32_t>();
-            std::vector<uint8_t> header;
-            if(headerSize > 0) {
-                header.resize(headerSize);
-                co_await sock.read((std::byte*) header.data(), header.size());
-            }
+            std::string headerStr = co_await sock.read<std::string>();
+            std::vector<uint8_t> header(headerStr.begin(), headerStr.end());
 
-            auto& table = ServerIdToDK[type];
+            auto& table = ServerIdToDK[typeIndex];
             if(id >= table.size()) {
-                LOG.warn() << "BindHash without domain/key for id=" << id;
+                LOG.warn() << "AssetsBindHH without domain/key for id=" << id;
                 continue;
             }
 
             const auto& [domain, key] = table[id];
             if(domain.empty() && key.empty()) {
-                LOG.warn() << "BindHash missing domain/key for id=" << id;
+                LOG.warn() << "AssetsBindHH missing domain/key for id=" << id;
                 continue;
             }
 
+            EnumAssets type = static_cast<EnumAssets>(typeIndex);
             AssetsManager::BindResult bindResult = AM->bindServerResource(
-                (EnumAssets) type, (ResourceId) id, domain, key, hash, header);
+                type, (ResourceId) id, domain, key, hash, header);
 
-            if(!bindResult.Changed)
+            if(bindResult.ReboundFrom)
+                abc.Lost[typeIndex].push_back(*bindResult.ReboundFrom);
+
+            if(!bindResult.Changed && !bindResult.ReboundFrom)
                 continue;
 
             binds.emplace_back(AssetBindEntry{
-                .Type = (EnumAssets) type,
+                .Type = type,
                 .Id = bindResult.LocalId,
                 .Domain = domain,
                 .Key = key,
@@ -1468,307 +1437,264 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
             }
         }
 
-        if(!binds.empty())
-            AsyncContext.AssetsBinds.lock()->push_back(AssetsBindsChange(binds, {}));
+        if(!binds.empty()) {
+            abc.Binds.append_range(binds);
+            binds.clear();
+        }
+    }
+
+    bool hasLost = false;
+    for(const auto& list : abc.Lost) {
+        if(!list.empty()) {
+            hasLost = true;
+            break;
+        }
+    }
+
+    if(!abc.Binds.empty() || hasLost)
+        AsyncContext.AssetsBinds.lock()->push_back(std::move(abc));
+    else
+        co_return;
+
+    co_return;
+}
+
+coro<> ServerSession::rP_AssetsInitSend(Net::AsyncSocket &sock) {
+    static std::atomic<uint32_t> debugResourceLogCount = 0;
+    uint32_t size = co_await sock.read<uint32_t>();
+    Hash_t hash;
+    co_await sock.read((std::byte*) hash.data(), hash.size());
+
+    bool found = false;
+    EnumAssets type = EnumAssets::Texture;
+    std::string domain;
+    std::string key;
+
+    for(int typeIndex = 0; typeIndex < (int) EnumAssets::MAX_ENUM && !found; ++typeIndex) {
+        auto& waitingByDomain = AsyncContext.ResourceWait[typeIndex];
+        for(auto iterDomain = waitingByDomain.begin(); iterDomain != waitingByDomain.end() && !found; ) {
+            auto& entries = iterDomain->second;
+            for(size_t i = 0; i < entries.size(); ++i) {
+                if(entries[i].second == hash) {
+                    type = static_cast<EnumAssets>(typeIndex);
+                    domain = iterDomain->first;
+                    key = entries[i].first;
+                    entries.erase(entries.begin() + i);
+                    if(entries.empty())
+                        iterDomain = waitingByDomain.erase(iterDomain);
+                    else
+                        ++iterDomain;
+                    found = true;
+                    break;
+                }
+            }
+            if(!found)
+                ++iterDomain;
+        }
+    }
+
+    if(!found) {
+        LOG.warn() << "AssetsInitSend for unknown hash " << int(hash[0]) << '.'
+            << int(hash[1]) << '.' << int(hash[2]) << '.' << int(hash[3]);
+        AsyncContext.AssetsLoading[hash] = AssetLoading{
+            EnumAssets::Texture, 0, {}, {},
+            std::u8string(size, '\0'), 0
+        };
         co_return;
     }
-    case ToClient::L2Resource::Lost:
+
+    ResourceId localId = AM->getOrCreateLocalId(type, domain, key);
+
+    if(domain == "test"
+        && (type == EnumAssets::Nodestate
+            || type == EnumAssets::Model
+            || type == EnumAssets::Texture))
     {
-        uint32_t count = co_await sock.read<uint32_t>();
-        AssetsBindsChange abc;
-
-        for(size_t iter = 0; iter < count; iter++) {
-            uint8_t type = co_await sock.read<uint8_t>();
-            uint32_t id = co_await sock.read<uint32_t>();
-
-            if(type >= (int) EnumAssets::MAX_ENUM)
-                protocolError();
-
-            auto localId = AM->unbindServerResource((EnumAssets) type, id);
-            if(!localId)
-                continue;
-
-            abc.Lost[(int) type].push_back(*localId);
+        uint32_t idx = debugResourceLogCount.fetch_add(1);
+        if(idx < 128) {
+            LOG.debug() << "AssetsInitSend type=" << assetTypeName(type)
+                << " id=" << localId
+                << " key=" << domain << ':' << key
+                << " size=" << size;
         }
+    }
 
-        AsyncContext.AssetsBinds.lock()->emplace_back(std::move(abc));
+    AsyncContext.AssetsLoading[hash] = AssetLoading{
+        type, localId, std::move(domain), std::move(key),
+        std::u8string(size, '\0'), 0
+    };
+
+    co_return;
+}
+
+coro<> ServerSession::rP_AssetsNextSend(Net::AsyncSocket &sock) {
+    static std::atomic<uint32_t> debugResourceLogCount = 0;
+    Hash_t hash;
+    co_await sock.read((std::byte*) hash.data(), hash.size());
+    uint32_t size = co_await sock.read<uint32_t>();
+
+    if(!AsyncContext.AssetsLoading.contains(hash)) {
+        std::vector<std::byte> discard(size);
+        co_await sock.read(discard.data(), size);
         co_return;
     }
-    case ToClient::L2Resource::InitResSend:
-    {
-        uint32_t size = co_await sock.read<uint32_t>();
-        Hash_t hash;
-        co_await sock.read((std::byte*) hash.data(), hash.size());
-        ResourceId id = co_await sock.read<uint32_t>();
-        EnumAssets type = (EnumAssets) co_await sock.read<uint8_t>();
 
-        if(type >= EnumAssets::MAX_ENUM)
-            protocolError();
+    AssetLoading& al = AsyncContext.AssetsLoading.at(hash);
+    if(al.Data.size() - al.Offset < size)
+        MAKE_ERROR("Несоответствие ожидаемого размера ресурса");
 
-        std::string domain = co_await sock.read<std::string>();
-        std::string key = co_await sock.read<std::string>();
-        ResourceId localId = 0;
-        if(auto mapped = AM->getLocalIdFromServer(type, id)) {
-            localId = *mapped;
-        } else {
-            localId = AM->getId(type, domain, key);
-            AM->bindServerResource(type, id, domain, key, hash, {});
-        }
+    co_await sock.read((std::byte*) al.Data.data() + al.Offset, size);
+    al.Offset += size;
 
-        if(domain == "test"
-            && (type == EnumAssets::Nodestate
-                || type == EnumAssets::Model
-                || type == EnumAssets::Texture))
+    if(al.Offset != al.Data.size())
+        co_return;
+
+    if(!al.Domain.empty() || !al.Key.empty()) {
+        if(al.Domain == "test"
+            && (al.Type == EnumAssets::Nodestate
+                || al.Type == EnumAssets::Model
+                || al.Type == EnumAssets::Texture))
         {
             uint32_t idx = debugResourceLogCount.fetch_add(1);
             if(idx < 128) {
-                LOG.debug() << "InitResSend type=" << assetTypeName(type)
-                    << " id=" << localId
-                    << " key=" << domain << ':' << key
-                    << " size=" << size;
+                LOG.debug() << "Resource loaded type=" << assetTypeName(al.Type)
+                    << " id=" << al.Id
+                    << " key=" << al.Domain << ':' << al.Key
+                    << " size=" << al.Data.size();
             }
         }
 
-        AsyncContext.AssetsLoading[hash] = AssetLoading{
-            type, localId, std::move(domain), std::move(key),
-            std::u8string(size, '\0'), 0
-        };
-
-        co_return;
+        AsyncContext.LoadedAssets.lock()->emplace_back(AssetEntry{
+            .Type = al.Type,
+            .Id = al.Id,
+            .Domain = std::move(al.Domain),
+            .Key = std::move(al.Key),
+            .Res = std::move(al.Data),
+            .Hash = hash
+        });
     }
-    case ToClient::L2Resource::ChunkSend:
-    {
-        Hash_t hash;
-        co_await sock.read((std::byte*) hash.data(), hash.size());
-        try {
-            uint32_t size = co_await sock.read<uint32_t>();
-            assert(AsyncContext.AssetsLoading.contains(hash));
-            AssetLoading& al = AsyncContext.AssetsLoading.at(hash);
-            if(al.Data.size()-al.Offset < size)
-                MAKE_ERROR("Несоответствие ожидаемого размера ресурса");
 
-            co_await sock.read((std::byte*) al.Data.data() + al.Offset, size);
-            al.Offset += size;
+    AsyncContext.AssetsLoading.erase(AsyncContext.AssetsLoading.find(hash));
 
-            if(al.Offset == al.Data.size()) {
-                // Ресурс полностью загружен
-                if(al.Domain == "test"
-                    && (al.Type == EnumAssets::Nodestate
-                        || al.Type == EnumAssets::Model
-                        || al.Type == EnumAssets::Texture))
-                {
-                    uint32_t idx = debugResourceLogCount.fetch_add(1);
-                    if(idx < 128) {
-                        LOG.debug() << "Resource loaded type=" << assetTypeName(al.Type)
-                            << " id=" << al.Id
-                            << " key=" << al.Domain << ':' << al.Key
-                            << " size=" << al.Data.size();
+    auto iter = std::lower_bound(AsyncContext.AlreadyLoading.begin(), AsyncContext.AlreadyLoading.end(), hash);
+    if(iter != AsyncContext.AlreadyLoading.end() && *iter == hash)
+        AsyncContext.AlreadyLoading.erase(iter);
+
+    co_return;
+}
+
+coro<> ServerSession::rP_DefinitionsUpdate(Net::AsyncSocket &sock) {
+    static std::atomic<uint32_t> debugDefLogCount = 0;
+    uint32_t typeCount = co_await sock.read<uint32_t>();
+    typeCount = std::min<uint32_t>(typeCount, static_cast<uint32_t>(EnumDefContent::MAX_ENUM));
+
+    for(uint32_t type = 0; type < typeCount; ++type) {
+        uint32_t count = co_await sock.read<uint32_t>();
+        for(uint32_t i = 0; i < count; ++i) {
+            ResourceId id = co_await sock.read<ResourceId>();
+            std::string dataStr = co_await sock.read<std::string>();
+            (void)dataStr;
+
+            if(type == static_cast<uint32_t>(EnumDefContent::Node)) {
+                DefNode_t def;
+                def.NodestateId = 0;
+                def.TexId = id;
+                AsyncContext.ThisTickEntry.Profile_Node_AddOrChange.emplace_back(id, def);
+                if(id < 32) {
+                    uint32_t idx = debugDefLogCount.fetch_add(1);
+                    if(idx < 64) {
+                        LOG.debug() << "DefNode id=" << id
+                            << " nodestate=" << def.NodestateId
+                            << " tex=" << def.TexId;
                     }
                 }
-
-                AsyncContext.LoadedAssets.lock()->emplace_back(AssetEntry{
-                    .Type = al.Type,
-                    .Id = al.Id,
-                    .Domain = std::move(al.Domain),
-                    .Key = std::move(al.Key),
-                    .Res = std::move(al.Data),
-                    .Hash = hash
-                });
-
-                AsyncContext.AssetsLoading.erase(AsyncContext.AssetsLoading.find(hash));
-
-                auto iter = std::lower_bound(AsyncContext.AlreadyLoading.begin(), AsyncContext.AlreadyLoading.end(), hash);
-                if(iter != AsyncContext.AlreadyLoading.end() && *iter == hash)
-                    AsyncContext.AlreadyLoading.erase(iter);
-            }
-        } catch(const std::exception& exc) {
-            std::string err = exc.what();
-            int g = 0;
-        }
-    
-        co_return;
-    }
-    default:
-        protocolError();
-    }
-}
-
-coro<> ServerSession::rP_Definition(Net::AsyncSocket &sock) {
-    static std::atomic<uint32_t> debugDefLogCount = 0;
-    uint8_t second = co_await sock.read<uint8_t>();
-
-    switch((ToClient::L2Definition) second) {
-    case ToClient::L2Definition::World: {
-        DefWorldId cdId = co_await sock.read<DefWorldId>();
-
-        co_return;
-    }
-    case ToClient::L2Definition::FreeWorld: {
-        DefWorldId cdId = co_await sock.read<DefWorldId>();
-
-        co_return;
-    }
-    case ToClient::L2Definition::Voxel: {
-        DefVoxelId cdId = co_await sock.read<DefVoxelId>();
-
-        co_return;
-    }
-    case ToClient::L2Definition::FreeVoxel: {
-        DefVoxelId cdId = co_await sock.read<DefVoxelId>();
-    
-        co_return;
-    }
-    case ToClient::L2Definition::Node:
-    {
-        DefNode_t def;
-        DefNodeId id = co_await sock.read<DefNodeId>();
-        ResourceId serverNodestate = co_await sock.read<uint32_t>();
-        if(auto localId = AM->getLocalIdFromServer(EnumAssets::Nodestate, serverNodestate))
-            def.NodestateId = *localId;
-        else
-            def.NodestateId = 0;
-        def.TexId = id;
-
-        if(id < 32) {
-            uint32_t idx = debugDefLogCount.fetch_add(1);
-            if(idx < 64) {
-                LOG.debug() << "DefNode id=" << id
-                    << " nodestate=" << def.NodestateId
-                    << " tex=" << def.TexId;
             }
         }
+    }
 
-        AsyncContext.ThisTickEntry.Profile_Node_AddOrChange.emplace_back(id, def);
+    uint32_t lostCount = co_await sock.read<uint32_t>();
+    lostCount = std::min<uint32_t>(lostCount, static_cast<uint32_t>(EnumDefContent::MAX_ENUM));
+    for(uint32_t type = 0; type < lostCount; ++type) {
+        uint32_t count = co_await sock.read<uint32_t>();
+        for(uint32_t i = 0; i < count; ++i) {
+            ResourceId id = co_await sock.read<ResourceId>();
+            if(type == static_cast<uint32_t>(EnumDefContent::Node))
+                AsyncContext.ThisTickEntry.Profile_Node_Lost.push_back(id);
+        }
+    }
 
-        co_return;
+    uint32_t dkCount = co_await sock.read<uint32_t>();
+    dkCount = std::min<uint32_t>(dkCount, static_cast<uint32_t>(EnumDefContent::MAX_ENUM));
+    for(uint32_t type = 0; type < dkCount; ++type) {
+        uint32_t count = co_await sock.read<uint32_t>();
+        for(uint32_t i = 0; i < count; ++i) {
+            std::string key = co_await sock.read<std::string>();
+            std::string domain = co_await sock.read<std::string>();
+            (void)key;
+            (void)domain;
+        }
     }
-    case ToClient::L2Definition::FreeNode:
-    {
-        DefNodeId id = co_await sock.read<DefNodeId>();
-        AsyncContext.ThisTickEntry.Profile_Node_Lost.push_back(id);
 
-        co_return;
-    }
-    case ToClient::L2Definition::Portal:
-
-        co_return;
-    case ToClient::L2Definition::FreePortal:
-    
-        co_return;
-    case ToClient::L2Definition::Entity:
-    {
-        DefEntityId id = co_await sock.read<DefEntityId>();
-        DefEntityInfo def;
-        AsyncContext.ThisTickEntry.Profile_Entity_AddOrChange.emplace_back(id, def);
-        co_return;
-    }
-    case ToClient::L2Definition::FreeEntity:
-    {
-        DefEntityId id = co_await sock.read<DefEntityId>();
-        AsyncContext.ThisTickEntry.Profile_Entity_Lost.push_back(id);
-        co_return;
-    }
-    default:
-        protocolError();
-    }
+    co_return;
 }
 
-coro<> ServerSession::rP_Content(Net::AsyncSocket &sock) {
-    uint8_t second = co_await sock.read<uint8_t>();
+coro<> ServerSession::rP_ChunkVoxels(Net::AsyncSocket &sock) {
+    WorldId_t wcId = co_await sock.read<WorldId_t>();
+    Pos::GlobalChunk pos;
+    pos.unpack(co_await sock.read<Pos::GlobalChunk::Pack>());
 
-    switch((ToClient::L2Content) second) {
-    case ToClient::L2Content::World: {
-        WorldId_t wId = co_await sock.read<uint32_t>();
-        AsyncContext.ThisTickEntry.Worlds_AddOrChange.emplace_back(wId, nullptr);
-        co_return;
-    }
-    case ToClient::L2Content::RemoveWorld: {
-        WorldId_t wId = co_await sock.read<uint32_t>();
-        AsyncContext.ThisTickEntry.Worlds_Lost.push_back(wId);
-        co_return;
-    }
-    case ToClient::L2Content::Portal:
+    uint32_t compressedSize = co_await sock.read<uint32_t>();
+    assert(compressedSize <= std::pow(2, 24));
+    std::u8string compressed(compressedSize, '\0');
+    co_await sock.read((std::byte*) compressed.data(), compressedSize);
 
-        co_return;
-    case ToClient::L2Content::RemovePortal:
-    
-        co_return;
-    case ToClient::L2Content::Entity:
-    {
-        EntityId_t id = co_await sock.read<EntityId_t>();
-        DefEntityId defId = co_await sock.read<DefEntityId>();
-        WorldId_t worldId = co_await sock.read<WorldId_t>();
+    AsyncContext.ThisTickEntry.Chunks_AddOrChange_Voxel[wcId].insert({pos, std::move(compressed)});
+    co_return;
+}
 
-        Pos::Object pos;
-        pos.x = co_await sock.read<decltype(pos.x)>();
-        pos.y = co_await sock.read<decltype(pos.y)>();
-        pos.z = co_await sock.read<decltype(pos.z)>();
+coro<> ServerSession::rP_ChunkNodes(Net::AsyncSocket &sock) {
+    WorldId_t wcId = co_await sock.read<WorldId_t>();
+    Pos::GlobalChunk pos;
+    pos.unpack(co_await sock.read<Pos::GlobalChunk::Pack>());
 
-        ToServer::PacketQuat q;
-        for(int iter = 0; iter < 5; iter++)
-            q.Data[iter] = co_await sock.read<uint8_t>();
+    uint32_t compressedSize = co_await sock.read<uint32_t>();
+    assert(compressedSize <= std::pow(2, 24));
+    std::u8string compressed(compressedSize, '\0');
+    co_await sock.read((std::byte*) compressed.data(), compressedSize);
 
-        EntityInfo info;
-        info.DefId = defId;
-        info.WorldId = worldId;
-        info.Pos = pos;
-        info.Quat = q.toQuat();
+    AsyncContext.ThisTickEntry.Chunks_AddOrChange_Node[wcId].insert({pos, std::move(compressed)});
+    co_return;
+}
 
-        AsyncContext.ThisTickEntry.Entity_AddOrChange.emplace_back(id, info);
-        co_return;
-    }
-    case ToClient::L2Content::RemoveEntity:
-    {
-        EntityId_t id = co_await sock.read<EntityId_t>();
-        AsyncContext.ThisTickEntry.Entity_Lost.push_back(id);
-        co_return;
-    }
-    case ToClient::L2Content::ChunkVoxels:
-    {
-        WorldId_t wcId = co_await sock.read<WorldId_t>();
-        Pos::GlobalChunk pos;
-        pos.unpack(co_await sock.read<Pos::GlobalChunk::Pack>());
+coro<> ServerSession::rP_ChunkLightPrism(Net::AsyncSocket &sock) {
+    (void)sock;
+    co_return;
+}
 
-        uint32_t compressedSize = co_await sock.read<uint32_t>();
-        assert(compressedSize <= std::pow(2, 24));
-        std::u8string compressed(compressedSize, '\0');
-        co_await sock.read((std::byte*) compressed.data(), compressedSize);
+coro<> ServerSession::rP_RemoveRegion(Net::AsyncSocket &sock) {
+    WorldId_t wcId = co_await sock.read<WorldId_t>();
+    Pos::GlobalRegion pos;
+    pos.unpack(co_await sock.read<Pos::GlobalRegion::Pack>());
 
-        AsyncContext.ThisTickEntry.Chunks_AddOrChange_Node[wcId].insert({pos, std::move(compressed)});
+    AsyncContext.ThisTickEntry.Regions_Lost[wcId].push_back(pos);
+    co_return;
+}
 
-        co_return;
-    }
+coro<> ServerSession::rP_Tick(Net::AsyncSocket &sock) {
+    (void)sock;
+    AsyncContext.TickSequence.lock()->push_back(std::move(AsyncContext.ThisTickEntry));
+    AsyncContext.ThisTickEntry = {};
+    co_return;
+}
 
-    case ToClient::L2Content::ChunkNodes:
-    {
-        WorldId_t wcId = co_await sock.read<WorldId_t>();
-        Pos::GlobalChunk pos;
-        pos.unpack(co_await sock.read<Pos::GlobalChunk::Pack>());
+coro<> ServerSession::rP_TestLinkCameraToEntity(Net::AsyncSocket &sock) {
+    (void) sock;
+    co_return;
+}
 
-        uint32_t compressedSize = co_await sock.read<uint32_t>();
-        assert(compressedSize <= std::pow(2, 24));
-        std::u8string compressed(compressedSize, '\0');
-        co_await sock.read((std::byte*) compressed.data(), compressedSize);
-
-        AsyncContext.ThisTickEntry.Chunks_AddOrChange_Node[wcId].insert({pos, std::move(compressed)});
-
-        co_return;
-    }
-    case ToClient::L2Content::ChunkLightPrism:
-
-        co_return;
-    case ToClient::L2Content::RemoveRegion: {
-        WorldId_t wcId = co_await sock.read<WorldId_t>();
-        Pos::GlobalRegion pos;
-        pos.unpack(co_await sock.read<Pos::GlobalRegion::Pack>());
-
-        AsyncContext.ThisTickEntry.Regions_Lost[wcId].push_back(pos);
-
-        co_return;
-    }
-    default:
-        protocolError();
-    }
+coro<> ServerSession::rP_TestUnlinkCamera(Net::AsyncSocket &sock) {
+    (void) sock;
+    co_return;
 }
 
 }

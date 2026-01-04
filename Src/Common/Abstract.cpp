@@ -1,5 +1,5 @@
 #include "Abstract.hpp"
-#include "Client/Vulkan/AtlasPipeline/TexturePipelineProgram.hpp"
+#include "Common/TexturePipelineProgram.hpp"
 #include "Common/Net.hpp"
 #include "TOSLib.hpp"
 #include <boost/interprocess/file_mapping.hpp>
@@ -783,7 +783,7 @@ void unCompressNodes_bit(const std::u8string& compressed, Node* ptr) {
     }
 }
 
-void unCompressNodes(const std::u8string& compressed, Node* ptr) {
+void unCompressNodes(std::u8string_view compressed, Node* ptr) {
     const std::u8string& next = unCompressLinear(compressed);
     const Node *lPtr = (const Node*) next.data();
     std::copy(lPtr, lPtr+16*16*16, ptr);

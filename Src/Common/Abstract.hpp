@@ -973,6 +973,57 @@ struct HeadlessModel {
     std::u8string dump() const;
 };
 
+struct TexturePipeline {
+    std::vector<uint32_t> BinTextures;
+    std::vector<uint8_t> Pipeline;
+
+    bool operator==(const TexturePipeline& other) const {
+        return BinTextures == other.BinTextures && Pipeline == other.Pipeline;
+    }
+};
+
+struct PreparedModel {
+    struct SubModel {
+        std::string Domain;
+        std::string Key;
+    };
+
+    using Cuboid = HeadlessModel::Cuboid;
+
+    std::unordered_map<std::string, TexturePipeline> CompiledTextures;
+    std::vector<Cuboid> Cuboids;
+    std::vector<SubModel> SubModels;
+
+    PreparedModel() = default;
+    PreparedModel(const std::u8string& data) { load(data); }
+    PreparedModel(std::u8string_view data) { load(data); }
+
+    void load(std::u8string_view data) {
+        HeadlessModel model;
+        model.load(data);
+        Cuboids = model.Cuboids;
+
+        CompiledTextures.clear();
+        CompiledTextures.reserve(model.Textures.size());
+        for(const auto& [key, id] : model.Textures) {
+            TexturePipeline pipe;
+            pipe.BinTextures.push_back(id);
+            CompiledTextures.emplace(key, std::move(pipe));
+        }
+    }
+};
+
+struct PreparedNodeState : public HeadlessNodeState {
+    using HeadlessNodeState::Model;
+    using HeadlessNodeState::VectorModel;
+
+    std::vector<AssetsModel> LocalToModel;
+
+    PreparedNodeState() = default;
+    PreparedNodeState(std::u8string_view data) { load(data); }
+    PreparedNodeState(const std::u8string& data) { load(data); }
+};
+
 struct PreparedGLTF {
     std::vector<std::string> TextureKey;
     std::unordered_map<std::string, uint16_t> Textures;
@@ -1066,6 +1117,22 @@ struct hash<LV::Hash_t> {
     std::size_t operator()(const LV::Hash_t& hash) const noexcept {
         std::size_t v = 14695981039346656037ULL;
         for (const auto& byte : hash) {
+            v ^= static_cast<std::size_t>(byte);
+            v *= 1099511628211ULL;
+        }
+        return v;
+    }
+};
+
+template <>
+struct hash<LV::TexturePipeline> {
+    std::size_t operator()(const LV::TexturePipeline& pipe) const noexcept {
+        std::size_t v = 14695981039346656037ULL;
+        for (uint32_t id : pipe.BinTextures) {
+            v ^= static_cast<std::size_t>(id);
+            v *= 1099511628211ULL;
+        }
+        for (uint8_t byte : pipe.Pipeline) {
             v ^= static_cast<std::size_t>(byte);
             v *= 1099511628211ULL;
         }

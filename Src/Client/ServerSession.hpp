@@ -191,10 +191,19 @@ private:
     coro<> run(AsyncUseControl::Lock);
     void protocolError();
     coro<> readPacket(Net::AsyncSocket &sock);
-    coro<> rP_System(Net::AsyncSocket &sock);
-    coro<> rP_Resource(Net::AsyncSocket &sock);
-    coro<> rP_Definition(Net::AsyncSocket &sock);
-    coro<> rP_Content(Net::AsyncSocket &sock);
+    coro<> rP_Disconnect(Net::AsyncSocket &sock);
+    coro<> rP_AssetsBindDK(Net::AsyncSocket &sock);
+    coro<> rP_AssetsBindHH(Net::AsyncSocket &sock);
+    coro<> rP_AssetsInitSend(Net::AsyncSocket &sock);
+    coro<> rP_AssetsNextSend(Net::AsyncSocket &sock);
+    coro<> rP_DefinitionsUpdate(Net::AsyncSocket &sock);
+    coro<> rP_ChunkVoxels(Net::AsyncSocket &sock);
+    coro<> rP_ChunkNodes(Net::AsyncSocket &sock);
+    coro<> rP_ChunkLightPrism(Net::AsyncSocket &sock);
+    coro<> rP_RemoveRegion(Net::AsyncSocket &sock);
+    coro<> rP_Tick(Net::AsyncSocket &sock);
+    coro<> rP_TestLinkCameraToEntity(Net::AsyncSocket &sock);
+    coro<> rP_TestUnlinkCamera(Net::AsyncSocket &sock);
 
 
     // Нужен сокет, на котором только что был согласован игровой протокол (asyncInitGameProtocol)

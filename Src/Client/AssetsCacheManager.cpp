@@ -1,8 +1,9 @@
-#include "AssetsManager.hpp"
+#include "AssetsCacheManager.hpp"
 #include "Common/Abstract.hpp"
 #include "sqlite3.h"
 #include <chrono>
 #include <cstddef>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -13,11 +14,10 @@
 namespace LV::Client {
 
 
-AssetsManager::AssetsManager(boost::asio::io_context &ioc, const fs::path &cachePath,
+AssetsCacheManager::AssetsCacheManager(boost::asio::io_context &ioc, const fs::path &cachePath,
         size_t maxCacheDirectorySize, size_t maxLifeTime)
     :   IAsyncDestructible(ioc), CachePath(cachePath)
 {
-    NextId.fill(0);
     {
         auto lock = Changes.lock();
         lock->MaxCacheDatabaseSize = maxCacheDirectorySize;
@@ -108,6 +108,14 @@ AssetsManager::AssetsManager(boost::asio::io_context &ioc, const fs::path &cache
         }
 
         sql = R"(
+            SELECT sha256, size FROM disk_cache ORDER BY last_used ASC;
+        )";
+
+        if(sqlite3_prepare_v2(DB, sql, -1, &STMT_DISK_OLDEST, nullptr) != SQLITE_OK) {
+            MAKE_ERROR("Не удалось подготовить запрос STMT_DISK_OLDEST: " << sqlite3_errmsg(DB));
+        }
+
+        sql = R"(
             INSERT OR REPLACE INTO inline_cache (sha256, last_used, data)
             VALUES (?, ?, ?);
         )";
@@ -148,18 +156,35 @@ AssetsManager::AssetsManager(boost::asio::io_context &ioc, const fs::path &cache
         if(sqlite3_prepare_v2(DB, sql, -1, &STMT_INLINE_COUNT, nullptr) != SQLITE_OK) {
             MAKE_ERROR("Не удалось подготовить запрос STMT_INLINE_COUNT: " << sqlite3_errmsg(DB));
         }
+
+        sql = R"(
+            DELETE FROM inline_cache WHERE sha256=?;
+        )";
+
+        if(sqlite3_prepare_v2(DB, sql, -1, &STMT_INLINE_REMOVE, nullptr) != SQLITE_OK) {
+            MAKE_ERROR("Не удалось подготовить запрос STMT_INLINE_REMOVE: " << sqlite3_errmsg(DB));
+        }
+
+        sql = R"(
+            SELECT sha256, LENGTH(data) FROM inline_cache ORDER BY last_used ASC;
+        )";
+
+        if(sqlite3_prepare_v2(DB, sql, -1, &STMT_INLINE_OLDEST, nullptr) != SQLITE_OK) {
+            MAKE_ERROR("Не удалось подготовить запрос STMT_INLINE_OLDEST: " << sqlite3_errmsg(DB));
+        }
     }
 
     LOG.debug() << "Успешно, запускаем поток обработки";
-    OffThread = std::thread(&AssetsManager::readWriteThread, this, AUC.use());
+    OffThread = std::thread(&AssetsCacheManager::readWriteThread, this, AUC.use());
     LOG.info() << "Инициализировано хранилище кеша: " << CachePath.c_str();
 }
 
-AssetsManager::~AssetsManager() {
+AssetsCacheManager::~AssetsCacheManager() {
     for(sqlite3_stmt* stmt : {
         STMT_DISK_INSERT, STMT_DISK_UPDATE_TIME, STMT_DISK_REMOVE, STMT_DISK_CONTAINS,
-        STMT_DISK_SUM, STMT_DISK_COUNT, STMT_INLINE_INSERT, STMT_INLINE_GET,
-        STMT_INLINE_UPDATE_TIME, STMT_INLINE_SUM, STMT_INLINE_COUNT
+        STMT_DISK_SUM, STMT_DISK_COUNT, STMT_DISK_OLDEST, STMT_INLINE_INSERT,
+        STMT_INLINE_GET, STMT_INLINE_UPDATE_TIME, STMT_INLINE_SUM,
+        STMT_INLINE_COUNT, STMT_INLINE_REMOVE, STMT_INLINE_OLDEST
     }) {
         if(stmt)
             sqlite3_finalize(stmt);
@@ -173,230 +198,19 @@ AssetsManager::~AssetsManager() {
     LOG.info() << "Хранилище кеша закрыто";
 }
 
-ResourceId AssetsManager::getId(EnumAssets type, const std::string& domain, const std::string& key) {
-    std::lock_guard lock(MapMutex);
-    auto& typeTable = DKToId[type];
-    auto& domainTable = typeTable[domain];
-    if(auto iter = domainTable.find(key); iter != domainTable.end())
-        return iter->second;
-
-    ResourceId id = NextId[(int) type]++;
-    domainTable[key] = id;
-    return id;
-}
-
-std::optional<ResourceId> AssetsManager::getLocalIdFromServer(EnumAssets type, ResourceId serverId) const {
-    std::lock_guard lock(MapMutex);
-    auto iterType = ServerToLocal.find(type);
-    if(iterType == ServerToLocal.end())
-        return std::nullopt;
-    auto iter = iterType->second.find(serverId);
-    if(iter == iterType->second.end())
-        return std::nullopt;
-    return iter->second;
-}
-
-const AssetsManager::BindInfo* AssetsManager::getBind(EnumAssets type, ResourceId localId) const {
-    std::lock_guard lock(MapMutex);
-    auto iterType = LocalBinds.find(type);
-    if(iterType == LocalBinds.end())
-        return nullptr;
-    auto iter = iterType->second.find(localId);
-    if(iter == iterType->second.end())
-        return nullptr;
-    return &iter->second;
-}
-
-AssetsManager::BindResult AssetsManager::bindServerResource(EnumAssets type, ResourceId serverId, const std::string& domain,
-    const std::string& key, const Hash_t& hash, std::vector<uint8_t> header)
-{
-    BindResult result;
-    result.LocalId = getId(type, domain, key);
-
-    std::lock_guard lock(MapMutex);
-    ServerToLocal[type][serverId] = result.LocalId;
-
-    auto& binds = LocalBinds[type];
-    auto iter = binds.find(result.LocalId);
-    if(iter == binds.end()) {
-        result.Changed = true;
-        binds.emplace(result.LocalId, BindInfo{
-            .LocalId = result.LocalId,
-            .ServerId = serverId,
-            .Domain = domain,
-            .Key = key,
-            .Hash = hash,
-            .Header = std::move(header)
-        });
-        return result;
-    }
-
-    BindInfo& info = iter->second;
-    bool hashChanged = info.Hash != hash;
-    bool headerChanged = info.Header != header;
-    result.Changed = hashChanged || headerChanged || info.ServerId != serverId;
-    info.ServerId = serverId;
-    info.Domain = domain;
-    info.Key = key;
-    info.Hash = hash;
-    info.Header = std::move(header);
-    return result;
-}
-
-std::optional<ResourceId> AssetsManager::unbindServerResource(EnumAssets type, ResourceId serverId) {
-    std::lock_guard lock(MapMutex);
-    auto iterType = ServerToLocal.find(type);
-    if(iterType == ServerToLocal.end())
-        return std::nullopt;
-    auto iter = iterType->second.find(serverId);
-    if(iter == iterType->second.end())
-        return std::nullopt;
-
-    ResourceId localId = iter->second;
-    iterType->second.erase(iter);
-
-    auto iterBindType = LocalBinds.find(type);
-    if(iterBindType != LocalBinds.end())
-        iterBindType->second.erase(localId);
-
-    return localId;
-}
-
-void AssetsManager::clearServerBindings() {
-    std::lock_guard lock(MapMutex);
-    ServerToLocal.clear();
-    LocalBinds.clear();
-}
-
-std::optional<AssetsManager::ParsedHeader> AssetsManager::parseHeader(const std::vector<uint8_t>& data) {
-    size_t pos = 0;
-    auto readU8 = [&](uint8_t& out) -> bool {
-        if(pos + 1 > data.size())
-            return false;
-        out = data[pos++];
-        return true;
-    };
-    auto readU32 = [&](uint32_t& out) -> bool {
-        if(pos + 4 > data.size())
-            return false;
-        out = uint32_t(data[pos]) |
-              (uint32_t(data[pos + 1]) << 8) |
-              (uint32_t(data[pos + 2]) << 16) |
-              (uint32_t(data[pos + 3]) << 24);
-        pos += 4;
-        return true;
-    };
-
-    ParsedHeader out;
-    uint8_t c0, c1, version, type;
-    if(!readU8(c0) || !readU8(c1) || !readU8(version) || !readU8(type))
-        return std::nullopt;
-    if(c0 != 'a' || c1 != 'h' || version != 1)
-        return std::nullopt;
-    out.Type = static_cast<EnumAssets>(type);
-
-    uint32_t count = 0;
-    if(!readU32(count))
-        return std::nullopt;
-    out.ModelDeps.reserve(count);
-    for(uint32_t i = 0; i < count; i++) {
-        uint32_t id;
-        if(!readU32(id))
-            return std::nullopt;
-        out.ModelDeps.push_back(id);
-    }
-
-    if(!readU32(count))
-        return std::nullopt;
-    out.TextureDeps.reserve(count);
-    for(uint32_t i = 0; i < count; i++) {
-        uint32_t id;
-        if(!readU32(id))
-            return std::nullopt;
-        out.TextureDeps.push_back(id);
-    }
-
-    uint32_t extraSize = 0;
-    if(!readU32(extraSize))
-        return std::nullopt;
-    if(pos + extraSize > data.size())
-        return std::nullopt;
-    out.Extra.assign(data.begin() + pos, data.begin() + pos + extraSize);
-    return out;
-}
-
-std::vector<uint8_t> AssetsManager::buildHeader(EnumAssets type, const std::vector<uint32_t>& modelDeps,
-    const std::vector<uint32_t>& textureDeps, const std::vector<uint8_t>& extra)
-{
-    std::vector<uint8_t> data;
-    data.reserve(4 + 4 + modelDeps.size() * 4 + 4 + textureDeps.size() * 4 + 4 + extra.size());
-    data.push_back('a');
-    data.push_back('h');
-    data.push_back(1);
-    data.push_back(static_cast<uint8_t>(type));
-
-    auto writeU32 = [&](uint32_t value) {
-        data.push_back(uint8_t(value & 0xff));
-        data.push_back(uint8_t((value >> 8) & 0xff));
-        data.push_back(uint8_t((value >> 16) & 0xff));
-        data.push_back(uint8_t((value >> 24) & 0xff));
-    };
-
-    writeU32(static_cast<uint32_t>(modelDeps.size()));
-    for(uint32_t id : modelDeps)
-        writeU32(id);
-
-    writeU32(static_cast<uint32_t>(textureDeps.size()));
-    for(uint32_t id : textureDeps)
-        writeU32(id);
-
-    writeU32(static_cast<uint32_t>(extra.size()));
-    if(!extra.empty())
-        data.insert(data.end(), extra.begin(), extra.end());
-
-    return data;
-}
-
-std::vector<uint8_t> AssetsManager::rebindHeader(const std::vector<uint8_t>& header) const {
-    auto parsed = parseHeader(header);
-    if(!parsed)
-        return header;
-
-    std::vector<uint32_t> modelDeps;
-    modelDeps.reserve(parsed->ModelDeps.size());
-    for(uint32_t serverId : parsed->ModelDeps) {
-        auto localId = getLocalIdFromServer(EnumAssets::Model, serverId);
-        modelDeps.push_back(localId.value_or(0));
-    }
-
-    std::vector<uint32_t> textureDeps;
-    textureDeps.reserve(parsed->TextureDeps.size());
-    for(uint32_t serverId : parsed->TextureDeps) {
-        auto localId = getLocalIdFromServer(EnumAssets::Texture, serverId);
-        textureDeps.push_back(localId.value_or(0));
-    }
-
-    return buildHeader(parsed->Type, modelDeps, textureDeps, parsed->Extra);
-}
-
-coro<> AssetsManager::asyncDestructor() {
+coro<> AssetsCacheManager::asyncDestructor() {
     NeedShutdown = true;
     co_await IAsyncDestructible::asyncDestructor();
 }
 
-void AssetsManager::readWriteThread(AsyncUseControl::Lock lock) {
+void AssetsCacheManager::readWriteThread(AsyncUseControl::Lock lock) {
     try {
-        std::vector<fs::path> assets;
-        size_t maxCacheDatabaseSize, maxLifeTime;
+        [[maybe_unused]] size_t maxCacheDatabaseSize = 0;
+        [[maybe_unused]] size_t maxLifeTime = 0;
+        bool databaseSizeKnown = false;
 
         while(!NeedShutdown || !WriteQueue.get_read().empty()) {
             // Получить новые данные
-            if(Changes.get_read().AssetsChange) {
-                auto lock = Changes.lock();
-                assets = std::move(lock->Assets);
-                lock->AssetsChange = false;
-            }
-
             if(Changes.get_read().MaxChange) {
                 auto lock = Changes.lock();
                 maxCacheDatabaseSize = lock->MaxCacheDatabaseSize;
@@ -422,79 +236,47 @@ void AssetsManager::readWriteThread(AsyncUseControl::Lock lock) {
 
             // Чтение
             if(!ReadQueue.get_read().empty()) {
-                ResourceKey rk;
+                Hash_t hash;
 
                 {
                     auto lock = ReadQueue.lock();
-                    rk = lock->front();
+                    hash = lock->front();
                     lock->pop();
                 }
 
                 bool finded = false;
-                // Сначала пробежимся по ресурспакам
-                {
-                    std::string_view type;
-
-                    switch(rk.Type) {
-                        case EnumAssets::Nodestate:     type = "nodestate"; break;
-                        case EnumAssets::Particle:      type = "particle"; break;
-                        case EnumAssets::Animation:     type = "animation"; break;
-                        case EnumAssets::Model:         type = "model"; break;
-                        case EnumAssets::Texture:       type = "texture"; break;
-                        case EnumAssets::Sound:         type = "sound"; break;
-                        case EnumAssets::Font:          type = "font"; break;
-                        default:
-                            std::unreachable();
-                    }
-                    
-                    for(const fs::path& path : assets) {
-                        fs::path end = path / rk.Domain / type / rk.Key;
-
-                        if(!fs::exists(end))
-                            continue;
-
-                        // Нашли
-                        finded = true;
-                        Resource res = Resource(end).convertToMem();
-                        ReadyQueue.lock()->emplace_back(rk, res);
-                        break;
-                    }
+                // Поищем в малой базе
+                sqlite3_bind_blob(STMT_INLINE_GET, 1, (const void*) hash.data(), 32, SQLITE_STATIC);
+                int errc = sqlite3_step(STMT_INLINE_GET);
+                if(errc == SQLITE_ROW) {
+                    // Есть запись
+                    const uint8_t *data = (const uint8_t*) sqlite3_column_blob(STMT_INLINE_GET, 0);
+                    int size = sqlite3_column_bytes(STMT_INLINE_GET, 0);
+                    Resource res(data, size);
+                    finded = true;
+                    ReadyQueue.lock()->emplace_back(hash, res);
+                } else if(errc != SQLITE_DONE) {
+                    sqlite3_reset(STMT_INLINE_GET);
+                    MAKE_ERROR("Не удалось выполнить подготовленный запрос STMT_INLINE_GET: " << sqlite3_errmsg(DB));
                 }
 
-                if(!finded) {
-                    // Поищем в малой базе
-                    sqlite3_bind_blob(STMT_INLINE_GET, 1, (const void*) rk.Hash.data(), 32, SQLITE_STATIC);
-                    int errc = sqlite3_step(STMT_INLINE_GET);
-                    if(errc == SQLITE_ROW) {
-                        // Есть запись
-                        const uint8_t *hash = (const uint8_t*) sqlite3_column_blob(STMT_INLINE_GET, 0);
-                        int size = sqlite3_column_bytes(STMT_INLINE_GET, 0);
-                        Resource res(hash, size);
-                        finded = true;
-                        ReadyQueue.lock()->emplace_back(rk, res);
-                    } else if(errc != SQLITE_DONE) {
-                        sqlite3_reset(STMT_INLINE_GET);
-                        MAKE_ERROR("Не удалось выполнить подготовленный запрос STMT_INLINE_GET: " << sqlite3_errmsg(DB));
-                    }
+                sqlite3_reset(STMT_INLINE_GET);
 
-                    sqlite3_reset(STMT_INLINE_GET);
-
-                    if(finded) {
-                        sqlite3_bind_blob(STMT_INLINE_UPDATE_TIME, 1, (const void*) rk.Hash.data(), 32, SQLITE_STATIC);
-                        sqlite3_bind_int(STMT_INLINE_UPDATE_TIME, 2, time(nullptr));
-                        if(sqlite3_step(STMT_INLINE_UPDATE_TIME) != SQLITE_DONE) {
-                            sqlite3_reset(STMT_INLINE_UPDATE_TIME);
-                            MAKE_ERROR("Не удалось выполнить подготовленный запрос STMT_INLINE_UPDATE_TIME: " << sqlite3_errmsg(DB));
-                        }
-
+                if(finded) {
+                    sqlite3_bind_blob(STMT_INLINE_UPDATE_TIME, 1, (const void*) hash.data(), 32, SQLITE_STATIC);
+                    sqlite3_bind_int(STMT_INLINE_UPDATE_TIME, 2, time(nullptr));
+                    if(sqlite3_step(STMT_INLINE_UPDATE_TIME) != SQLITE_DONE) {
                         sqlite3_reset(STMT_INLINE_UPDATE_TIME);
+                        MAKE_ERROR("Не удалось выполнить подготовленный запрос STMT_INLINE_UPDATE_TIME: " << sqlite3_errmsg(DB));
                     }
+
+                    sqlite3_reset(STMT_INLINE_UPDATE_TIME);
                 }
 
                 if(!finded) {
                     // Поищем на диске
-                    sqlite3_bind_blob(STMT_DISK_CONTAINS, 1, (const void*) rk.Hash.data(), 32, SQLITE_STATIC);
-                    int errc = sqlite3_step(STMT_DISK_CONTAINS);
+                    sqlite3_bind_blob(STMT_DISK_CONTAINS, 1, (const void*) hash.data(), 32, SQLITE_STATIC);
+                    errc = sqlite3_step(STMT_DISK_CONTAINS);
                     if(errc == SQLITE_ROW) {
                         // Есть запись
                         std::string hashKey;
@@ -502,13 +284,13 @@ void AssetsManager::readWriteThread(AsyncUseControl::Lock lock) {
                             std::stringstream ss;
                             ss << std::hex << std::setfill('0') << std::setw(2);
                             for (int i = 0; i < 32; ++i)
-                                ss << static_cast<int>(rk.Hash[i]);
+                                ss << static_cast<int>(hash[i]);
 
                             hashKey = ss.str();
                         }
                         
                         finded = true;
-                        ReadyQueue.lock()->emplace_back(rk, PathFiles / hashKey.substr(0, 2) / hashKey.substr(2));
+                        ReadyQueue.lock()->emplace_back(hash, PathFiles / hashKey.substr(0, 2) / hashKey.substr(2));
                     } else if(errc != SQLITE_DONE) {
                         sqlite3_reset(STMT_DISK_CONTAINS);
                         MAKE_ERROR("Не удалось выполнить подготовленный запрос STMT_DISK_CONTAINS: " << sqlite3_errmsg(DB));
@@ -518,7 +300,7 @@ void AssetsManager::readWriteThread(AsyncUseControl::Lock lock) {
 
                     if(finded) {
                         sqlite3_bind_int(STMT_DISK_UPDATE_TIME, 1, time(nullptr));
-                        sqlite3_bind_blob(STMT_DISK_UPDATE_TIME, 2, (const void*) rk.Hash.data(), 32, SQLITE_STATIC);
+                        sqlite3_bind_blob(STMT_DISK_UPDATE_TIME, 2, (const void*) hash.data(), 32, SQLITE_STATIC);
                         if(sqlite3_step(STMT_DISK_UPDATE_TIME) != SQLITE_DONE) {
                             sqlite3_reset(STMT_DISK_UPDATE_TIME);
                             MAKE_ERROR("Не удалось выполнить подготовленный запрос STMT_DISK_UPDATE_TIME: " << sqlite3_errmsg(DB));
@@ -530,7 +312,7 @@ void AssetsManager::readWriteThread(AsyncUseControl::Lock lock) {
 
                 if(!finded) {
                     // Не нашли
-                    ReadyQueue.lock()->emplace_back(rk, std::nullopt);
+                    ReadyQueue.lock()->emplace_back(hash, std::nullopt);
                 }
 
                 continue;
@@ -546,7 +328,111 @@ void AssetsManager::readWriteThread(AsyncUseControl::Lock lock) {
                     lock->pop();
                 }
 
-                // TODO: добавить вычистку места при нехватке
+                if(!databaseSizeKnown) {
+                    size_t diskSize = 0;
+                    size_t inlineSize = 0;
+                    int errc = sqlite3_step(STMT_DISK_SUM);
+                    if(errc == SQLITE_ROW) {
+                        if(sqlite3_column_type(STMT_DISK_SUM, 0) != SQLITE_NULL)
+                            diskSize = static_cast<size_t>(sqlite3_column_int64(STMT_DISK_SUM, 0));
+                    } else if(errc != SQLITE_DONE) {
+                        sqlite3_reset(STMT_DISK_SUM);
+                        MAKE_ERROR("Не удалось выполнить подготовленный запрос STMT_DISK_SUM: " << sqlite3_errmsg(DB));
+                    }
+                    sqlite3_reset(STMT_DISK_SUM);
+
+                    errc = sqlite3_step(STMT_INLINE_SUM);
+                    if(errc == SQLITE_ROW) {
+                        if(sqlite3_column_type(STMT_INLINE_SUM, 0) != SQLITE_NULL)
+                            inlineSize = static_cast<size_t>(sqlite3_column_int64(STMT_INLINE_SUM, 0));
+                    } else if(errc != SQLITE_DONE) {
+                        sqlite3_reset(STMT_INLINE_SUM);
+                        MAKE_ERROR("Не удалось выполнить подготовленный запрос STMT_INLINE_SUM: " << sqlite3_errmsg(DB));
+                    }
+                    sqlite3_reset(STMT_INLINE_SUM);
+
+                    DatabaseSize = diskSize + inlineSize;
+                    databaseSizeKnown = true;
+                }
+
+                if(maxCacheDatabaseSize > 0 && DatabaseSize + res.size() > maxCacheDatabaseSize) {
+                    size_t bytesToFree = DatabaseSize + res.size() - maxCacheDatabaseSize;
+
+                    sqlite3_reset(STMT_DISK_OLDEST);
+                    int errc = SQLITE_ROW;
+                    while(bytesToFree > 0 && (errc = sqlite3_step(STMT_DISK_OLDEST)) == SQLITE_ROW) {
+                        const void* data = sqlite3_column_blob(STMT_DISK_OLDEST, 0);
+                        int dataSize = sqlite3_column_bytes(STMT_DISK_OLDEST, 0);
+                        if(data && dataSize == 32) {
+                            Hash_t hash;
+                            std::memcpy(hash.data(), data, 32);
+                            size_t entrySize = static_cast<size_t>(sqlite3_column_int64(STMT_DISK_OLDEST, 1));
+
+                            std::string hashKey = hashToString(hash);
+                            fs::path end = PathFiles / hashKey.substr(0, 2) / hashKey.substr(2);
+                            std::error_code ec;
+                            fs::remove(end, ec);
+
+                            sqlite3_bind_blob(STMT_DISK_REMOVE, 1, (const void*) hash.data(), 32, SQLITE_STATIC);
+                            if(sqlite3_step(STMT_DISK_REMOVE) != SQLITE_DONE) {
+                                sqlite3_reset(STMT_DISK_REMOVE);
+                                MAKE_ERROR("Не удалось выполнить подготовленный запрос STMT_DISK_REMOVE: " << sqlite3_errmsg(DB));
+                            }
+
+                            sqlite3_reset(STMT_DISK_REMOVE);
+
+                            if(DatabaseSize >= entrySize)
+                                DatabaseSize -= entrySize;
+                            else
+                                DatabaseSize = 0;
+
+                            if(bytesToFree > entrySize)
+                                bytesToFree -= entrySize;
+                            else
+                                bytesToFree = 0;
+                        }
+                    }
+                    if(errc != SQLITE_DONE && errc != SQLITE_ROW) {
+                        sqlite3_reset(STMT_DISK_OLDEST);
+                        MAKE_ERROR("Не удалось выполнить подготовленный запрос STMT_DISK_OLDEST: " << sqlite3_errmsg(DB));
+                    }
+                    sqlite3_reset(STMT_DISK_OLDEST);
+
+                    sqlite3_reset(STMT_INLINE_OLDEST);
+                    errc = SQLITE_ROW;
+                    while(bytesToFree > 0 && (errc = sqlite3_step(STMT_INLINE_OLDEST)) == SQLITE_ROW) {
+                        const void* data = sqlite3_column_blob(STMT_INLINE_OLDEST, 0);
+                        int dataSize = sqlite3_column_bytes(STMT_INLINE_OLDEST, 0);
+                        if(data && dataSize == 32) {
+                            Hash_t hash;
+                            std::memcpy(hash.data(), data, 32);
+                            size_t entrySize = static_cast<size_t>(sqlite3_column_int64(STMT_INLINE_OLDEST, 1));
+
+                            sqlite3_bind_blob(STMT_INLINE_REMOVE, 1, (const void*) hash.data(), 32, SQLITE_STATIC);
+                            if(sqlite3_step(STMT_INLINE_REMOVE) != SQLITE_DONE) {
+                                sqlite3_reset(STMT_INLINE_REMOVE);
+                                MAKE_ERROR("Не удалось выполнить подготовленный запрос STMT_INLINE_REMOVE: " << sqlite3_errmsg(DB));
+                            }
+
+                            sqlite3_reset(STMT_INLINE_REMOVE);
+
+                            if(DatabaseSize >= entrySize)
+                                DatabaseSize -= entrySize;
+                            else
+                                DatabaseSize = 0;
+
+                            if(bytesToFree > entrySize)
+                                bytesToFree -= entrySize;
+                            else
+                                bytesToFree = 0;
+                        }
+                    }
+                    if(errc != SQLITE_DONE && errc != SQLITE_ROW) {
+                        sqlite3_reset(STMT_INLINE_OLDEST);
+                        MAKE_ERROR("Не удалось выполнить подготовленный запрос STMT_INLINE_OLDEST: " << sqlite3_errmsg(DB));
+                    }
+                    sqlite3_reset(STMT_INLINE_OLDEST);
+                }
 
                 if(res.size() <= SMALL_RESOURCE) {
                         Hash_t hash = res.hash();
@@ -562,6 +448,7 @@ void AssetsManager::readWriteThread(AsyncUseControl::Lock lock) {
                         }
 
                         sqlite3_reset(STMT_INLINE_INSERT);
+                        DatabaseSize += res.size();
                     } catch(const std::exception& exc) {
                         LOG.error() << "Произошла ошибка при сохранении " << hashToString(hash);
                         throw;
@@ -598,6 +485,7 @@ void AssetsManager::readWriteThread(AsyncUseControl::Lock lock) {
                     }
 
                     sqlite3_reset(STMT_DISK_INSERT);
+                    DatabaseSize += res.size();
                 }
 
                 continue;
@@ -611,7 +499,7 @@ void AssetsManager::readWriteThread(AsyncUseControl::Lock lock) {
     }
 }
 
-std::string AssetsManager::hashToString(const Hash_t& hash) {
+std::string AssetsCacheManager::hashToString(const Hash_t& hash) {
     std::stringstream ss;
     ss << std::hex << std::setfill('0');
     for (const auto& byte : hash)

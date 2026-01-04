@@ -95,6 +95,9 @@ private:
         std::vector<uint8_t> Header;
     };
 
+    std::array<std::vector<std::pair<std::string, std::string>>, (int) EnumAssets::MAX_ENUM> ServerIdToDK;
+    std::array<ResourceId, (int) EnumAssets::MAX_ENUM> NextServerId = {};
+
     struct TickData {
         std::vector<std::pair<DefVoxelId, void*>> Profile_Voxel_AddOrChange;
         std::vector<DefVoxelId> Profile_Voxel_Lost;

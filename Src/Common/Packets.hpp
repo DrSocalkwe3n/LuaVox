@@ -83,106 +83,26 @@ enum struct L2System : uint8_t {
 
 }
 
-namespace ToClient {
+enum struct ToClient : uint8_t {
+    Init,               // Первый пакет от сервера
+    Disconnect,         // Отключаем клиента
 
-/*
-    uint8_t+uint8_t
-    0 - Системное
-        0 - Инициализация           WorldId_c+ObjectPos
-        1 - Отключение от сервера   String(Причина)
-        2 - Привязка камеры к сущности  EntityId_c
-        3 - Отвязка камеры
-    1 - Оповещение о доступном ресурсе
-        0 - Текстура                TextureId_c+Hash
-        1 - Освобождение текстуры   TextureId_c
-        2 - Звук                    SoundId_c+Hash
-        3 - Освобождение звука      SoundId_c
-        4 - Модель                  ModelId_c+Hash
-        5 - Освобождение модели     ModelId_c
-        253 - Инициирование передачи ресурса    StreamId+ResType+ResId+Size+Hash
-        254 - Передача чанка данных             StreamId+Size+Data
-        255 - Передача отменена                 StreamId
-    2 - Новые определения
-        0 - Мир                     DefWorldId_c+определение
-        1 - Освобождение мира       DefWorldId_c
-        2 - Воксель                 DefVoxelId_c+определение
-        3 - Освобождение вокселя    DefVoxelId_c
-        4 - Нода                    DefNodeId_c+определение
-        5 - Освобождение ноды       DefNodeId_c
-        6 - Портал                  DefPortalId_c+определение
-        7 - Освобождение портала    DefPortalId_c
-        8 - Сущность                DefEntityId_c+определение
-        9 - Освобождение сущности   DefEntityId_c
-    3 - Новый контент
-        0 - Мир, новый/изменён      WorldId_c+...
-        1 - Мир/Удалён              WorldId_c
-        2 - Портал, новый/изменён   PortalId_c+...
-        3 - Портал/Удалён           PortalId_c
-        4 - Сущность, новый/изменён EntityId_c+...
-        5 - Сущность/Удалёна        EntityId_c
-        6 - Чанк/Воксели            WorldId_c+GlobalChunk+...
-        7 - Чанк/Ноды               WorldId_c+GlobalChunk+...
-        8 - Чанк/Призмы освещения   WorldId_c+GlobalChunk+...
-        9 - Чанк/Удалён             WorldId_c+GlobalChunk
+    AssetsBindDK,       // Привязка AssetsId к домен+ключ
+    AssetsBindHH,       // Привязка AssetsId к hash+header
+    AssetsInitSend,     // Начало отправки запрошенного клиентом ресурса
+    AssetsNextSend,     // Продолжение отправки ресурса
 
+    DefinitionsUpdate,  // Обновление и потеря профилей контента (воксели, ноды, сущности, миры, ...)
 
+    ChunkVoxels,        // Обновление вокселей чанка
+    ChunkNodes,         // Обновление нод чанка
+    ChunkLightPrism,    // 
+    RemoveRegion,       // Удаление региона из зоны видимости
 
-*/
+    Tick,               // Новые или потерянные игровые объекты (миры, сущности), динамичные данные такта (положение сущностей)
 
-// Первый уровень
-enum struct L1 : uint8_t {
-    System,
-    Resource,
-    Definition,
-    Content
+    TestLinkCameraToEntity, // Привязываем камеру к сущности
+    TestUnlinkCamera,       // Отвязываем от сущности
 };
-
-// Второй уровень
-enum struct L2System : uint8_t {
-    Init,
-    Disconnect,
-    LinkCameraToEntity,
-    UnlinkCamera,
-    SyncTick
-};
-
-enum struct L2Resource : uint8_t {
-    Bind,   // Привязка идентификаторов ресурсов к хешам
-    Lost,
-    InitResSend = 253,
-    ChunkSend
-};
-
-enum struct L2Definition : uint8_t {
-    World,
-    FreeWorld,
-    Voxel,
-    FreeVoxel,
-    Node,
-    FreeNode,
-    Portal,
-    FreePortal,
-    Entity,
-    FreeEntity,
-    FuncEntity,
-    FreeFuncEntity,
-    Item,
-    FreeItem
-};
-
-enum struct L2Content : uint8_t {
-    World,
-    RemoveWorld,
-    Portal,
-    RemovePortal,
-    Entity,
-    RemoveEntity,
-    ChunkVoxels,
-    ChunkNodes,
-    ChunkLightPrism,
-    RemoveRegion
-};
-
-}
 
 }

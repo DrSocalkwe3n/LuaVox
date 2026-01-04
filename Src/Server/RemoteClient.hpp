@@ -11,6 +11,7 @@
 #include <initializer_list>
 #include <optional>
 #include <queue>
+#include <string>
 #include <type_traits>
 #include <unordered_map>
 
@@ -141,53 +142,24 @@ public:
 
     Информация о двоичных ресурсах будет получена сразу же при их запросе.
     Действительная отправка ресурсов будет только по запросу клиента.
-
 */
 struct ResourceRequest {
-    std::vector<Hash_t>           Hashes;
-    std::vector<ResourceId>     AssetsInfo[(int) EnumAssets::MAX_ENUM];
+    std::vector<Hash_t> Hashes;
 
-    std::vector<DefVoxelId>        Voxel;
-    std::vector<DefNodeId>          Node;
-    std::vector<DefWorldId>        World;
-    std::vector<DefPortalId>      Portal;
-    std::vector<DefEntityId>      Entity;
-    std::vector<DefItemId>          Item;
-
-    void insert(const ResourceRequest &obj) {
+    void merge(const ResourceRequest &obj) {
         Hashes.insert(Hashes.end(), obj.Hashes.begin(), obj.Hashes.end());
-        for(int iter = 0; iter < (int) EnumAssets::MAX_ENUM; iter++)
-            AssetsInfo[iter].insert(AssetsInfo[iter].end(), obj.AssetsInfo[iter].begin(), obj.AssetsInfo[iter].end());
-
-        Voxel.insert(Voxel.end(), obj.Voxel.begin(), obj.Voxel.end());
-        Node.insert(Node.end(), obj.Node.begin(), obj.Node.end());
-        World.insert(World.end(), obj.World.begin(), obj.World.end());
-        Portal.insert(Portal.end(), obj.Portal.begin(), obj.Portal.end());
-        Entity.insert(Entity.end(), obj.Entity.begin(), obj.Entity.end());
-        Item.insert(Item.end(), obj.Item.begin(), obj.Item.end());
     }
 
     void uniq() {
-        for(std::vector<ResourceId> *vec : {&Voxel, &Node, &World,
-                &Portal, &Entity, &Item
-            })
-        {
-            std::sort(vec->begin(), vec->end());
-            auto last = std::unique(vec->begin(), vec->end());
-            vec->erase(last, vec->end());
-        }
-
-        for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++)
-        {
-            std::sort(AssetsInfo[type].begin(), AssetsInfo[type].end());
-            auto last = std::unique(AssetsInfo[type].begin(), AssetsInfo[type].end());
-            AssetsInfo[type].erase(last, AssetsInfo[type].end());
-        }
-
         std::sort(Hashes.begin(), Hashes.end());
         auto last = std::unique(Hashes.begin(), Hashes.end());
         Hashes.erase(last, Hashes.end());
     }
+};
+
+struct AssetBinaryInfo {
+    Resource Data;
+    Hash_t Hash;
 };
 
 // using EntityKey = std::tuple<WorldId_c, Pos::GlobalRegion>;
@@ -209,76 +181,31 @@ class RemoteClient {
     bool IsConnected = true, IsGoingShutdown = false;
 
     struct NetworkAndResource_t {
-        struct ResUses_t {
-            // Счётчики использования двоичных кэшируемых ресурсов + хэш привязанный к идентификатору
-            // Хэш используется для того, чтобы исключить повторные объявления неизменившихся ресурсов
-            struct AssetBindState {
-                Hash_t Hash;
-                Hash_t HeaderHash;
-            };
-            std::map<ResourceId, std::pair<uint32_t, AssetBindState>> AssetsUse[(int) EnumAssets::MAX_ENUM];
-
-            // Зависимость профилей контента от профилей ресурсов
-            // Нужно чтобы пересчитать зависимости к профилям ресурсов
-            struct RefAssets_t {
-                std::vector<ResourceId> Resources[(int) EnumAssets::MAX_ENUM];
-            };
-
-            std::map<DefVoxelId, RefAssets_t>           RefDefVoxel;
-            std::map<DefNodeId, RefAssets_t>            RefDefNode;
-            std::map<WorldId_t, RefAssets_t>            RefDefWorld;
-            std::map<DefPortalId, RefAssets_t>          RefDefPortal;
-            std::map<DefEntityId, RefAssets_t>          RefDefEntity;
-            std::map<DefItemId, RefAssets_t>            RefDefItem;
-
-            // Счётчики использование профилей контента
-            std::map<DefVoxelId,      uint32_t>        DefVoxel; // Один чанк, одно использование
-            std::map<DefNodeId,       uint32_t>         DefNode;
-            std::map<DefWorldId,      uint32_t>        DefWorld;
-            std::map<DefPortalId,     uint32_t>       DefPortal;
-            std::map<DefEntityId,     uint32_t>       DefEntity;
-            std::map<DefItemId,       uint32_t>         DefItem; // При передаче инвентарей?
-
-
-            // Зависимость наблюдаемых чанков от профилей нод и вокселей
-            struct ChunkRef {
-                // Отсортированные списки уникальных вокселей
-                std::vector<DefVoxelId> Voxel;
-                std::vector<DefNodeId> Node;
-            };
-            
-            std::map<WorldId_t, std::map<Pos::GlobalRegion, std::array<ChunkRef, 4*4*4>>> RefChunk;
-
-            // Модификационные зависимости экземпляров профилей контента
-            // У сущностей в мире могут дополнительно изменятся свойства, переписывая их профиль
-            struct RefWorld_t {
-                DefWorldId Profile;
-                RefAssets_t Assets;
-            };
-            std::map<WorldId_t, RefWorld_t> RefWorld;
-            struct RefPortal_t {
-                DefPortalId Profile;
-                RefAssets_t Assets;
-            };
-            // std::map<PortalId, RefPortal_t> RefPortal;
-            struct RefEntity_t {
-                DefEntityId Profile;
-                RefAssets_t Assets;
-            };
-            std::map<ServerEntityId_t, RefEntity_t> RefEntity;
-        } ResUses;
-
         // Смена идентификаторов сервера на клиентские
         SCSKeyRemapper<ServerEntityId_t, ClientEntityId_t> ReMapEntities;
+        // Накопленные чанки для отправки
+        std::unordered_map<
+            WorldId_t,                  // Миры
+            std::unordered_map<
+                Pos::GlobalRegion,      // Регионы
+                std::pair<
+                    std::unordered_map< // Воксели
+                        Pos::bvec4u,    // Чанки
+                        std::u8string
+                    >,
+                    std::unordered_map< // Ноды
+                        Pos::bvec4u,    // Чанки
+                        std::u8string
+                    >
+                >
+            >
+        > ChunksToSend;
 
         // Запрос информации об ассетах и профилях контента
         ResourceRequest NextRequest;
         // Запрошенные клиентом ресурсы
         /// TODO: здесь может быть засор
         std::vector<Hash_t> ClientRequested;
-
-        void incrementAssets(const ResUses_t::RefAssets_t& bin);
-        void decrementAssets(ResUses_t::RefAssets_t&& bin);
 
         Net::Packet NextPacket;
         std::vector<Net::Packet> SimplePackets;
@@ -288,10 +215,24 @@ class RemoteClient {
             }
         }
 
-        void prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_voxels,
-            const std::vector<DefVoxelId>& uniq_sorted_defines);
-        void prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_nodes,
-            const std::vector<DefNodeId>& uniq_sorted_defines);
+        void prepareChunkUpdate_Voxels(
+            WorldId_t worldId,
+            Pos::GlobalRegion regionPos,
+            Pos::bvec4u chunkPos,
+            const std::u8string& compressed_voxels
+        ) {
+            ChunksToSend[worldId][regionPos].first[chunkPos] = compressed_voxels;
+        }
+
+        void prepareChunkUpdate_Nodes(
+            WorldId_t worldId,
+            Pos::GlobalRegion regionPos,
+            Pos::bvec4u chunkPos,
+            const std::u8string& compressed_nodes
+        ) {
+            ChunksToSend[worldId][regionPos].second[chunkPos] = compressed_nodes;
+        }
+
         void prepareEntitiesRemove(const std::vector<ServerEntityId_t>& entityId);
         void prepareRegionsRemove(WorldId_t worldId, std::vector<Pos::GlobalRegion> regionPoses);
         void prepareWorldRemove(WorldId_t worldId);
@@ -299,12 +240,6 @@ class RemoteClient {
         void prepareEntitiesUpdate_Dynamic(const std::vector<std::tuple<ServerEntityId_t, const Entity*>>& entities);
         void prepareEntitySwap(ServerEntityId_t prevEntityId, ServerEntityId_t nextEntityId);
         void prepareWorldUpdate(WorldId_t worldId, World* world);
-        void informateDefVoxel(const std::vector<std::pair<DefVoxelId, DefVoxel*>>& voxels);
-        void informateDefNode(const std::vector<std::pair<DefNodeId, DefNode*>>& nodes);
-        void informateDefWorld(const std::vector<std::pair<DefWorldId, DefWorld*>>& worlds);
-        void informateDefPortal(const std::vector<std::pair<DefPortalId, DefPortal*>>& portals);
-        void informateDefEntity(const std::vector<std::pair<DefEntityId, DefEntity*>>& entityes);
-        void informateDefItem(const std::vector<std::pair<DefItemId, DefItem*>>& items);
     };
 
     struct {
@@ -318,8 +253,8 @@ class RemoteClient {
         // Ресурсы, отправленные на клиент в этой сессии
         std::vector<Hash_t> OnClient;
         // Отправляемые на клиент ресурсы
-        // Тип, домен, ключ, идентификатор, ресурс, количество отправленных байт
-        std::vector<std::tuple<EnumAssets, std::string, std::string, ResourceId, Resource, size_t>> ToSend;
+        // Ресурс, количество отправленных байт
+        std::vector<std::tuple<Resource, size_t>> ToSend;
         // Пакет с ресурсами
         std::vector<Net::Packet> AssetsPackets;
         Net::Packet AssetsPacket;
@@ -375,32 +310,27 @@ public:
     // если возвращает false, то блокировка сейчас находится у другого потока
     // и запрос не был обработан.
 
-    // В зоне видимости добавился чанк или изменились его воксели
-    bool maybe_prepareChunkUpdate_Voxels(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_voxels,
-        const std::vector<DefVoxelId>& uniq_sorted_defines)
-    {
-        auto lock = NetworkAndResource.tryLock();
-        if(!lock)
-            return false;
-
-        lock->prepareChunkUpdate_Voxels(worldId, chunkPos, compressed_voxels, uniq_sorted_defines);
-        return true;
+    // Создаёт пакет отправки вокселей чанка
+    void prepareChunkUpdate_Voxels(
+        WorldId_t worldId,
+        Pos::GlobalRegion regionPos,
+        Pos::bvec4u chunkPos,
+        const std::u8string& compressed_voxels
+    ) {
+        NetworkAndResource.lock()->prepareChunkUpdate_Voxels(worldId, regionPos, chunkPos, compressed_voxels);
     }
 
-    // В зоне видимости добавился чанк или изменились его ноды
-    bool maybe_prepareChunkUpdate_Nodes(WorldId_t worldId, Pos::GlobalChunk chunkPos, const std::u8string& compressed_nodes,
-        const std::vector<DefNodeId>& uniq_sorted_defines)
-    {
-        auto lock = NetworkAndResource.tryLock();
-        if(!lock)
-            return false;
-
-        lock->prepareChunkUpdate_Nodes(worldId, chunkPos, compressed_nodes, uniq_sorted_defines);
-        return true;
+    // Создаёт пакет отправки нод чанка
+    void prepareChunkUpdate_Nodes(
+        WorldId_t worldId,
+        Pos::GlobalRegion regionPos,
+        Pos::bvec4u chunkPos,
+        const std::u8string& compressed_nodes
+    ) {
+        NetworkAndResource.lock()->prepareChunkUpdate_Nodes(worldId, regionPos, chunkPos, compressed_nodes);
     }
-    // void prepareChunkUpdate_LightPrism(WorldId_t worldId, Pos::GlobalChunk chunkPos, const LightPrism *lights);
-    
-    // Клиент перестал наблюдать за сущностью
+
+    // Клиент перестал наблюдать за сущностями
     void prepareEntitiesRemove(const std::vector<ServerEntityId_t>& entityId) { NetworkAndResource.lock()->prepareEntitiesRemove(entityId); }
     // Регион удалён из зоны видимости
     void prepareRegionsRemove(WorldId_t worldId, std::vector<Pos::GlobalRegion> regionPoses)  { NetworkAndResource.lock()->prepareRegionsRemove(worldId, regionPoses); }
@@ -426,29 +356,52 @@ public:
     // Отправка подготовленных пакетов
     ResourceRequest pushPreparedPackets();
 
-    // Сообщить о ресурсах
-    // Сюда приходят все обновления ресурсов движка
-    // Глобально их можно запросить в выдаче pushPreparedPackets()
+    // Создаёт пакет для всех игроков с оповещением о новых идентификаторах (id -> domain+key)
+    static Net::Packet makePacket_informateAssets_DK(
+        const std::array<
+            std::vector<AssetsPreloader::BindDomainKeyInfo>, 
+            static_cast<size_t>(EnumAssets::MAX_ENUM)
+        >& dkVector
+    );
 
-    // Нужно передавать клиенту информацию о новых привязках
-    // id -> домен+ключ
-    // id -> hash+header
+    // Создаёт пакет для всех игроков с оповещением об изменении файлов ресурсов (id -> hash+header)
+    static Net::Packet makePacket_informateAssets_HH(
+        const std::array< 
+            std::vector<AssetsPreloader::BindHashHeaderInfo>,
+            static_cast<size_t>(EnumAssets::MAX_ENUM)
+        >& hhVector,
+        const std::array<
+            std::vector<ResourceId>,
+            static_cast<size_t>(EnumAssets::MAX_ENUM)
+        >& lost
+    );
 
-    // По запросу клиента отправлять нужные ресурсы по hash
+    // Оповещение о двоичных ресурсах (стриминг по запросу)
+    void informateBinaryAssets(
+        const std::vector<AssetBinaryInfo>& resources
+    );
 
-    /// TODO: новый void informateAssets();
-
-    // Оповещение о запрошенных (и не только) ассетах
-    void informateAssets(const std::vector<std::tuple<EnumAssets, ResourceId, std::string, std::string, Resource, std::vector<uint8_t>>>& resources);
-
-    // Игровые определения
-    void informateDefVoxel(const std::vector<std::pair<DefVoxelId, DefVoxel*>>& voxels)         { NetworkAndResource.lock()->informateDefVoxel(voxels); }
-    void informateDefNode(const std::vector<std::pair<DefNodeId, DefNode*>>& nodes)             { NetworkAndResource.lock()->informateDefNode(nodes); }
-    void informateDefWorld(const std::vector<std::pair<DefWorldId, DefWorld*>>& worlds)         { NetworkAndResource.lock()->informateDefWorld(worlds); }
-    void informateDefPortal(const std::vector<std::pair<DefPortalId, DefPortal*>>& portals)     { NetworkAndResource.lock()->informateDefPortal(portals); }
-    void informateDefEntity(const std::vector<std::pair<DefEntityId, DefEntity*>>& entityes)    { NetworkAndResource.lock()->informateDefEntity(entityes); }
-    void informateDefItem(const std::vector<std::pair<DefItemId, DefItem*>>& items)             { NetworkAndResource.lock()->informateDefItem(items); }
-
+    // Создаёт пакет об обновлении игровых профилей
+    static std::vector<Net::Packet> makePackets_sendDefContentUpdate(
+        std::array<
+            std::vector<
+                std::pair<
+                    ResourceId,     // Идентификатор профиля
+                    std::u8string   // Двоичный формат профиля
+                >
+            >,
+            static_cast<size_t>(EnumDefContent::MAX_ENUM)
+        > newOrUpdate,  // Новые или изменённые
+        std::array<
+            std::vector<ResourceId>,
+            static_cast<size_t>(EnumDefContent::MAX_ENUM)
+        > lost,         // Потерянные профили
+        std::array<
+            std::vector<std::pair<std::string, std::string>>,
+            static_cast<size_t>(EnumDefContent::MAX_ENUM)
+        > idToDK        // Новые привязки
+    );
+    
     void onUpdate();
 
 private:

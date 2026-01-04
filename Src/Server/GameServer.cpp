@@ -619,35 +619,13 @@ void GameServer::BackingChunkPressure_t::run(int id) {
             }
 
             // Сжатие и отправка игрокам
-            struct PostponedV {
-                WorldId_t WorldId;
-                Pos::GlobalChunk Chunk;
-                CompressedVoxels Data;
-            };
-
-            struct PostponedN {
-                WorldId_t WorldId;
-                Pos::GlobalChunk Chunk;
-                CompressedNodes Data;
-            };
-
-            std::list<std::pair<PostponedV, std::vector<RemoteClient*>>> postponedVoxels;
-            std::list<std::pair<PostponedN, std::vector<RemoteClient*>>> postponedNodes;
-
-            std::vector<RemoteClient*> cecs;
-
             for(auto& [worldId, world] : dump) {
                 for(auto& [regionPos, region] : world) {
                     for(auto& [chunkPos, chunk] : region.Voxels) {
-                        CompressedVoxels cmp = compressVoxels(chunk);
-                        Pos::GlobalChunk chunkPosR = (Pos::GlobalChunk(regionPos) << 2) + chunkPos;
+                        std::u8string cmp = compressVoxels(chunk);
 
                         for(auto& ptr : region.NewCECs) {
-                            bool accepted = ptr->maybe_prepareChunkUpdate_Voxels(worldId, 
-                                    chunkPosR, cmp.Compressed, cmp.Defines);
-                            if(!accepted) {
-                                cecs.push_back(ptr.get());
-                            }
+                            ptr->prepareChunkUpdate_Voxels(worldId, regionPos, chunkPos, cmp);
                         }
 
                         if((region.IsChunkChanged_Voxels >> chunkPos.pack()) & 0x1) {
@@ -663,30 +641,16 @@ void GameServer::BackingChunkPressure_t::run(int id) {
                                 if(skip)
                                     continue;
 
-                                bool accepted = ptr->maybe_prepareChunkUpdate_Voxels(worldId, 
-                                        chunkPosR, cmp.Compressed, cmp.Defines);
-                                if(!accepted) {
-                                    cecs.push_back(ptr.get());
-                                }
+                                ptr->prepareChunkUpdate_Voxels(worldId, regionPos, chunkPos, cmp);
                             }
-                        }
-
-                        if(!cecs.empty()) {
-                            postponedVoxels.push_back({{worldId, chunkPosR, std::move(cmp)}, cecs});
-                            cecs.clear();
                         }
                     }
 
                     for(auto& [chunkPos, chunk] : region.Nodes) {
-                        CompressedNodes cmp = compressNodes(chunk.data());
-                        Pos::GlobalChunk chunkPosR = (Pos::GlobalChunk(regionPos) << 2) + chunkPos;
+                        std::u8string cmp = compressNodes(chunk.data());
 
                         for(auto& ptr : region.NewCECs) {
-                            bool accepted = ptr->maybe_prepareChunkUpdate_Nodes(worldId, 
-                                    chunkPosR, cmp.Compressed, cmp.Defines);
-                            if(!accepted) {
-                                cecs.push_back(ptr.get());
-                            }
+                            ptr->prepareChunkUpdate_Nodes(worldId, regionPos, chunkPos, cmp);
                         }
 
                         if((region.IsChunkChanged_Nodes >> chunkPos.pack()) & 0x1) {
@@ -702,59 +666,8 @@ void GameServer::BackingChunkPressure_t::run(int id) {
                                 if(skip)
                                     continue;
 
-                                bool accepted = ptr->maybe_prepareChunkUpdate_Nodes(worldId, 
-                                        chunkPosR, cmp.Compressed, cmp.Defines);
-                                if(!accepted) {
-                                    cecs.push_back(ptr.get());
-                                }
+                                ptr->prepareChunkUpdate_Nodes(worldId, regionPos, chunkPos, cmp);
                             }
-                        }
-
-                        if(!cecs.empty()) {
-                            postponedNodes.push_back({{worldId, chunkPosR, std::move(cmp)}, cecs});
-                            cecs.clear();
-                        }
-                    }
-                }
-            }
-
-            while(!postponedVoxels.empty() || !postponedNodes.empty()) {
-                {
-                    auto begin = postponedVoxels.begin(), end = postponedVoxels.end();
-                    while(begin != end) {
-                        auto& [worldId, chunkPos, cmp] = begin->first;
-                        for(RemoteClient* cec : begin->second) {
-                            bool accepted = cec->maybe_prepareChunkUpdate_Voxels(worldId, chunkPos, cmp.Compressed, cmp.Defines);
-                            if(!accepted)
-                                cecs.push_back(cec);
-                        }
-
-                        if(cecs.empty()) {
-                            begin = postponedVoxels.erase(begin);
-                        } else {
-                            begin->second = cecs;
-                            cecs.clear();
-                            begin++;
-                        }
-                    }
-                }
-
-                {
-                    auto begin = postponedNodes.begin(), end = postponedNodes.end();
-                    while(begin != end) {
-                        auto& [worldId, chunkPos, cmp] = begin->first;
-                        for(RemoteClient* cec : begin->second) {
-                            bool accepted = cec->maybe_prepareChunkUpdate_Nodes(worldId, chunkPos, cmp.Compressed, cmp.Defines);
-                            if(!accepted)
-                                cecs.push_back(cec);
-                        }
-
-                        if(cecs.empty()) {
-                            begin = postponedNodes.erase(begin);
-                        } else {
-                            begin->second = cecs;
-                            cecs.clear();
-                            begin++;
                         }
                     }
                 }
@@ -1880,33 +1793,43 @@ void GameServer::stepModInitializations() {
 }
 
 void GameServer::reloadMods() {
-    LOG.info() << "Перезагрузка модов: ассеты и зависимости";
+    std::vector<Net::Packet> packetsToSend;
 
-    AssetsPreloader::Out_reloadResources changes = Content.AM.reloadResources(AssetsInit);
-    AssetsPreloader::Out_applyResourceChange applied = Content.AM.applyResourceChange(changes);
+    LOG.info() << "Перезагрузка модов";
+    {
+        // TODO: перезагрузка модов
 
-    size_t changedCount = 0;
-    size_t lostCount = 0;
-    for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++) {
-        for(const auto& entry : applied.NewOrChange[type]) {
-            Content.OnContentChanges.AssetsInfo[type].push_back(entry.first);
-            changedCount++;
+        Content.CM.buildEndProfiles();
+    }
+
+    LOG.info() << "Перезагрузка ассетов";
+    {
+        {
+            AssetsPreloader::Out_applyResourceChange applied
+                = Content.AM.applyResourceChange(Content.AM.reloadResources(AssetsInit));
+
+            if(!applied.NewOrChange.empty() || !applied.Lost.empty())
+                packetsToSend.push_back(
+                    RemoteClient::makePacket_informateAssets_HH(
+                        applied.NewOrChange,
+                        applied.Lost
+                    )
+                );
         }
+    
 
-        lostCount += applied.Lost[type].size();
+        {
+            AssetsPreloader::Out_bakeId baked = Content.AM.bakeIdTables();
+            if(!baked.IdToDK.empty())
+                packetsToSend.push_back(RemoteClient::makePacket_informateAssets_DK(baked.IdToDK));
+        }
     }
 
-    Content.CM.markAllProfilesDirty(EnumDefContent::Node);
-    Content.CM.buildEndProfiles();
-
-    std::vector<ResourceId> nodeIds = Content.CM.collectProfileIds(EnumDefContent::Node);
-    if(!nodeIds.empty()) {
-        Content.OnContentChanges.Node.append_range(nodeIds);
+    // Отправка пакетов
+    for(std::shared_ptr<RemoteClient>& cec : Game.RemoteClients) {
+        auto copy = packetsToSend;
+        cec->pushPackets(&copy);
     }
-
-    LOG.info() << "Перезагрузка завершена: обновлено ассетов=" << changedCount
-        << " удалено=" << lostCount
-        << " нод=" << nodeIds.size();
 }
 
 IWorldSaveBackend::TickSyncInfo_Out GameServer::stepDatabaseSync() {
@@ -2678,107 +2601,48 @@ void GameServer::stepSyncContent() {
     }
 
 
-    // Сбор запросов на ресурсы и профили + отправка пакетов игрокам
+    // Сбор запросов на ресурсы + отправка пакетов игрокам
     ResourceRequest full = std::move(Content.OnContentChanges);
     for(std::shared_ptr<RemoteClient>& cec : Game.RemoteClients) {
-        full.insert(cec->pushPreparedPackets());
+        full.merge(cec->pushPreparedPackets());
     }
 
     full.uniq();
 
-    // Информируем о запрошенных ассетах
-    std::vector<std::tuple<EnumAssets, ResourceId, std::string, std::string, Resource, std::u8string>> resources;
-    for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++) {
-        for(ResourceId resId : full.AssetsInfo[type]) {
-            const AssetsPreloader::MediaResource* media = Content.AM.getResource((EnumAssets) type, resId);
-            if(!media)
-                continue;
-
-            Resource resource(media->Resource->data(), media->Resource->size());
-            resources.emplace_back((EnumAssets) type, resId, media->Domain, media->Key, std::move(resource), media->Dependencies);
+    std::vector<Net::Packet> packetsToAll;
+    {
+        AssetsPreloader::Out_bakeId baked = Content.AM.bakeIdTables();
+        if(!baked.IdToDK.empty()) {
+            packetsToAll.push_back(RemoteClient::makePacket_informateAssets_DK(baked.IdToDK));
         }
     }
 
+    // Оповещаем о двоичных ресурсах по запросу
+    std::vector<AssetBinaryInfo> binaryResources;
     for(const Hash_t& hash : full.Hashes) {
-        std::optional<std::tuple<EnumAssets, uint32_t, const AssetsPreloader::MediaResource*>> result = Content.AM.getResource(hash);
+        std::optional<
+            std::tuple<EnumAssets, uint32_t, const AssetsPreloader::MediaResource*>
+        > result = Content.AM.getResource(hash);
+
         if(!result)
             continue;
 
         auto& [type, id, media] = *result;
         Resource resource(*media->Resource);
-        resources.emplace_back(type, id, media->Domain, media->Key, std::move(resource), media->Header);
-    }
-
-    // Информируем о запрошенных профилях
-    std::vector<std::pair<DefVoxelId, DefVoxel*>> voxels;
-    for(DefVoxelId id : full.Voxel) {
-        auto value = Content.CM.getProfile_Voxel(id);
-        if(!value)
-            continue;
-
-        voxels.emplace_back(id, *value);
-    }
-
-    std::vector<std::pair<DefNodeId, DefNode*>> nodes;
-    for(DefNodeId id : full.Node) {
-        auto value = Content.CM.getProfile_Node(id);
-        if(!value)
-            continue;
-
-        nodes.emplace_back(id, *value);
-    }
-
-    std::vector<std::pair<DefWorldId, DefWorld*>> worlds;
-    for(DefWorldId id : full.World) {
-        auto value = Content.CM.getProfile_World(id);
-        if(!value)
-            continue;
-
-        worlds.emplace_back(id, *value);
-    }
-
-    std::vector<std::pair<DefPortalId, DefPortal*>> portals;
-    for(DefPortalId id : full.Portal) {
-        auto value = Content.CM.getProfile_Portal(id);
-        if(!value)
-            continue;
-
-        portals.emplace_back(id, *value);
-    }
-
-    std::vector<std::pair<DefEntityId, DefEntity*>> entities;
-    for(DefEntityId id : full.Entity) {
-        auto value = Content.CM.getProfile_Entity(id);
-        if(!value)
-            continue;
-
-        entities.emplace_back(id, *value);
-    }
-
-    std::vector<std::pair<DefItemId, DefItem*>> items;
-    for(DefItemId id : full.Item) {
-        auto value = Content.CM.getProfile_Item(id);
-        if(!value)
-            continue;
-
-        items.emplace_back(id, *value);
+        binaryResources.push_back(AssetBinaryInfo{
+            .Data = std::move(resource),
+            .Hash = media->Hash
+        });
     }
 
     for(std::shared_ptr<RemoteClient>& remoteClient : Game.RemoteClients) {
-        if(!resources.empty())
-            remoteClient->informateAssets(resources);
-        if(!voxels.empty())
-            remoteClient->informateDefVoxel(voxels);
-        if(!nodes.empty())
-            remoteClient->informateDefNode(nodes);
-        if(!worlds.empty())
-            remoteClient->informateDefWorld(worlds);
-        if(!portals.empty())
-            remoteClient->informateDefPortal(portals);
-        if(!entities.empty())
-            remoteClient->informateDefEntity(entities);
-        if(!items.empty())
-            remoteClient->informateDefItem(items);
+        if(!binaryResources.empty())
+            remoteClient->informateBinaryAssets(binaryResources);
+
+        if(!packetsToAll.empty()) {
+            auto copy = packetsToAll;
+            remoteClient->pushPackets(&copy);
+        }
     }
 
 

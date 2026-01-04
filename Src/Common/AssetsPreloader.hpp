@@ -145,19 +145,40 @@ public:
         std::u8string Header;
     };
 
+    struct BindDomainKeyInfo {
+        std::string Domain;
+        std::string Key;
+    };
+
+    struct BindHashHeaderInfo {
+        ResourceId Id;
+        Hash_t Hash;
+        std::u8string Header;
+    };
+
     struct Out_reloadResources {
-        std::unordered_map<std::string, std::vector<std::string>> Lost[(int) AssetType::MAX_ENUM];
         std::unordered_map<std::string, std::vector<PendingResource>> NewOrChange[(int) AssetType::MAX_ENUM];
+        std::unordered_map<std::string, std::vector<std::string>> Lost[(int) AssetType::MAX_ENUM];
     };
 
     struct Out_applyResourceChange {
-        std::vector<uint32_t> Lost[(int) AssetType::MAX_ENUM];
-        std::vector<std::pair<uint32_t, MediaResource>> NewOrChange[(int) AssetType::MAX_ENUM];
+        std::array<
+            std::vector<AssetsPreloader::BindHashHeaderInfo>,
+            static_cast<size_t>(AssetType::MAX_ENUM)
+        > NewOrChange;
+
+        std::array<
+            std::vector<ResourceId>, 
+            static_cast<size_t>(AssetType::MAX_ENUM)
+        > Lost;
     };
 
     struct Out_bakeId {
         // Новые привязки
-        std::array<std::vector<std::pair<std::string, std::string>>, static_cast<size_t>(AssetType::MAX_ENUM)> IdToDK;
+        std::array<
+            std::vector<BindDomainKeyInfo>, 
+            static_cast<size_t>(AssetType::MAX_ENUM)
+        > IdToDK;
     };
 
     struct ReloadStatus {
@@ -297,7 +318,7 @@ private:
         Многопоточная таблица обратного резолва.
         Идентификатор -> домен+ключ
     */
-    std::array<std::vector<std::pair<std::string, std::string>>, static_cast<size_t>(AssetType::MAX_ENUM)> IdToDK;
+    std::array<std::vector<BindDomainKeyInfo>, static_cast<size_t>(AssetType::MAX_ENUM)> IdToDK;
 
     /*
         Таблица в которой выделяются новые идентификаторы, которых не нашлось в DKToId.
@@ -313,7 +334,7 @@ private:
         Списки в которых пишутся новые привязки. Начала спиской исходят из LastSendId.
         Id + LastSendId -> домен+ключ
     */
-    std::array<TOS::SpinlockObject<std::vector<std::pair<std::string, std::string>>>, static_cast<size_t>(AssetType::MAX_ENUM)> NewIdToDK;
+    std::array<TOS::SpinlockObject<std::vector<BindDomainKeyInfo>>, static_cast<size_t>(AssetType::MAX_ENUM)> NewIdToDK;
 
     // Загруженные ресурсы
     std::array<std::unordered_map<ResourceId, MediaResource>, static_cast<size_t>(AssetType::MAX_ENUM)> MediaResources;
@@ -370,7 +391,7 @@ inline ResourceId AssetsPreloader::_getIdNew(AssetType type, std::string_view do
     auto lock2 = NewIdToDK[static_cast<size_t>(type)].lock();
     lock.unlock();
 
-    lock2->emplace_back(domain, key);
+    lock2->emplace_back((std::string) domain, (std::string) key);
 
     return id;
 }
@@ -389,17 +410,17 @@ inline std::optional<std::tuple<AssetType, uint32_t, const AssetsPreloader::Medi
     AssetsPreloader::getResource(const ResourceFile::Hash_t& hash)
 {
     auto iter = HashToId.find(hash);
-    if (iter == HashToId.end())
+    if(iter == HashToId.end())
         return std::nullopt;
 
     auto [type, id] = iter->second;
     const MediaResource* res = getResource(type, id);
-    if (!res) {
+    if(!res) {
         HashToId.erase(iter);
         return std::nullopt;
     }
 
-    if (res->Hash != hash) {
+    if(res->Hash != hash) {
         HashToId.erase(iter);
         return std::nullopt;
     }

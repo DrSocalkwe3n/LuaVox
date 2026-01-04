@@ -469,13 +469,7 @@ struct VoxelCube {
     }
 };
 
-struct CompressedVoxels {
-    std::u8string Compressed;
-    // Уникальный сортированный список идентификаторов вокселей
-    std::vector<DefVoxelId> Defines;
-};
-
-CompressedVoxels compressVoxels(const std::vector<VoxelCube>& voxels, bool fast = true);
+std::u8string compressVoxels(const std::vector<VoxelCube>& voxels, bool fast = true);
 std::vector<VoxelCube> unCompressVoxels(const std::u8string& compressed);
 
 struct Node {
@@ -493,11 +487,11 @@ struct CompressedNodes {
     std::vector<DefNodeId> Defines;
 };
 
-CompressedNodes compressNodes(const Node* nodes, bool fast = true);
-void unCompressNodes(const std::u8string& compressed, Node* ptr);
+std::u8string compressNodes(const Node* nodes, bool fast = true);
+void unCompressNodes(std::u8string_view compressed, Node* ptr);
 
-std::u8string compressLinear(const std::u8string& data);
-std::u8string unCompressLinear(const std::u8string& data);
+std::u8string compressLinear(std::u8string_view data);
+std::u8string unCompressLinear(std::u8string_view data);
 
 inline std::pair<std::string_view, std::string_view> parseDomainKey(const std::string_view value, const std::string_view defaultDomain = "core") {
     size_t pos = value.find(':');

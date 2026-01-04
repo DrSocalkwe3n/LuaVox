@@ -80,8 +80,8 @@ class GameServer : public AsyncObject {
         ResourceRequest OnContentChanges;
 
 
-        ContentObj(asio::io_context& ioc)
-            : AM(ioc), CM(AM)
+        ContentObj(asio::io_context&)
+            : AM(), CM(AM)
         {}
     } Content;
 

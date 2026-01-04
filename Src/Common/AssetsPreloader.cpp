@@ -262,7 +262,7 @@ AssetsPreloader::Out_reloadResources AssetsPreloader::_reloadResources(const Ass
                 // Домен неизвестен движку, все ресурсы в нём новые
                 for(const auto& [key, info] : table) {
                     PendingResource resource = buildResource(static_cast<AssetType>(type), domain, key, info);
-                    result.NewOrChange[(int) type][domain].push_back(std::move(resource));
+                    result.NewOrChange[type][domain].push_back(std::move(resource));
                 }
             } else {
                 for(const auto& [key, info] : table) {
@@ -354,14 +354,14 @@ AssetsPreloader::Out_applyResourceChange AssetsPreloader::applyResourceChange(co
                 // Связали с хешем
                 HashToId[resource.Hash] = {static_cast<AssetType>(type), pending.Id};
                 // Осведомили о новом/изменённом ресурсе
-                result.NewOrChange[type].push_back({pending.Id, std::move(resource)});
+                result.NewOrChange[type].emplace_back(pending.Id, resource.Hash, std::move(resource.Header));
             }
         }
 
         // Не должно быть ресурсов, которые были помечены как потерянные
         #ifndef NDEBUG
         std::unordered_set<uint32_t> changed;
-        for(const auto& [id, _] : result.NewOrChange[type])
+        for(const auto& [id, _, _] : result.NewOrChange[type])
             changed.insert(id);
 
         auto& lost = result.Lost[type];

@@ -114,6 +114,10 @@ ServerSession::ServerSession(asio::io_context &ioc, std::unique_ptr<Net::AsyncSo
     Profiles.DefNode[3] = {3};
     Profiles.DefNode[4] = {4};
 
+    std::fill(NextServerId.begin(), NextServerId.end(), 1);
+    for(auto& vec : ServerIdToDK)
+        vec.emplace_back();
+
     try {
         AM = AssetsManager::Create(ioc, "Cache");
         asio::co_spawn(ioc, run(AUC.use()), asio::detached);
@@ -1231,6 +1235,11 @@ void ServerSession::resetResourceSyncState() {
     AsyncContext.AlreadyLoading.clear();
     for(int type = 0; type < (int) EnumAssets::MAX_ENUM; type++)
         AsyncContext.ResourceWait[type].clear();
+    for(auto& vec : ServerIdToDK)
+        vec.clear();
+    std::fill(NextServerId.begin(), NextServerId.end(), 1);
+    for(auto& vec : ServerIdToDK)
+        vec.emplace_back();
     AsyncContext.Binds.clear();
     AsyncContext.LoadedResources.clear();
     AsyncContext.ThisTickEntry = {};
@@ -1372,6 +1381,95 @@ coro<> ServerSession::rP_Resource(Net::AsyncSocket &sock) {
         }
 
         AsyncContext.AssetsBinds.lock()->push_back(AssetsBindsChange(binds, {}));
+        co_return;
+    }
+    case ToClient::L2Resource::BindDK:
+    {
+        uint32_t count = co_await sock.read<uint32_t>();
+        for(size_t iter = 0; iter < count; iter++) {
+            uint8_t type = co_await sock.read<uint8_t>();
+            if(type >= (int) EnumAssets::MAX_ENUM)
+                protocolError();
+
+            std::string domain = co_await sock.read<std::string>();
+            std::string key = co_await sock.read<std::string>();
+
+            ResourceId serverId = NextServerId[type]++;
+            auto& table = ServerIdToDK[type];
+            if(table.size() <= serverId)
+                table.resize(serverId+1);
+            table[serverId] = {std::move(domain), std::move(key)};
+        }
+        co_return;
+    }
+    case ToClient::L2Resource::BindHash:
+    {
+        uint32_t count = co_await sock.read<uint32_t>();
+        std::vector<AssetBindEntry> binds;
+        binds.reserve(count);
+
+        for(size_t iter = 0; iter < count; iter++) {
+            uint8_t type = co_await sock.read<uint8_t>();
+            if(type >= (int) EnumAssets::MAX_ENUM)
+                protocolError();
+
+            uint32_t id = co_await sock.read<uint32_t>();
+            Hash_t hash;
+            co_await sock.read((std::byte*) hash.data(), hash.size());
+            uint32_t headerSize = co_await sock.read<uint32_t>();
+            std::vector<uint8_t> header;
+            if(headerSize > 0) {
+                header.resize(headerSize);
+                co_await sock.read((std::byte*) header.data(), header.size());
+            }
+
+            auto& table = ServerIdToDK[type];
+            if(id >= table.size()) {
+                LOG.warn() << "BindHash without domain/key for id=" << id;
+                continue;
+            }
+
+            const auto& [domain, key] = table[id];
+            if(domain.empty() && key.empty()) {
+                LOG.warn() << "BindHash missing domain/key for id=" << id;
+                continue;
+            }
+
+            AssetsManager::BindResult bindResult = AM->bindServerResource(
+                (EnumAssets) type, (ResourceId) id, domain, key, hash, header);
+
+            if(!bindResult.Changed)
+                continue;
+
+            binds.emplace_back(AssetBindEntry{
+                .Type = (EnumAssets) type,
+                .Id = bindResult.LocalId,
+                .Domain = domain,
+                .Key = key,
+                .Hash = hash,
+                .Header = std::move(header)
+            });
+
+            if(binds.back().Domain == "test"
+                && (binds.back().Type == EnumAssets::Nodestate
+                    || binds.back().Type == EnumAssets::Model
+                    || binds.back().Type == EnumAssets::Texture))
+            {
+                uint32_t idx = debugResourceLogCount.fetch_add(1);
+                if(idx < 128) {
+                    LOG.debug() << "Bind asset type=" << assetTypeName(binds.back().Type)
+                        << " id=" << binds.back().Id
+                        << " key=" << binds.back().Domain << ':' << binds.back().Key
+                        << " hash=" << int(binds.back().Hash[0]) << '.'
+                        << int(binds.back().Hash[1]) << '.'
+                        << int(binds.back().Hash[2]) << '.'
+                        << int(binds.back().Hash[3]);
+                }
+            }
+        }
+
+        if(!binds.empty())
+            AsyncContext.AssetsBinds.lock()->push_back(AssetsBindsChange(binds, {}));
         co_return;
     }
     case ToClient::L2Resource::Lost:

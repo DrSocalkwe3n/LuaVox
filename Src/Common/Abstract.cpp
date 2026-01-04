@@ -71,7 +71,7 @@ PrecompiledTexturePipeline compileTexturePipeline(const std::string &cmd, std::s
 }
 
 
-CompressedVoxels compressVoxels_byte(const std::vector<VoxelCube>& voxels) {
+std::u8string compressVoxels_byte(const std::vector<VoxelCube>& voxels) {
     std::u8string compressed;
     std::vector<DefVoxelId> defines;
     DefVoxelId maxValue = 0;
@@ -164,10 +164,10 @@ CompressedVoxels compressVoxels_byte(const std::vector<VoxelCube>& voxels) {
         }
     }
 
-    return {compressLinear(compressed), defines};
+    return compressLinear(compressed);
 }
 
-CompressedVoxels compressVoxels_bit(const std::vector<VoxelCube>& voxels) {
+std::u8string compressVoxels_bit(const std::vector<VoxelCube>& voxels) {
     std::vector<DefVoxelId> profile;
     std::vector<DefVoxelId> one_byte[7];
 
@@ -310,10 +310,10 @@ CompressedVoxels compressVoxels_bit(const std::vector<VoxelCube>& voxels) {
     for(size_t iter = 0; iter < buff.size(); iter++)
         compressed[iter / 8] |= (buff[iter] << (iter % 8));
 
-    return {compressLinear(compressed), profile};
+    return compressLinear(compressed);
 }
 
-CompressedVoxels compressVoxels(const std::vector<VoxelCube>& voxels, bool fast) {
+std::u8string compressVoxels(const std::vector<VoxelCube>& voxels, bool fast) {
     if(fast)
         return compressVoxels_byte(voxels);
     else
@@ -697,24 +697,8 @@ CompressedNodes compressNodes_bit(const Node* nodes) {
     return {compressLinear(compressed), profiles};
 }
 
-CompressedNodes compressNodes(const Node* nodes, bool fast) {
-    std::u8string data(16*16*16*sizeof(Node), '\0');
-    const char8_t *ptr = (const char8_t*) nodes;
-    std::copy(ptr, ptr+16*16*16*4, data.data());
-
-    std::vector<DefNodeId> node(16*16*16);
-    for(int iter = 0; iter < 16*16*16; iter++) {
-        node[iter] = nodes[iter].NodeId;
-    }
-
-    {
-        std::sort(node.begin(), node.end());
-        auto last = std::unique(node.begin(), node.end());
-        node.erase(last, node.end());
-        node.shrink_to_fit();
-    }
-
-    return {compressLinear(data), std::move(node)};
+std::u8string compressNodes(const Node* nodes, bool fast) {
+    return compressLinear(std::u8string_view((const char8_t*) nodes, 16*16*16*sizeof(Node)));
 
     // if(fast)
     //     return compressNodes_byte(nodes);
@@ -854,7 +838,7 @@ void unCompressNodes(const std::u8string& compressed, Node* ptr) {
     //     return unCompressNodes_bit(next, ptr);
 }
 
-std::u8string compressLinear(const std::u8string& data) {
+std::u8string compressLinear(std::u8string_view data) {
     std::stringstream in;
     in.write((const char*) data.data(), data.size());
 
@@ -869,7 +853,7 @@ std::u8string compressLinear(const std::u8string& data) {
     return *(std::u8string*) &outString;
 }
 
-std::u8string unCompressLinear(const std::u8string& data) {
+std::u8string unCompressLinear(std::u8string_view data) {
     std::stringstream in;
     in.write((const char*) data.data(), data.size());
     
@@ -1488,7 +1472,7 @@ uint16_t PreparedNodeState::parseCondition(const std::string_view expression) {
     // };
 }
 
-std::pair<float, std::variant<PreparedNodeState::Model, PreparedNodeState::VectorModel>> PreparedNodeState::parseModel(const std::string_view modid, const js::object& obj) {
+std::pair<float, std::variant<HeadlessNodeState::Model, HeadlessNodeState::VectorModel>> HeadlessNodeState::parseModel(const std::string_view modid, const js::object& obj) {
     // ModelToLocalId
 
     bool uvlock;

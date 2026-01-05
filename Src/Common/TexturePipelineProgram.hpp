@@ -30,7 +30,8 @@ public:
 
   enum AnimFlags : Word {
     AnimSmooth     = 1u << 0,
-    AnimHorizontal = 1u << 1
+    AnimHorizontal = 1u << 1,
+    AnimGrid       = 1u << 2
   };
 
   static constexpr uint16_t DefaultAnimFpsQ = uint16_t(8u * 256u);
@@ -787,9 +788,17 @@ private:
             uint32_t fh = frameH ? frameH : sheet.H;
             if(fw == 0 || fh == 0) return _bad(err, "Base_Anim invalid frame size");
 
+            bool useGrid = (flags & AnimGrid) != 0;
             bool horizontal = (flags & AnimHorizontal) != 0;
             if(frameCount == 0) {
-              uint32_t avail = horizontal ? (sheet.W / fw) : (sheet.H / fh);
+              uint32_t avail = 0;
+              if(useGrid) {
+                uint32_t cols = sheet.W / fw;
+                uint32_t rows = sheet.H / fh;
+                avail = cols * rows;
+              } else {
+                avail = horizontal ? (sheet.W / fw) : (sheet.H / fh);
+              }
               frameCount = std::max<uint32_t>(1u, avail);
             }
 
@@ -801,11 +810,13 @@ private:
             uint32_t frameIndex = frameCount ? (uint32_t(frameTime) % frameCount) : 0u;
             double frac = frameTime - std::floor(frameTime);
 
-            cur = _cropFrame(sheet, frameIndex, fw, fh, horizontal);
+            cur = useGrid ? _cropFrameGrid(sheet, frameIndex, fw, fh)
+                          : _cropFrame(sheet, frameIndex, fw, fh, horizontal);
 
             if(flags & AnimSmooth) {
               uint32_t nextIndex = frameCount ? ((frameIndex + 1u) % frameCount) : 0u;
-              Image next = _cropFrame(sheet, nextIndex, fw, fh, horizontal);
+              Image next = useGrid ? _cropFrameGrid(sheet, nextIndex, fw, fh)
+                                   : _cropFrame(sheet, nextIndex, fw, fh, horizontal);
               _lerp(cur, next, frac);
             }
           } break;
@@ -825,9 +836,17 @@ private:
             uint32_t fh = frameH ? frameH : sheet.H;
             if(fw == 0 || fh == 0) return _bad(err, "Anim invalid frame size");
 
+            bool useGrid = (flags & AnimGrid) != 0;
             bool horizontal = (flags & AnimHorizontal) != 0;
             if(frameCount == 0) {
-              uint32_t avail = horizontal ? (sheet.W / fw) : (sheet.H / fh);
+              uint32_t avail = 0;
+              if(useGrid) {
+                uint32_t cols = sheet.W / fw;
+                uint32_t rows = sheet.H / fh;
+                avail = cols * rows;
+              } else {
+                avail = horizontal ? (sheet.W / fw) : (sheet.H / fh);
+              }
               frameCount = std::max<uint32_t>(1u, avail);
             }
 
@@ -839,10 +858,12 @@ private:
             uint32_t frameIndex = frameCount ? (uint32_t(frameTime) % frameCount) : 0u;
             double frac = frameTime - std::floor(frameTime);
 
-            cur = _cropFrame(sheet, frameIndex, fw, fh, horizontal);
+            cur = useGrid ? _cropFrameGrid(sheet, frameIndex, fw, fh)
+                          : _cropFrame(sheet, frameIndex, fw, fh, horizontal);
             if(flags & AnimSmooth) {
               uint32_t nextIndex = frameCount ? ((frameIndex + 1u) % frameCount) : 0u;
-              Image next = _cropFrame(sheet, nextIndex, fw, fh, horizontal);
+              Image next = useGrid ? _cropFrameGrid(sheet, nextIndex, fw, fh)
+                                   : _cropFrame(sheet, nextIndex, fw, fh, horizontal);
               _lerp(cur, next, frac);
             }
           } break;
@@ -1077,6 +1098,36 @@ private:
 
       uint32_t baseX = horizontal ? (index * fw) : 0u;
       uint32_t baseY = horizontal ? 0u : (index * fh);
+
+      for(uint32_t y = 0; y < fh; ++y) {
+        uint32_t sy = baseY + y;
+        if(sy >= sheet.H) continue;
+        for(uint32_t x = 0; x < fw; ++x) {
+          uint32_t sx = baseX + x;
+          if(sx >= sheet.W) continue;
+          out.Px[size_t(y) * fw + x] = sheet.Px[size_t(sy) * sheet.W + sx];
+        }
+      }
+      return out;
+    }
+
+    static Image _cropFrameGrid(const Image& sheet, uint32_t index, uint32_t fw, uint32_t fh) {
+      Image out;
+      out.W = fw;
+      out.H = fh;
+      out.Px.assign(size_t(fw) * size_t(fh), 0u);
+      if(fw == 0 || fh == 0) return out;
+
+      uint32_t cols = sheet.W / fw;
+      uint32_t rows = sheet.H / fh;
+      if(cols == 0 || rows == 0) return out;
+
+      uint32_t col = index % cols;
+      uint32_t row = index / cols;
+      if(row >= rows) return out;
+
+      uint32_t baseX = col * fw;
+      uint32_t baseY = row * fh;
 
       for(uint32_t y = 0; y < fh; ++y) {
         uint32_t sy = baseY + y;
@@ -1607,7 +1658,9 @@ private:
       uint32_t smooth = namedU("smooth").value_or(posU(5).value_or(0));
 
       std::string axis = namedS("axis").value_or("");
-      bool horizontal = (!axis.empty() && (axis[0] == 'x' || axis[0] == 'h'));
+      bool axisHorizontal = (!axis.empty() && (axis[0] == 'x' || axis[0] == 'h'));
+      bool axisVertical = (!axis.empty() && (axis[0] == 'y' || axis[0] == 'v'));
+      bool useGrid = axis.empty() || axis[0] == 'g';
 
       if(frameW > 65535u || frameH > 65535u || frames > 65535u) {
         if(err) *err="параметры anim должны помещаться в uint16";
@@ -1615,7 +1668,10 @@ private:
       }
 
       uint32_t fpsQ = fps ? std::min<uint32_t>(0xFFFFu, fps * 256u) : DefaultAnimFpsQ;
-      uint32_t flags = (smooth ? AnimSmooth : 0) | (horizontal ? AnimHorizontal : 0);
+      uint32_t flags = (smooth ? AnimSmooth : 0);
+      if(useGrid) flags |= AnimGrid;
+      else if(axisHorizontal) flags |= AnimHorizontal;
+      else if(!axisVertical) flags |= AnimGrid;
 
       _emitOp(out, Op::Base_Anim);
       _emitSrcTexName(out, absPatches, relPatches, tex);
@@ -2059,7 +2115,9 @@ private:
       uint32_t smooth = namedU("smooth").value_or(posU(4).value_or(0));
 
       std::string axis = namedS("axis").value_or("");
-      bool horizontal = (!axis.empty() && (axis[0] == 'x' || axis[0] == 'h'));
+      bool axisHorizontal = (!axis.empty() && (axis[0] == 'x' || axis[0] == 'h'));
+      bool axisVertical = (!axis.empty() && (axis[0] == 'y' || axis[0] == 'v'));
+      bool useGrid = axis.empty() || axis[0] == 'g';
 
       if(frameW > 65535u || frameH > 65535u || frames > 65535u) {
         if(err) *err="параметры anim должны помещаться в uint16";
@@ -2067,7 +2125,10 @@ private:
       }
 
       uint32_t fpsQ = fps ? std::min<uint32_t>(0xFFFFu, fps * 256u) : DefaultAnimFpsQ;
-      uint32_t flags = (smooth ? AnimSmooth : 0) | (horizontal ? AnimHorizontal : 0);
+      uint32_t flags = (smooth ? AnimSmooth : 0);
+      if(useGrid) flags |= AnimGrid;
+      else if(axisHorizontal) flags |= AnimHorizontal;
+      else if(!axisVertical) flags |= AnimGrid;
 
       _emitOp(out, Op::Anim);
       _emitU16(out, frameW);

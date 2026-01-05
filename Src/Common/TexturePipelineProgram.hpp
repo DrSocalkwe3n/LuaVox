@@ -51,8 +51,8 @@ public:
     std::string Name;
   };
 
-  bool compile(std::string src, std::string* err = nullptr) {
-    Source_ = std::move(src);
+  bool compile(std::string_view src, std::string* err = nullptr) {
+    Source_ = src;
     Code_.clear();
     Patches_.clear();
     PendingSub_.clear();
@@ -423,7 +423,7 @@ public:
       if(src.Kind != SrcKind::TexId)
         return true;
       if(src.TexId >= remap.size()) {
-        if(err) *err = "Texture id out of remap range";
+        if(err) *err = "Идентификатор текстуры вне диапазона переназначения";
         return false;
       }
       uint32_t newId = remap[src.TexId];
@@ -733,7 +733,7 @@ private:
     explicit VM(TextureProvider provider) : Provider_(std::move(provider)) {}
 
     bool run(const std::vector<uint8_t>& code, OwnedTexture& out, double timeSeconds, std::string* err) {
-      if(code.empty()) { if(err) *err="Empty bytecode"; return false; }
+      if(code.empty()) { if(err) *err="Пустой байткод"; return false; }
 
       Image cur;
       std::unordered_map<uint32_t, Image> texCache;
@@ -742,7 +742,7 @@ private:
       size_t ip = 0;
 
       auto need = [&](size_t n)->bool{
-        if(ip + n > code.size()) { if(err) *err="Bytecode truncated"; return false; }
+        if(ip + n > code.size()) { if(err) *err="Байткод усечен"; return false; }
         return true;
       };
 
@@ -997,7 +997,7 @@ private:
 
       auto t = Provider_(id);
       if(!t || !t->Pixels || !t->Width || !t->Height) {
-        if(err) *err = "Texture id not found: " + std::to_string(id);
+        if(err) *err = "Идентификатор текстуры не найден: " + std::to_string(id);
         return {};
       }
       Image img;
@@ -1019,7 +1019,7 @@ private:
 
       size_t start = size_t(off);
       size_t end = start + size_t(len);
-      if(end > code.size()) { if(err) *err="Subprogram out of range"; return {}; }
+      if(end > code.size()) { if(err) *err="Подпрограмма выходит за пределы"; return {}; }
 
       std::vector<uint8_t> slice(code.begin()+start, code.begin()+end);
       OwnedTexture tmp;
@@ -1040,7 +1040,7 @@ private:
                    std::string* err) {
       if(src.Kind == SrcKind::TexId) return _loadTex(src.TexId24, texCache, err);
       if(src.Kind == SrcKind::Sub)   return _loadSub(code, src.Off24, src.Len24, texCache, subCache, timeSeconds, err);
-      if(err) *err = "Unknown SrcKind";
+      if(err) *err = "Неизвестный SrcKind";
       return {};
     }
 
@@ -1307,8 +1307,10 @@ private:
   // ========================
   // Minimal DSL Lexer/Parser
   // now supports:
+  //   name |> op(...)
+  //   32x32 "#RRGGBBAA"
+  // optional prefix:
   //   tex name |> op(...)
-  //   tex 32x32 "#RRGGBBAA"
   // nested only where op expects a texture arg:
   //   overlay( tex other |> ... )
   // Also supports overlay(other) / mask(other) / lowpart(50, other)
@@ -1501,19 +1503,20 @@ private:
   bool _parseProgram(std::string* err) {
     Lexer lx{Source_};
     Tok t = lx.next();
-    if(!(t.Kind==TokKind::Ident && t.Text=="tex")) {
-      if(err) *err="Expected 'tex' at start";
-      return false;
-    }
+    bool hasTexPrefix = (t.Kind == TokKind::Ident && t.Text == "tex");
 
     // compile base into main Code_
-    if(!_compileBaseAfterTex(lx, Code_, /*abs*/&Patches_, /*rel*/nullptr, err)) return false;
+    if(hasTexPrefix) {
+      if(!_compileBaseAfterTex(lx, Code_, /*abs*/&Patches_, /*rel*/nullptr, err)) return false;
+    } else {
+      if(!_compileBaseFromToken(lx, t, Code_, /*abs*/&Patches_, /*rel*/nullptr, err)) return false;
+    }
 
     // pipeline: |> op ...
     Tok nt = lx.next();
     while (nt.Kind == TokKind::Pipe) {
       Tok opName = lx.next();
-      if(opName.Kind != TokKind::Ident) { if(err) *err="Expected op name after |>"; return false; }
+      if(opName.Kind != TokKind::Ident) { if(err) *err="Ожидалось имя операции после |>"; return false; }
       ParsedOp op; op.Name = opName.Text;
 
       Tok peek = lx.next();
@@ -1530,7 +1533,7 @@ private:
     _emitOp(Code_, Op::End);
     if (Code_.size() > MaxCodeBytes) {
       if (err)
-        *err = "Pipeline bytecode too large: " + std::to_string(Code_.size()) +
+        *err = "Байткод пайплайна слишком большой: " + std::to_string(Code_.size()) +
           " > MaxCodeBytes(" + std::to_string(MaxCodeBytes) + ")";
       return false;
     }
@@ -1539,12 +1542,13 @@ private:
   }
 
   // ========================
-  // Base compilation after 'tex'
+  // Base compilation (optionally after 'tex')
   // supports:
-  //   1) tex name
-  //   2) tex "name(.png/.jpg/.jpeg)"  (allowed but normalized)
-  //   3) tex anim(...)
-  //   4) tex 32x32 "#RRGGBBAA"
+  //   1) name
+  //   2) "name(.png/.jpg/.jpeg)"  (allowed but normalized)
+  //   3) anim(...)
+  //   4) 32x32 "#RRGGBBAA"
+  // optional: all of the above may be prefixed with 'tex'
   // ========================
   bool _compileBaseAfterTex(Lexer& lx,
                             std::vector<uint8_t>& out,
@@ -1552,10 +1556,23 @@ private:
                             std::vector<RelPatch>* relPatches,
                             std::string* err) {
     Tok a = lx.next();
+    return _compileBaseFromToken(lx, a, out, absPatches, relPatches, err);
+  }
+
+  bool _compileBaseFromToken(Lexer& lx,
+                             const Tok& a,
+                             std::vector<uint8_t>& out,
+                             std::vector<Patch>* absPatches,
+                             std::vector<RelPatch>* relPatches,
+                             std::string* err) {
+    if(a.Kind == TokKind::End) {
+      if(err) *err="Ожидалось текстурное выражение";
+      return false;
+    }
 
     if(a.Kind == TokKind::Ident && a.Text == "anim") {
       Tok lp = lx.next();
-      if(lp.Kind != TokKind::LParen) { if(err) *err="Expected '(' after anim"; return false; }
+      if(lp.Kind != TokKind::LParen) { if(err) *err="Ожидалась '(' после anim"; return false; }
 
       ParsedOp op; op.Name="anim";
       if(!_parseArgList(lx, op, err)) return false;
@@ -1581,7 +1598,7 @@ private:
       };
 
       std::string tex = namedS("tex").value_or(posS(0).value_or(""));
-      if(tex.empty()) { if(err) *err="anim requires texture name"; return false; }
+      if(tex.empty()) { if(err) *err="anim требует имя текстуры"; return false; }
 
       uint32_t frameW = namedU("frame_w").value_or(namedU("w").value_or(posU(1).value_or(0)));
       uint32_t frameH = namedU("frame_h").value_or(namedU("h").value_or(posU(2).value_or(0)));
@@ -1593,7 +1610,7 @@ private:
       bool horizontal = (!axis.empty() && (axis[0] == 'x' || axis[0] == 'h'));
 
       if(frameW > 65535u || frameH > 65535u || frames > 65535u) {
-        if(err) *err="anim params must fit uint16";
+        if(err) *err="параметры anim должны помещаться в uint16";
         return false;
       }
 
@@ -1611,28 +1628,28 @@ private:
     }
 
     if(a.Kind == TokKind::Ident || a.Kind == TokKind::String) {
-      // tex name   (or tex "name.png" => normalized)
+      // name   (or "name.png" => normalized)
       _emitOp(out, Op::Base_Tex);
       _emitSrcTexName(out, absPatches, relPatches, a.Text);
       return true;
     }
 
     if(a.Kind == TokKind::Number) {
-      // tex 32x32 "#RRGGBBAA"
+      // 32x32 "#RRGGBBAA"
       Tok xTok = lx.next();
       Tok b = lx.next();
       Tok colTok = lx.next();
       if(xTok.Kind != TokKind::X || b.Kind != TokKind::Number || (colTok.Kind!=TokKind::Ident && colTok.Kind!=TokKind::String)) {
-        if(err) *err="Expected: tex <w>x<h> <#color>";
+        if(err) *err="Ожидалось: <w>x<h> <#color>";
         return false;
       }
       uint32_t w = a.U32, h = b.U32;
       uint32_t color = 0;
       if(!_parseHexColor(colTok.Text, color)) {
-        if(err) *err="Bad color literal (use #RRGGBB or #RRGGBBAA)";
+        if(err) *err="Неверный литерал цвета (используйте #RRGGBB или #RRGGBBAA)";
         return false;
       }
-      if(w>65535u || h>65535u) { if(err) *err="w/h must fit in uint16"; return false; }
+      if(w>65535u || h>65535u) { if(err) *err="w/h должны помещаться в uint16"; return false; }
       _emitOp(out, Op::Base_Fill);
       _emitU16(out, w);
       _emitU16(out, h);
@@ -1640,7 +1657,7 @@ private:
       return true;
     }
 
-    if(err) *err="Bad 'tex' base expression";
+    if(err) *err="Некорректное базовое текстурное выражение";
     return false;
   }
 
@@ -1661,7 +1678,7 @@ private:
       if(!_compileSubProgramFromAlreadySawTex(lx, sub, err)) return false;
 
       Tok end = lx.next();
-      if(end.Kind != TokKind::RParen) { if(err) *err="Expected ')' after sub texture expr"; return false; }
+      if(end.Kind != TokKind::RParen) { if(err) *err="Ожидалась ')' после подвыражения текстуры"; return false; }
 
       PendingSub_[&op] = std::move(sub);
       return true;
@@ -1695,7 +1712,7 @@ private:
       if(t.Kind == TokKind::Comma) { t = lx.next(); continue; }
       if(t.Kind == TokKind::RParen) return true;
 
-      if(err) *err = "Expected ',' or ')' in argument list";
+      if(err) *err = "Ожидалась ',' или ')' в списке аргументов";
       return false;
     }
   }
@@ -1728,7 +1745,7 @@ private:
       if(t.Kind == TokKind::Comma) { t = lx.next(); continue; }
       if(t.Kind == TokKind::RParen) return true;
 
-      if(err) *err = "Expected ',' or ')' in argument list";
+      if(err) *err = "Ожидалась ',' или ')' в списке аргументов";
       return false;
     }
   }
@@ -1737,7 +1754,7 @@ private:
     if(t.Kind == TokKind::Number) { out.Kind=ArgVal::ValueKind::U32; out.U32=t.U32; return true; }
     if(t.Kind == TokKind::String) { out.Kind=ArgVal::ValueKind::Str; out.S=t.Text; return true; }
     if(t.Kind == TokKind::Ident)  { out.Kind=ArgVal::ValueKind::Ident; out.S=t.Text; return true; }
-    if(err) *err = "Expected value token";
+    if(err) *err = "Ожидалось значение";
     return false;
   }
 
@@ -1764,12 +1781,12 @@ private:
       // peek
       Tok nt = lx.peek();
       if(nt.Kind == TokKind::RParen) break;
-      if(nt.Kind != TokKind::Pipe) { if(err) *err="Sub tex: expected '|>' or ')'"; return false; }
+      if(nt.Kind != TokKind::Pipe) { if(err) *err="Подтекстура: ожидалось '|>' или ')'"; return false; }
 
       // consume pipe
       lx.next();
       Tok opName = lx.next();
-      if(opName.Kind != TokKind::Ident) { if(err) *err="Sub tex: expected op name"; return false; }
+      if(opName.Kind != TokKind::Ident) { if(err) *err="Подтекстура: ожидалось имя операции"; return false; }
 
       ParsedOp op; op.Name = opName.Text;
 
@@ -1783,7 +1800,7 @@ private:
         // Instead: enforce parentheses for ops in subprogram except no-arg ops (brighten/noalpha) which can be without.
         // To keep behavior identical to main, we handle no-arg by rewinding I one token is not possible,
         // so we accept that in subprogram, no-arg ops must be written as brighten() etc.
-        if(err) *err="Sub tex: no-arg ops must use parentheses, e.g. brighten()";
+        if(err) *err="Подтекстура: операции без аргументов должны использовать скобки, напр. brighten()";
         return false;
       }
 
@@ -1795,13 +1812,13 @@ private:
     while (true) {
       Tok nt = lx.peek();
       if(nt.Kind == TokKind::RParen) break;
-      if(nt.Kind != TokKind::Pipe) { if(err) *err="Sub tex: expected '|>' or ')'"; return false; }
+      if(nt.Kind != TokKind::Pipe) { if(err) *err="Подтекстура: ожидалось '|>' или ')'"; return false; }
 
       // consume pipe
       lx.next();
 
       Tok opName = lx.next();
-      if(opName.Kind != TokKind::Ident) { if(err) *err="Sub tex: expected op name"; return false; }
+      if(opName.Kind != TokKind::Ident) { if(err) *err="Подтекстура: ожидалось имя операции"; return false; }
 
       ParsedOp op; op.Name = opName.Text;
 
@@ -1838,12 +1855,12 @@ private:
     const size_t len = sub.Bytes.size();
 
     if(offset > 0xFFFFFFu || len > 0xFFFFFFu || (offset + len) > 0xFFFFFFu) {
-      if(err) *err = "Subprogram слишком большой (off/len должны влезать в u24 байт)";
+      if(err) *err = "Подпрограмма слишком большая (off/len должны влезать в u24 байт)";
       return false;
     }
 
     if(offset + len > MaxCodeBytes) {
-      if(err) *err = "Pipeline bytecode too large after sub append: " +
+      if(err) *err = "Байткод пайплайна слишком большой после вставки подпрограммы: " +
                     std::to_string(offset + len) + " > MaxCodeBytes(" + std::to_string(MaxCodeBytes) + ")";
       return false;
     }
@@ -1904,7 +1921,7 @@ private:
 
     auto emitSrcFromPendingSub = [&]()->bool{
       auto it = PendingSub_.find(&op);
-      if(it == PendingSub_.end()) { if(err) *err="Internal: missing subprogram"; return false; }
+      if(it == PendingSub_.end()) { if(err) *err="Внутренняя ошибка: отсутствует подпрограмма"; return false; }
       uint32_t off=0, len=0;
       if(!_appendSubprogram(out, std::move(it->second), absPatches, relPatches, off, len, err)) return false;
       PendingSub_.erase(it);
@@ -1919,7 +1936,7 @@ private:
 
       // allow overlay(name) or overlay(tex=name)
       std::string tex = namedS("tex").value_or(posS(0).value_or(""));
-      if(tex.empty()) { if(err) *err="overlay requires texture arg"; return false; }
+      if(tex.empty()) { if(err) *err="overlay требует аргумент-текстуру"; return false; }
       emitSrcFromName(tex);
       return true;
     }
@@ -1929,14 +1946,14 @@ private:
       if(!op.Pos.empty() && op.Pos[0].S == "__SUBTEX__") return emitSrcFromPendingSub();
 
       std::string tex = namedS("tex").value_or(posS(0).value_or(""));
-      if(tex.empty()) { if(err) *err="mask requires texture arg"; return false; }
+      if(tex.empty()) { if(err) *err="mask требует аргумент-текстуру"; return false; }
       emitSrcFromName(tex);
       return true;
     }
 
     if(op.Name == "lowpart") {
       uint32_t pct = namedU("percent").value_or(posU(0).value_or(0));
-      if(!pct) { if(err) *err="lowpart requires percent"; return false; }
+      if(!pct) { if(err) *err="lowpart требует процент"; return false; }
 
       _emitOp(out, Op::LowPart);
       _emitU8(out, std::min<uint32_t>(100u, pct));
@@ -1945,7 +1962,7 @@ private:
       if(op.Pos.size() >= 2 && op.Pos[1].S == "__SUBTEX__") return emitSrcFromPendingSub();
 
       std::string tex = namedS("tex").value_or(posS(1).value_or(""));
-      if(tex.empty()) { if(err) *err="lowpart requires texture arg"; return false; }
+      if(tex.empty()) { if(err) *err="lowpart требует аргумент-текстуру"; return false; }
       emitSrcFromName(tex);
       return true;
     }
@@ -1954,7 +1971,7 @@ private:
     if(op.Name == "resize") {
       uint32_t w = namedU("w").value_or(posU(0).value_or(0));
       uint32_t h = namedU("h").value_or(posU(1).value_or(0));
-      if(!w || !h || w>65535u || h>65535u) { if(err) *err="resize(w,h) must fit uint16"; return false; }
+      if(!w || !h || w>65535u || h>65535u) { if(err) *err="resize(w,h) должны помещаться в uint16"; return false; }
       _emitOp(out, Op::Resize); _emitU16(out, w); _emitU16(out, h);
       return true;
     }
@@ -1979,7 +1996,7 @@ private:
     if(op.Name == "make_alpha") {
       std::string col = namedS("color").value_or(posS(0).value_or(""));
       uint32_t argb=0;
-      if(!_parseHexColor(col, argb)) { if(err) *err="make_alpha requires color #RRGGBB"; return false; }
+      if(!_parseHexColor(col, argb)) { if(err) *err="make_alpha требует цвет #RRGGBB"; return false; }
       uint32_t rgb24 = argb & 0x00FFFFFFu;
       _emitOp(out, Op::MakeAlpha);
       _emitU8(out, (rgb24 >> 16) & 0xFFu);
@@ -2020,7 +2037,7 @@ private:
     auto compileColorOp = [&](Op opcode, bool needsRatio)->bool{
       std::string col = namedS("color").value_or(posS(0).value_or(""));
       uint32_t argb=0;
-      if(!_parseHexColor(col, argb)) { if(err) *err="Bad color literal"; return false; }
+      if(!_parseHexColor(col, argb)) { if(err) *err="Неверный литерал цвета"; return false; }
       _emitOp(out, opcode);
       _emitU32(out, argb);
       if(needsRatio) {
@@ -2045,7 +2062,7 @@ private:
       bool horizontal = (!axis.empty() && (axis[0] == 'x' || axis[0] == 'h'));
 
       if(frameW > 65535u || frameH > 65535u || frames > 65535u) {
-        if(err) *err="anim params must fit uint16";
+        if(err) *err="параметры anim должны помещаться в uint16";
         return false;
       }
 
@@ -2061,7 +2078,7 @@ private:
       return true;
     }
 
-    if(err) *err = "Unknown op: " + op.Name;
+    if(err) *err = "Неизвестная операция: " + op.Name;
     return false;
   }
 };

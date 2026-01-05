@@ -1246,7 +1246,7 @@ public:
         assert(vkInst);
         assert(serverSession);
 
-        CMG.changeThreadsCount(1);
+        CMG.changeThreadsCount(3);
     }
 
     ~ChunkPreparator() {

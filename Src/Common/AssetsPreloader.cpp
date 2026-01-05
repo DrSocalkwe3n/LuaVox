@@ -162,92 +162,6 @@ AssetsPreloader::Out_reloadResources AssetsPreloader::_reloadResources(const Ass
         }
     }
 
-    auto resolveModelInfo = [&](std::string_view domain, std::string_view key) -> const ResourceFindInfo* {
-        auto& table = resourcesFirstStage[static_cast<size_t>(AssetType::Model)];
-        auto iterDomain = table.find(std::string(domain));
-        if(iterDomain == table.end())
-            return nullptr;
-        auto iterKey = iterDomain->second.find(std::string(key));
-        if(iterKey == iterDomain->second.end())
-            return nullptr;
-        return &iterKey->second;
-    };
-
-    std::function<std::optional<js::object>(std::string_view, std::string_view, std::unordered_set<std::string>&)> loadModelProfile;
-    loadModelProfile = [&](std::string_view domain, std::string_view key, std::unordered_set<std::string>& visiting)
-        -> std::optional<js::object>
-    {
-        std::string fullKey = std::string(domain) + ':' + std::string(key);
-        if(!visiting.insert(fullKey).second) {
-            LOG.warn() << "Model parent cycle: " << fullKey;
-            return std::nullopt;
-        }
-
-        const ResourceFindInfo* info = resolveModelInfo(domain, key);
-        if(!info) {
-            LOG.warn() << "Model file not found for parent: " << fullKey;
-            visiting.erase(fullKey);
-            return std::nullopt;
-        }
-
-        ResourceFile file = readFileBytes(info->Path);
-        std::string_view view(reinterpret_cast<const char*>(file.Data.data()), file.Data.size());
-        js::object obj = js::parse(view).as_object();
-
-        if(auto parentVal = obj.if_contains("parent")) {
-            if(parentVal->is_string()) {
-                std::string parentStr = std::string(parentVal->as_string());
-                auto [pDomain, pKeyRaw] = parseDomainKey(parentStr, domain);
-                fs::path pKeyPath = fs::path(pKeyRaw);
-                if(pKeyPath.extension().empty())
-                    pKeyPath += ".json";
-                std::string pKey = pKeyPath.generic_string();
-
-                std::optional<js::object> parent = loadModelProfile(pDomain, pKey, visiting);
-                if(parent) {
-                    auto mergeFieldIfMissing = [&](const char* field) {
-                        if(!obj.contains(field) && parent->contains(field))
-                            obj[field] = parent->at(field);
-                    };
-
-                    mergeFieldIfMissing("cuboids");
-                    mergeFieldIfMissing("sub_models");
-                    mergeFieldIfMissing("gui_light");
-                    mergeFieldIfMissing("ambient_occlusion");
-
-                    if(auto parentTextures = parent->if_contains("textures"); parentTextures && parentTextures->is_object()) {
-                        if(auto childTextures = obj.if_contains("textures"); childTextures && childTextures->is_object()) {
-                            auto& childObj = childTextures->as_object();
-                            const auto& parentObj = parentTextures->as_object();
-                            for(const auto& [tkey, tval] : parentObj) {
-                                if(!childObj.contains(tkey))
-                                    childObj.emplace(tkey, tval);
-                            }
-                        } else if(!obj.contains("textures")) {
-                            obj["textures"] = parentTextures->as_object();
-                        }
-                    }
-
-                    if(auto parentDisplay = parent->if_contains("display"); parentDisplay && parentDisplay->is_object()) {
-                        if(auto childDisplay = obj.if_contains("display"); childDisplay && childDisplay->is_object()) {
-                            auto& childObj = childDisplay->as_object();
-                            const auto& parentObj = parentDisplay->as_object();
-                            for(const auto& [dkey, dval] : parentObj) {
-                                if(!childObj.contains(dkey))
-                                    childObj.emplace(dkey, dval);
-                            }
-                        } else if(!obj.contains("display")) {
-                            obj["display"] = parentDisplay->as_object();
-                        }
-                    }
-                }
-            }
-        }
-
-        visiting.erase(fullKey);
-        return obj;
-    };
-
     // Функция парсинга ресурсов
     auto buildResource = [&](AssetType type, std::string_view domain, std::string_view key, const ResourceFindInfo& info) -> PendingResource {
         PendingResource out;
@@ -268,25 +182,11 @@ AssetsPreloader::Out_reloadResources AssetsPreloader::_reloadResources(const Ass
             return getId(AssetType::Texture, mDomain, mKey);
         };
 
-        auto normalizeTexturePipelineSrc = [](std::string_view src) -> std::string {
-            std::string out(src);
-            auto isSpace = [](unsigned char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; };
-            size_t start = 0;
-            while(start < out.size() && isSpace(static_cast<unsigned char>(out[start])))
-                ++start;
-            if(out.compare(start, 3, "tex") != 0) {
-                std::string pref = "tex ";
-                pref += out.substr(start);
-                return pref;
-            }
-            return out;
-        };
-
         std::function<std::vector<uint8_t>(const std::string_view)> textureResolver
             = [&](const std::string_view texturePipelineSrc) -> std::vector<uint8_t>
         {
             TexturePipelineProgram tpp;
-            bool flag = tpp.compile(normalizeTexturePipelineSrc(texturePipelineSrc));
+            bool flag = tpp.compile(texturePipelineSrc);
             if(!flag)
                 return {};
 
@@ -307,13 +207,9 @@ AssetsPreloader::Out_reloadResources AssetsPreloader::_reloadResources(const Ass
         } else if (type == AssetType::Model) {
             const std::string ext = info.Path.extension().string();
             if (ext == ".json") {
-                std::unordered_set<std::string> visiting;
-                std::optional<js::object> objOpt = loadModelProfile(domain, key, visiting);
-                if(!objOpt) {
-                    LOG.warn() << "Не удалось загрузить модель: " << info.Path.string();
-                    throw std::runtime_error("Model profile load failed");
-                }
-                js::object obj = std::move(*objOpt);
+                ResourceFile file = readFileBytes(info.Path);
+                std::string_view view(reinterpret_cast<const char*>(file.Data.data()), file.Data.size());
+                js::object obj = js::parse(view).as_object();
 
                 HeadlessModel hm;
                 out.Header = hm.parse(obj, modelResolver, textureResolver);

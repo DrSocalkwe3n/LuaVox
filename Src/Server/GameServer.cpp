@@ -1345,7 +1345,8 @@ void GameServer::init(fs::path worldPath) {
         AssetsInit.Assets.push_back(mlt.LoadChain[index].Path / "assets");
     }
 
-    Content.AM.applyResourceChange(Content.AM.reloadResources(AssetsInit));
+    auto capru = Content.AM.checkAndPrepareResourcesUpdate(AssetsInit);
+    Content.AM.applyResourcesUpdate(capru);
 
     LOG.info() << "Пре Инициализация";
 
@@ -1606,12 +1607,11 @@ void GameServer::stepConnections() {
     }
 
     if(!newClients.empty()) {
-        AssetsPreloader::Out_fullSync fullSync = Content.AM.collectFullSync();
         std::array<std::vector<ResourceId>, static_cast<size_t>(EnumAssets::MAX_ENUM)> lost{};
 
         std::vector<Net::Packet> packets;
-        packets.push_back(RemoteClient::makePacket_informateAssets_DK(fullSync.IdToDK));
-        packets.push_back(RemoteClient::makePacket_informateAssets_HH(fullSync.HashHeaders, lost));
+        packets.push_back(RemoteClient::makePacket_informateAssets_DK(Content.AM.idToDK()));
+        packets.push_back(RemoteClient::makePacket_informateAssets_HH(Content.AM.collectHashBindings(), lost));
 
         for(const std::shared_ptr<RemoteClient>& client : newClients) {
             if(!packets.empty()) {
@@ -1688,23 +1688,27 @@ void GameServer::reloadMods() {
     LOG.info() << "Перезагрузка ассетов";
     {
         {
-            AssetsPreloader::Out_applyResourceChange applied
-                = Content.AM.applyResourceChange(Content.AM.reloadResources(AssetsInit));
+            AssetsManager::Out_checkAndPrepareResourcesUpdate capru = Content.AM.checkAndPrepareResourcesUpdate(AssetsInit);
+            AssetsManager::Out_applyResourcesUpdate aru = Content.AM.applyResourcesUpdate(capru);
 
-            if(!applied.NewOrChange.empty() || !applied.Lost.empty())
+            if(!capru.ResourceUpdates.empty() || !capru.LostLinks.empty())
                 packetsToSend.push_back(
                     RemoteClient::makePacket_informateAssets_HH(
-                        applied.NewOrChange,
-                        applied.Lost
+                        aru.NewOrUpdates,
+                        capru.LostLinks
                     )
                 );
         }
     
 
         {
-            AssetsPreloader::Out_bakeId baked = Content.AM.bakeIdTables();
-            if(hasAnyBindings(baked.IdToDK)) {
-                packetsToSend.push_back(RemoteClient::makePacket_informateAssets_DK(baked.IdToDK));
+            std::array<
+                std::vector<AssetsManager::BindDomainKeyInfo>, 
+                static_cast<size_t>(EnumAssets::MAX_ENUM)
+            > baked = Content.AM.bake();
+
+            if(hasAnyBindings(baked)) {
+                packetsToSend.push_back(RemoteClient::makePacket_informateAssets_DK(baked));
             }
         }
     }
@@ -2495,9 +2499,13 @@ void GameServer::stepSyncContent() {
 
     std::vector<Net::Packet> packetsToAll;
     {
-        AssetsPreloader::Out_bakeId baked = Content.AM.bakeIdTables();
-        if(hasAnyBindings(baked.IdToDK)) {
-            packetsToAll.push_back(RemoteClient::makePacket_informateAssets_DK(baked.IdToDK));
+        std::array<
+            std::vector<AssetsManager::BindDomainKeyInfo>, 
+            static_cast<size_t>(EnumAssets::MAX_ENUM)
+        > baked = Content.AM.bake();
+        
+        if(hasAnyBindings(baked)) {
+            packetsToAll.push_back(RemoteClient::makePacket_informateAssets_DK(baked));
         }
     }
 
@@ -2515,30 +2523,8 @@ void GameServer::stepSyncContent() {
         }
     };
 
-    std::vector<AssetBinaryInfo> binaryResources;
-    for(const Hash_t& hash : full.Hashes) {
-        std::optional<
-            std::tuple<EnumAssets, uint32_t, const AssetsPreloader::MediaResource*>
-        > result = Content.AM.getResource(hash);
-
-        if(!result)
-            continue;
-
-        auto& [type, id, media] = *result;
-        LOG.debug() << "Server sending type=" << assetTypeName(type)
-            << " id=" << id
-            << " key=" << media->Domain << ':' << media->Key
-            << " hash=" << int(media->Hash[0]) << '.'
-            << int(media->Hash[1]) << '.'
-            << int(media->Hash[2]) << '.'
-            << int(media->Hash[3])
-            << " size=" << media->Resource->size();
-        Resource resource(*media->Resource);
-        binaryResources.push_back(AssetBinaryInfo{
-            .Data = std::move(resource),
-            .Hash = media->Hash
-        });
-    }
+    std::vector<std::tuple<ResourceFile::Hash_t, std::shared_ptr<const std::u8string>>> binaryResources
+        = Content.AM.getResources(full.Hashes);
 
     for(std::shared_ptr<RemoteClient>& remoteClient : Game.RemoteClients) {
         if(!binaryResources.empty())

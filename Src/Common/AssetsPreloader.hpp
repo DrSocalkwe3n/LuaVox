@@ -1,30 +1,22 @@
 #pragma once
 
-#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <functional>
 #include <memory>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <tuple>
 #include <unordered_map>
-#include <utility>
 #include <vector>
-#include "Common/TexturePipelineProgram.hpp"
+#include "Abstract.hpp"
 #include "Common/Abstract.hpp"
-#include "Common/Async.hpp"
-#include "TOSAsync.hpp"
-#include "TOSLib.hpp"
-#include "sha2.hpp"
 
 /*
     Класс отвечает за отслеживание изменений и подгрузки медиаресурсов в указанных директориях.
     Медиаресурсы, собранные из папки assets или зарегистрированные модами.
-    Хранит все данные в оперативной памяти.
 */
 
 static constexpr const char* EnumAssetsToDirectory(LV::EnumAssets value) {
@@ -49,34 +41,10 @@ namespace LV {
 namespace fs = std::filesystem;
 using AssetType = EnumAssets;
 
-struct ResourceFile {
-    using Hash_t = sha2::sha256_hash; // boost::uuids::detail::sha1::digest_type;
-
-    Hash_t Hash;
-    std::u8string Data;
-
-    void calcHash() {
-        Hash = sha2::sha256((const uint8_t*) Data.data(), Data.size());
-    }
-};
-
 class AssetsPreloader {
 public:
     using Ptr = std::shared_ptr<AssetsPreloader>;
-    using IdTable = 
-        std::unordered_map<
-            std::string, // Domain
-            std::unordered_map<
-                std::string, // Key
-                uint32_t,    // ResourceId
-                detail::TSVHash,
-                detail::TSVEq
-            >,
-            detail::TSVHash,
-            detail::TSVEq
-        >;
 
-    // 
     /*
         Ресурс имеет бинарную часть, из который вырезаны все зависимости.
         Вторая часть это заголовок, которые всегда динамично передаётся с сервера.
@@ -100,61 +68,11 @@ public:
         std::string Key;
         fs::file_time_type Timestamp;
         // Обезличенный ресурс
-        std::shared_ptr<std::u8string> Resource;
+        std::u8string Resource;
         // Его хеш
         ResourceFile::Hash_t Hash;
         // Заголовок
         std::u8string Header;
-    };
-
-    struct BindDomainKeyInfo {
-        std::string Domain;
-        std::string Key;
-    };
-
-    struct BindHashHeaderInfo {
-        ResourceId Id;
-        Hash_t Hash;
-        std::u8string Header;
-    };
-
-    struct Out_reloadResources {
-        std::unordered_map<std::string, std::vector<PendingResource>> NewOrChange[(int) AssetType::MAX_ENUM];
-        std::unordered_map<std::string, std::vector<std::string>> Lost[(int) AssetType::MAX_ENUM];
-    };
-
-    struct Out_applyResourceChange {
-        std::array<
-            std::vector<AssetsPreloader::BindHashHeaderInfo>,
-            static_cast<size_t>(AssetType::MAX_ENUM)
-        > NewOrChange;
-
-        std::array<
-            std::vector<ResourceId>, 
-            static_cast<size_t>(AssetType::MAX_ENUM)
-        > Lost;
-    };
-
-    struct Out_bakeId {
-        // Новые привязки
-        std::array<
-            std::vector<BindDomainKeyInfo>, 
-            static_cast<size_t>(AssetType::MAX_ENUM)
-        > IdToDK;
-    };
-
-    struct Out_fullSync {
-        std::array<
-            std::vector<BindDomainKeyInfo>,
-            static_cast<size_t>(AssetType::MAX_ENUM)
-        > IdToDK;
-
-        std::array<
-            std::vector<BindHashHeaderInfo>,
-            static_cast<size_t>(AssetType::MAX_ENUM)
-        > HashHeaders;
-
-        std::vector<std::tuple<AssetType, ResourceId, const MediaResource*>> Resources;
     };
 
     struct ReloadStatus {
@@ -202,59 +120,108 @@ public:
         ! Бронирует идентификаторы используя getId();
 
         instances -> пути к директории с assets или архивы с assets внутри. От низшего приоритета к высшему.
+        idResolver -> функция получения идентификатора по Тип+Домен+Ключ
+        onNewResourceParsed -> Callback на обработку распаршенных ресурсов без заголовков
+        (на стороне сервера хранится в другой сущности, на стороне клиента игнорируется).
         status -> обратный отклик о процессе обновления ресурсов.
         ReloadStatus <- новые и потерянные ресурсы.
     */
-    Out_reloadResources reloadResources(const AssetsRegister& instances, ReloadStatus* status = nullptr);
+    struct Out_checkAndPrepareResourcesUpdate {
+        // Новые связки Id -> Hash + Header + Timestamp + Path (ресурс новый или изменён)
+        std::array<
+            std::vector<
+                std::tuple<
+                    ResourceId,             // Ресурс
+                    ResourceFile::Hash_t,   // Хэш ресурса на диске
+                    ResourceHeader,         // Хедер ресурса (со всеми зависимостями)
+                    fs::file_time_type,     // Время изменения ресурса на диске
+                    fs::path                // Путь до ресурса
+                >
+            >, 
+            static_cast<size_t>(AssetType::MAX_ENUM)
+        > ResourceUpdates;
+
+        // Используется чтобы эффективно увеличить размер таблиц
+        std::array<
+            ResourceId,
+            static_cast<size_t>(AssetType::MAX_ENUM)
+        > MaxNewSize;
+
+        // Потерянные связки Id (ресурс физически потерян)
+        std::array<
+            std::vector<ResourceId>,
+            static_cast<size_t>(AssetType::MAX_ENUM)
+        > LostLinks;
+
+        /* 
+            Новые пути предоставляющие хеш
+            (по каким путям можно получить ресурс определённого хеша).
+        */
+        std::unordered_map<
+            ResourceFile::Hash_t, 
+            std::vector<fs::path>
+        > HashToPathNew;
+
+        /* 
+            Потерянные пути, предоставлявшые ресурсы с данным хешем
+            (пути по которым уже нельзя получить заданных хеш).
+        */
+        std::unordered_map<
+            ResourceFile::Hash_t, 
+            std::vector<fs::path>
+        > HashToPathLost;
+    };
+
+    Out_checkAndPrepareResourcesUpdate checkAndPrepareResourcesUpdate(
+        const AssetsRegister& instances,
+        const std::function<ResourceId(EnumAssets type, std::string_view domain, std::string_view key)>& idResolver,
+        const std::function<void(std::u8string&& resource, ResourceFile::Hash_t hash, fs::path resPath)>& onNewResourceParsed,
+        ReloadStatus* status = nullptr
+    );
 
     /*
         Применяет расчитанные изменения.
 
-        Out_applyResourceChange <- Нужно отправить клиентам новые привязки ресурсов
+        Out_applyResourceUpdate <- Нужно отправить клиентам новые привязки ресурсов
         id -> hash+header
     */
-    Out_applyResourceChange applyResourceChange(const Out_reloadResources& orr);
+    struct BindHashHeaderInfo {
+        ResourceId Id;
+        ResourceFile::Hash_t Hash;
+        ResourceHeader Header;
+    };
 
-    /*
-        Выдаёт идентификатор ресурса.
-        Многопоточно.
-        Иногда нужно вызывать bakeIdTables чтобы оптимизировать таблицы
-        идентификаторов. При этом никто не должен использовать getId
-    */
-    ResourceId getId(AssetType type, std::string_view domain, std::string_view key);
+    struct Out_applyResourcesUpdate {
+        std::array<
+            std::vector<BindHashHeaderInfo>, 
+            static_cast<size_t>(EnumAssets::MAX_ENUM)
+        > NewOrUpdates;
+    };
 
-    /*
-        Оптимизирует таблицы идентификаторов.
-        Нельзя использовать пока есть вероятность что кто-то использует getId().
-        Такжке нельзя при выполнении reloadResources().
+    Out_applyResourcesUpdate applyResourcesUpdate(const Out_checkAndPrepareResourcesUpdate& orr);
 
-        Out_bakeId <- Нужно отправить подключенным клиентам новые привязки id -> домен+ключ
-    */
-    Out_bakeId bakeIdTables();
+    std::array< 
+        std::vector<BindHashHeaderInfo>,
+        static_cast<size_t>(EnumAssets::MAX_ENUM)
+    > collectHashBindings() const 
+    {
+        std::array< 
+            std::vector<BindHashHeaderInfo>,
+            static_cast<size_t>(EnumAssets::MAX_ENUM)
+        > result;
 
-    // Выдаёт полный список привязок и ресурсов для новых клиентов.
-    Out_fullSync collectFullSync() const;
+        for(size_t type = 0; type < static_cast<size_t>(EnumAssets::MAX_ENUM); ++type) {
+            result[type].reserve(ResourceLinks[type].size());
 
-    /*
-        Выдаёт пакет со всеми текущими привязками id -> домен+ключ.
-        Используется при подключении новых клиентов.
-    */
-    void makeGlobalLinkagePacket() {
-        /// TODO: Собрать пакет с IdToDK и сжать его домены и ключи и id -> hash+header
+            ResourceId counter = 0;
+            for(const auto& [hash, header, _1, _2, _3] : ResourceLinks[type]) {
+                ResourceId id = counter++;
+                result[type].emplace_back(id, hash, header);
+            }
+        }
 
-        // Тот же пакет для обновления идентификаторов 
-        std::unreachable();
+        return result;
     }
-
-    // Выдаёт ресурс по идентификатору
-    const MediaResource* getResource(AssetType type, uint32_t id) const;
-
-    // Выдаёт ресурс по хешу
-    std::optional<std::tuple<AssetType, uint32_t, const MediaResource*>> getResource(const ResourceFile::Hash_t& hash);
-
-    // Выдаёт зависимости к ресурсам профиля ноды
-    std::tuple<AssetsNodestate, std::vector<AssetsModel>, std::vector<AssetsTexture>>
-        getNodeDependency(const std::string& domain, const std::string& key);
 
 private:
     struct ResourceFindInfo {
@@ -262,6 +229,8 @@ private:
         fs::path ArchivePath, Path;
         // Время изменения файла
         fs::file_time_type Timestamp;
+        // Идентификатор ресурса
+        ResourceId Id;
     };
 
     struct HashHasher {
@@ -275,136 +244,31 @@ private:
         }
     };
 
+    #ifndef NDEBUG
     // Текущее состояние reloadResources
     std::atomic<bool> _Reloading = false;
-
-    // Если идентификатор не найден в асинхронной таблице, переходим к работе с синхронной
-    ResourceId _getIdNew(AssetType type, std::string_view domain, std::string_view key);
-
-    Out_reloadResources _reloadResources(const AssetsRegister& instances, ReloadStatus& status);
-
-    #ifndef NDEBUG
-    // Для контроля за режимом слияния ключей
-    bool DKToIdInBakingMode = false;
     #endif
 
-    /*
-        Многопоточная таблица идентификаторов. Новые идентификаторы выделяются в NewDKToId,
-        и далее вливаются в основную таблицу при вызове bakeIdTables()
-    */
-    std::array<IdTable, static_cast<size_t>(AssetType::MAX_ENUM)> DKToId;
-    /*
-        Многопоточная таблица обратного резолва.
-        Идентификатор -> домен+ключ
-    */
-    std::array<std::vector<BindDomainKeyInfo>, static_cast<size_t>(AssetType::MAX_ENUM)> IdToDK;
+    Out_checkAndPrepareResourcesUpdate _checkAndPrepareResourcesUpdate(
+        const AssetsRegister& instances,
+        const std::function<ResourceId(EnumAssets type, std::string_view domain, std::string_view key)>& idResolver,
+        const std::function<void(std::u8string&& resource, ResourceFile::Hash_t hash, fs::path resPath)>& onNewResourceParsed,
+        ReloadStatus& status
+    );
 
-    /*
-        Таблица в которой выделяются новые идентификаторы, которых не нашлось в DKToId.
-        Данный объект одновременно может работать только с одним потоком.
-    */
-    std::array<TOS::SpinlockObject<IdTable>, static_cast<size_t>(AssetType::MAX_ENUM)> NewDKToId;
-    /*
-        Конец поля идентификаторов, известный клиентам.
-        Если NextId продвинулся дальше, нужно уведомить клиентов о новых привязках.
-    */
-    std::array<ResourceId, static_cast<size_t>(AssetType::MAX_ENUM)> LastSendId;
-    /*
-        Списки в которых пишутся новые привязки. Начала спиской исходят из LastSendId.
-        Id + LastSendId -> домен+ключ
-    */
-    std::array<TOS::SpinlockObject<std::vector<BindDomainKeyInfo>>, static_cast<size_t>(AssetType::MAX_ENUM)> NewIdToDK;
-
-    // Загруженные ресурсы
-    std::array<std::unordered_map<ResourceId, MediaResource>, static_cast<size_t>(AssetType::MAX_ENUM)> MediaResources;
-    // Hash -> ресурс
-    std::unordered_map<ResourceFile::Hash_t, std::pair<AssetType, ResourceId>, HashHasher> HashToId;
-    // Для последовательного выделения идентификаторов
-    std::array<ResourceId, static_cast<size_t>(AssetType::MAX_ENUM)> NextId;
+    // Привязка Id -> Hash + Header + Timestamp + Path
+    std::array<
+        std::vector<
+            std::tuple<
+                ResourceFile::Hash_t,   // Хэш ресурса на диске
+                ResourceHeader,         // Хедер ресурса (со всеми зависимостями)
+                fs::file_time_type,     // Время изменения ресурса на диске
+                fs::path,               // Путь до ресурса
+                bool                    // IsExist
+            >
+        >, 
+        static_cast<size_t>(AssetType::MAX_ENUM)
+    > ResourceLinks;
 };
-
-inline ResourceId AssetsPreloader::getId(AssetType type, std::string_view domain, std::string_view key) {
-    #ifndef NDEBUG
-    assert(!DKToIdInBakingMode);
-    #endif
-
-    const auto& typeTable = DKToId[static_cast<size_t>(type)];
-    auto domainTable = typeTable.find(domain);
-
-    #ifndef NDEBUG
-    assert(!DKToIdInBakingMode);
-    #endif
-
-    if(domainTable == typeTable.end())
-        return _getIdNew(type, domain, key);
-
-    auto keyTable = domainTable->second.find(key);
-
-    if (keyTable == domainTable->second.end())
-        return _getIdNew(type, domain, key);
-
-    return keyTable->second;
-
-    return 0;
-}
-
-inline ResourceId AssetsPreloader::_getIdNew(AssetType type, std::string_view domain, std::string_view key) {
-    auto lock = NewDKToId[static_cast<size_t>(type)].lock();
-
-    auto iterDomainNewTable = lock->find(domain);
-    if(iterDomainNewTable == lock->end()) {
-        iterDomainNewTable = lock->emplace_hint(
-            iterDomainNewTable,
-            (std::string) domain,
-            std::unordered_map<std::string, uint32_t, detail::TSVHash, detail::TSVEq>{}
-        );
-    }
-
-    auto& domainNewTable = iterDomainNewTable->second;
-
-    if(auto iter = domainNewTable.find(key); iter != domainNewTable.end())
-        return iter->second;
-
-    uint32_t id = domainNewTable[(std::string) key] = NextId[static_cast<size_t>(type)]++;
-
-    auto lock2 = NewIdToDK[static_cast<size_t>(type)].lock();
-    lock.unlock();
-
-    lock2->emplace_back((std::string) domain, (std::string) key);
-
-    return id;
-}
-
-inline const AssetsPreloader::MediaResource* AssetsPreloader::getResource(AssetType type, uint32_t id) const {
-    auto& iterType = MediaResources[static_cast<size_t>(type)];
-
-    auto iterRes = iterType.find(id);
-    if(iterRes == iterType.end())
-        return nullptr;
-
-    return &iterRes->second;
-}
-
-inline std::optional<std::tuple<AssetType, uint32_t, const AssetsPreloader::MediaResource*>> 
-    AssetsPreloader::getResource(const ResourceFile::Hash_t& hash)
-{
-    auto iter = HashToId.find(hash);
-    if(iter == HashToId.end())
-        return std::nullopt;
-
-    auto [type, id] = iter->second;
-    const MediaResource* res = getResource(type, id);
-    if(!res) {
-        HashToId.erase(iter);
-        return std::nullopt;
-    }
-
-    if(res->Hash != hash) {
-        HashToId.erase(iter);
-        return std::nullopt;
-    }
-
-    return std::tuple<AssetType, uint32_t, const MediaResource*>{type, id, res};
-}
 
 }

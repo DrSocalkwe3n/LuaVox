@@ -824,6 +824,10 @@ std::u8string unCompressLinear(std::u8string_view data) {
     return *(std::u8string*) &outString;
 }
 
+Hash_t ResourceFile::calcHash(const char8_t* data, size_t size) {
+    return sha2::sha256((const uint8_t*) data, size);
+}
+
 ResourceHeader HeadlessNodeState::parse(const js::object& profile, const std::function<AssetsModel(const std::string_view model)>& modelResolver) {
     std::vector<AssetsModel> headerIds;
     

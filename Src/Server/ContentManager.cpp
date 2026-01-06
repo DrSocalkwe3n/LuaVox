@@ -4,7 +4,7 @@
 
 namespace LV::Server {
 
-ContentManager::ContentManager(AssetsPreloader& am)
+ContentManager::ContentManager(AssetsManager& am)
     : AM(am)
 {
     std::fill(std::begin(NextId), std::end(NextId), 1);
@@ -156,20 +156,6 @@ ContentManager::Out_buildEndProfiles ContentManager::buildEndProfiles() {
         std::sort(keys.begin(), keys.end());
         auto iterErase = std::unique(keys.begin(), keys.end());
         keys.erase(iterErase, keys.end());
-    }
-
-    for(ResourceId id : ProfileChanges[(int) EnumDefContent::Node]) {
-        std::optional<DefNode>& node = getEntry_Node(id);
-        if(!node) {
-            continue;
-        }
-
-        auto [nodestateId, assetsModel, assetsTexture]
-            = AM.getNodeDependency(node->Domain, node->Key);
-
-        node->NodestateId = nodestateId;
-        node->ModelDeps = std::move(assetsModel);
-        node->TextureDeps = std::move(assetsTexture);
     }
 
     return result;

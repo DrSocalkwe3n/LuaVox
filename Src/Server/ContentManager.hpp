@@ -1,11 +1,9 @@
 #pragma once
 
 #include "Common/Abstract.hpp"
-#include "Server/Abstract.hpp"
-#include "Common/AssetsPreloader.hpp"
+#include "AssetsManager.hpp"
 #include <sol/table.hpp>
 #include <unordered_map>
-#include <unordered_set>
 
 
 namespace LV::Server {
@@ -135,7 +133,7 @@ class ContentManager {
     void registerBase_Entity(ResourceId id, const std::string& domain, const std::string& key, const sol::table& profile);
 
 public:
-    ContentManager(AssetsPreloader &am);
+    ContentManager(AssetsManager &am);
     ~ContentManager();
 
     // Регистрирует определение контента
@@ -215,7 +213,7 @@ public:
 
 private:
     TOS::Logger LOG = "Server>ContentManager";
-    AssetsPreloader& AM;
+    AssetsManager& AM;
 };
 
 }

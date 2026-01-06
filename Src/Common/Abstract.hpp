@@ -553,6 +553,19 @@ inline std::pair<std::string, std::string> parseDomainKey(const std::string& val
     }
 }
 
+struct ResourceFile {
+    using Hash_t = std::array<uint8_t, 32>;
+
+    Hash_t Hash;
+    std::u8string Data;
+
+    static Hash_t calcHash(const char8_t* data, size_t size);
+
+    void calcHash() {
+        Hash = calcHash(Data.data(), Data.size());
+    }
+};
+
 struct NodestateEntry {
     std::string Name;
     int Variability = 0;                    // Количество возможный значений состояния

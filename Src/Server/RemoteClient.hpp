@@ -5,6 +5,7 @@
 #include <Common/Net.hpp>
 #include "Abstract.hpp"
 #include "Common/Packets.hpp"
+#include "Server/AssetsManager.hpp"
 #include "Server/ContentManager.hpp"
 #include <Common/Abstract.hpp>
 #include <bitset>
@@ -256,7 +257,7 @@ class RemoteClient {
         std::vector<Hash_t> OnClient;
         // Отправляемые на клиент ресурсы
         // Ресурс, количество отправленных байт
-        std::vector<std::tuple<Resource, size_t>> ToSend;
+        std::vector<std::tuple<ResourceFile::Hash_t, std::shared_ptr<const std::u8string>, size_t>> ToSend;
         // Пакет с ресурсами
         std::vector<Net::Packet> AssetsPackets;
         Net::Packet AssetsPacket;
@@ -361,7 +362,7 @@ public:
     // Создаёт пакет для всех игроков с оповещением о новых идентификаторах (id -> domain+key)
     static Net::Packet makePacket_informateAssets_DK(
         const std::array<
-            std::vector<AssetsPreloader::BindDomainKeyInfo>, 
+            std::vector<AssetsManager::BindDomainKeyInfo>, 
             static_cast<size_t>(EnumAssets::MAX_ENUM)
         >& dkVector
     );
@@ -369,7 +370,7 @@ public:
     // Создаёт пакет для всех игроков с оповещением об изменении файлов ресурсов (id -> hash+header)
     static Net::Packet makePacket_informateAssets_HH(
         const std::array< 
-            std::vector<AssetsPreloader::BindHashHeaderInfo>,
+            std::vector<AssetsManager::BindHashHeaderInfo>,
             static_cast<size_t>(EnumAssets::MAX_ENUM)
         >& hhVector,
         const std::array<
@@ -380,7 +381,7 @@ public:
 
     // Оповещение о двоичных ресурсах (стриминг по запросу)
     void informateBinaryAssets(
-        const std::vector<AssetBinaryInfo>& resources
+        const std::vector<std::tuple<ResourceFile::Hash_t, std::shared_ptr<const std::u8string>>>& resources
     );
 
     // Создаёт пакет об обновлении игровых профилей

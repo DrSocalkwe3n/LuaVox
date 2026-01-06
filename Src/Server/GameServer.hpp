@@ -14,7 +14,6 @@
 #include "RemoteClient.hpp"
 #include "Server/Abstract.hpp"
 #include <TOSLib.hpp>
-#include <functional>
 #include <memory>
 #include <queue>
 #include <set>
@@ -25,6 +24,7 @@
 
 #include "WorldDefManager.hpp"
 #include "ContentManager.hpp"
+#include "AssetsManager.hpp"
 #include "World.hpp"
 
 #include "SaveBackend.hpp"
@@ -73,7 +73,7 @@ class GameServer : public AsyncObject {
 
     struct ContentObj {
     public:
-        AssetsPreloader AM;
+        AssetsManager AM;
         ContentManager CM;
 
         // Если контент был перерегистрирован (исключая двоичные ресурсы), то профили будут повторно разосланы

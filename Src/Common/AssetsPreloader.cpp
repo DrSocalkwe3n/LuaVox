@@ -1,5 +1,9 @@
 #include "AssetsPreloader.hpp"
+#include "Common/Abstract.hpp"
+#include "Common/TexturePipelineProgram.hpp"
+#include "sha2.hpp"
 #include <atomic>
+#include <filesystem>
 #include <fstream>
 #include <unordered_set>
 #include <utility>
@@ -42,11 +46,26 @@ static std::u8string readOptionalMeta(const fs::path& path) {
 }
 
 AssetsPreloader::AssetsPreloader() {
-    std::fill(NextId.begin(), NextId.end(), 1);
-    std::fill(LastSendId.begin(), LastSendId.end(), 1);
+    for(size_t type = 0; type < static_cast<size_t>(EnumAssets::MAX_ENUM); type++) {
+        ResourceLinks[type].emplace_back(
+            ResourceFile::Hash_t{0},
+            ResourceHeader(),
+            fs::file_time_type(),
+            fs::path{""},
+            false
+        );
+    }
 }
 
-AssetsPreloader::Out_reloadResources AssetsPreloader::reloadResources(const AssetsRegister& instances, ReloadStatus* status) {
+AssetsPreloader::Out_checkAndPrepareResourcesUpdate AssetsPreloader::checkAndPrepareResourcesUpdate(
+    const AssetsRegister& instances,
+    const std::function<ResourceId(EnumAssets type, std::string_view domain, std::string_view key)>& idResolver,
+    const std::function<void(std::u8string&& resource, ResourceFile::Hash_t hash, fs::path resPath)>& onNewResourceParsed,
+    ReloadStatus* status
+) {
+    assert(idResolver);
+    assert(onNewResourceParsed);
+
     bool expected = false;
     assert(_Reloading.compare_exchange_strong(expected, true) && "Двойной вызов reloadResources");
     struct ReloadGuard {
@@ -56,7 +75,7 @@ AssetsPreloader::Out_reloadResources AssetsPreloader::reloadResources(const Asse
 
     try {
         ReloadStatus secondStatus;
-        return _reloadResources(instances, status ? *status : secondStatus);
+        return _checkAndPrepareResourcesUpdate(instances, idResolver, onNewResourceParsed, status ? *status : secondStatus);
     } catch(const std::exception& exc) {
         LOG.error() << exc.what();
         assert(!"reloadResources: здесь не должно быть ошибок");
@@ -67,9 +86,12 @@ AssetsPreloader::Out_reloadResources AssetsPreloader::reloadResources(const Asse
     }
 }
 
-AssetsPreloader::Out_reloadResources AssetsPreloader::_reloadResources(const AssetsRegister& instances, ReloadStatus& status) {
-    Out_reloadResources result;
-
+AssetsPreloader::Out_checkAndPrepareResourcesUpdate AssetsPreloader::_checkAndPrepareResourcesUpdate(
+    const AssetsRegister& instances,
+    const std::function<ResourceId(EnumAssets type, std::string_view domain, std::string_view key)>& idResolver,
+    const std::function<void(std::u8string&& resource, ResourceFile::Hash_t hash, fs::path resPath)>& onNewResourceParsed,
+    ReloadStatus& status
+) {
     // 1) Поиск всех ресурсов и построение конечной карты ресурсов (timestamps, path, name, size)
     // Карта найденных ресурсов
     std::array<
@@ -87,12 +109,12 @@ AssetsPreloader::Out_reloadResources AssetsPreloader::_reloadResources(const Ass
         static_cast<size_t>(AssetType::MAX_ENUM)
     > resourcesFirstStage;
 
-    for (const fs::path& instance : instances.Assets) {
+    for(const fs::path& instance : instances.Assets) {
         try {
-            if (fs::is_regular_file(instance)) {
+            if(fs::is_regular_file(instance)) {
                 // Может архив
                 /// TODO: пока не поддерживается
-            } else if (fs::is_directory(instance)) {
+            } else if(fs::is_directory(instance)) {
                 // Директория
                 fs::path assetsRoot = instance;
                 fs::path assetsCandidate = instance / "assets";
@@ -122,20 +144,20 @@ AssetsPreloader::Out_reloadResources AssetsPreloader::_reloadResources(const Ass
                         >& firstStage = resourcesFirstStage[static_cast<size_t>(assetType)][domain];
 
                         // Исследуем все ресурсы одного типа
-                        for (auto begin = fs::recursive_directory_iterator(assetPath), end = fs::recursive_directory_iterator(); begin != end; begin++) {
-                            if (begin->is_directory())
+                        for(auto begin = fs::recursive_directory_iterator(assetPath), end = fs::recursive_directory_iterator(); begin != end; begin++) {
+                            if(begin->is_directory())
                                 continue;
 
                             fs::path file = begin->path();
-                            if (assetType == AssetType::Texture && file.extension() == ".meta")
+                            if(assetType == AssetType::Texture && file.extension() == ".meta")
                                 continue;
 
                             std::string key = fs::relative(file, assetPath).generic_string();
-                            if (firstStage.contains(key))
+                            if(firstStage.contains(key))
                                 continue;
 
                             fs::file_time_type timestamp = fs::last_write_time(file);
-                            if (assetType == AssetType::Texture) {
+                            if(assetType == AssetType::Texture) {
                                 fs::path metaPath = file;
                                 metaPath += ".meta";
                                 if (fs::exists(metaPath) && fs::is_regular_file(metaPath)) {
@@ -148,7 +170,8 @@ AssetsPreloader::Out_reloadResources AssetsPreloader::_reloadResources(const Ass
                             // Работаем с ресурсом
                             firstStage[key] = ResourceFindInfo{
                                 .Path = file,
-                                .Timestamp = timestamp
+                                .Timestamp = timestamp,
+                                .Id = idResolver(assetType, domain, key)
                             };
                         }
                     }
@@ -158,7 +181,6 @@ AssetsPreloader::Out_reloadResources AssetsPreloader::_reloadResources(const Ass
             }
         } catch (const std::exception& exc) {
             /// TODO: Логгировать в статусе
-
         }
     }
 
@@ -172,14 +194,14 @@ AssetsPreloader::Out_reloadResources AssetsPreloader::_reloadResources(const Ass
             = [&](const std::string_view model) -> uint32_t
         {
             auto [mDomain, mKey] = parseDomainKey(model, domain);
-            return getId(AssetType::Model, mDomain, mKey);
+            return idResolver(AssetType::Model, mDomain, mKey);
         };
 
         std::function<std::optional<uint32_t>(std::string_view)> textureIdResolver
             = [&](std::string_view texture) -> std::optional<uint32_t>
         {
             auto [mDomain, mKey] = parseDomainKey(texture, domain);
-            return getId(AssetType::Texture, mDomain, mKey);
+            return idResolver(AssetType::Texture, mDomain, mKey);
         };
 
         std::function<std::vector<uint8_t>(const std::string_view)> textureResolver
@@ -202,8 +224,8 @@ AssetsPreloader::Out_reloadResources AssetsPreloader::_reloadResources(const Ass
 
             HeadlessNodeState hns;
             out.Header = hns.parse(obj, modelResolver);
-            out.Resource = std::make_shared<std::u8string>(hns.dump());
-            out.Hash = sha2::sha256((const uint8_t*) out.Resource->data(), out.Resource->size());
+            out.Resource = hns.dump();
+            out.Hash = sha2::sha256((const uint8_t*) out.Resource.data(), out.Resource.size());
         } else if (type == AssetType::Model) {
             const std::string ext = info.Path.extension().string();
             if (ext == ".json") {
@@ -213,19 +235,8 @@ AssetsPreloader::Out_reloadResources AssetsPreloader::_reloadResources(const Ass
 
                 HeadlessModel hm;
                 out.Header = hm.parse(obj, modelResolver, textureResolver);
-                std::u8string compiled = hm.dump();
-                if(hm.Cuboids.empty()) {
-                    static std::atomic<uint32_t> debugEmptyModelLogCount = 0;
-                    uint32_t idx = debugEmptyModelLogCount.fetch_add(1);
-                    if(idx < 128) {
-                        LOG.warn() << "Model compiled with empty cuboids: "
-                            << domain << ':' << key
-                            << " file=" << info.Path.string()
-                            << " size=" << compiled.size();
-                    }
-                }
-                out.Resource = std::make_shared<std::u8string>(std::move(compiled));
-                out.Hash = sha2::sha256((const uint8_t*) out.Resource->data(), out.Resource->size());
+                out.Resource = hm.dump();
+                out.Hash = sha2::sha256((const uint8_t*) out.Resource.data(), out.Resource.size());
             // } else if (ext == ".gltf" || ext == ".glb") {
             //     /// TODO: добавить поддержку gltf
             //     ResourceFile file = readFileBytes(info.Path);
@@ -236,239 +247,157 @@ AssetsPreloader::Out_reloadResources AssetsPreloader::_reloadResources(const Ass
             }
         } else if (type == AssetType::Texture) {
             ResourceFile file = readFileBytes(info.Path);
-            out.Resource = std::make_shared<std::u8string>(std::move(file.Data));
+            out.Resource = std::move(file.Data);
             out.Hash = file.Hash;
             out.Header = readOptionalMeta(info.Path);
         } else {
             ResourceFile file = readFileBytes(info.Path);
-            out.Resource = std::make_shared<std::u8string>(std::move(file.Data));
+            out.Resource = std::move(file.Data);
             out.Hash = file.Hash;
         }
 
-        out.Id = getId(type, domain, key);
+        out.Id = idResolver(type, domain, key);
 
         return out;
-    };
+    }; 
 
-    // 2) Обрабатываться будут только изменённые (новый timestamp) или новые ресурсы
-    // Определяем каких ресурсов не стало
+    // 2) Определяем какие ресурсы изменились (новый timestamp) или новые ресурсы
+    Out_checkAndPrepareResourcesUpdate result;
+
+    // Собираем идентификаторы, чтобы потом определить какие ресурсы пропали
+    std::array<
+        std::unordered_set<ResourceId>,
+        static_cast<size_t>(EnumAssets::MAX_ENUM)
+    > uniqueExists;
+
     for(size_t type = 0; type < static_cast<size_t>(AssetType::MAX_ENUM); ++type) {
-        auto& tableResourcesFirstStage = resourcesFirstStage[type];
-        for(const auto& [id, resource] : MediaResources[type]) {
-            if(tableResourcesFirstStage.empty()) {
-                result.Lost[type][resource.Domain].push_back(resource.Key);
-                continue;
-            }
+        auto& uniqueExistsTypes = uniqueExists[type];
+        const auto& resourceLinksTyped = ResourceLinks[type];
+        result.MaxNewSize[type] = resourceLinksTyped.size();
 
-            auto iterDomain = tableResourcesFirstStage.find(resource.Domain);
-            if(iterDomain == tableResourcesFirstStage.end()) {
-                result.Lost[type][resource.Domain].push_back(resource.Key);
-                continue;
-            }
+        {
+            size_t allIds = 0;
+            for(const auto& [domain, keys] : resourcesFirstStage[type])
+                allIds += keys.size();
 
-            if(!iterDomain->second.contains(resource.Key)) {
-                result.Lost[type][resource.Domain].push_back(resource.Key);
-            }
+            uniqueExistsTypes.reserve(allIds);
         }
-    }
 
-    // Определение новых или изменённых ресурсов
-    for(size_t type = 0; type < static_cast<size_t>(AssetType::MAX_ENUM); ++type) {
-        for(const auto& [domain, table] : resourcesFirstStage[type]) {
-            auto iterTableDomain = DKToId[type].find(domain);
-            if(iterTableDomain == DKToId[type].end()) {
-                // Домен неизвестен движку, все ресурсы в нём новые
-                for(const auto& [key, info] : table) {
-                    PendingResource resource = buildResource(static_cast<AssetType>(type), domain, key, info);
-                    result.NewOrChange[type][domain].push_back(std::move(resource));
-                }
-            } else {
-                for(const auto& [key, info] : table) {
-                    bool needsUpdate = true;
-                    if(auto iterKey = iterTableDomain->second.find(key); iterKey != iterTableDomain->second.end()) {
-                        // Идентификатор найден
-                        auto iterRes = MediaResources[type].find(iterKey->second);
-                        // Если нашли ресурс по идентификатору и время изменения не поменялось, то он не новый и не изменился
-                        if(iterRes != MediaResources[type].end() && iterRes->second.Timestamp == info.Timestamp)
-                            needsUpdate = false;
+        for(const auto& [domain, keys] : resourcesFirstStage[type]) {
+            for(const auto& [key, res] : keys) {
+                uniqueExistsTypes.insert(res.Id);
+
+                if(res.Id >= resourceLinksTyped.size() || !std::get<bool>(resourceLinksTyped[res.Id]))
+                {   // Если идентификатора нет в таблице или ресурс не привязан
+                    PendingResource resource = buildResource(static_cast<AssetType>(type), domain, key, res);
+                    onNewResourceParsed(std::move(resource.Resource), resource.Hash, res.Path);
+                    result.HashToPathNew[resource.Hash].push_back(res.Path);
+
+                    if(res.Id >= result.MaxNewSize[type])
+                        result.MaxNewSize[type] = res.Id+1;
+
+                    result.ResourceUpdates[type].emplace_back(res.Id, resource.Hash, std::move(resource.Header), resource.Timestamp, res.Path);
+                } else if(
+                    std::get<fs::path>(resourceLinksTyped[res.Id]) != res.Path
+                    || std::get<fs::file_time_type>(resourceLinksTyped[res.Id]) != res.Timestamp
+                ) { // Если ресурс теперь берётся с другого места или изменилось время изменения файла
+                    const auto& lastResource = resourceLinksTyped[res.Id];
+                    PendingResource resource = buildResource(static_cast<AssetType>(type), domain, key, res);
+                    
+                    if(auto lastHash = std::get<ResourceFile::Hash_t>(lastResource); lastHash != resource.Hash) {
+                        // Хэш изменился
+                        // Сообщаем о новом ресурсе
+                        onNewResourceParsed(std::move(resource.Resource), resource.Hash, res.Path);
+                        // Старый хэш более не доступен по этому расположению.
+                        result.HashToPathLost[lastHash].push_back(std::get<fs::path>(resourceLinksTyped[res.Id]));
+                        // Новый хеш стал доступен по этому расположению.
+                        result.HashToPathNew[resource.Hash].push_back(res.Path);
+                    } else if(std::get<fs::path>(resourceLinksTyped[res.Id]) != res.Path) {
+                        // Изменился конечный путь.
+                        // Хэш более не доступен по этому расположению.
+                        result.HashToPathLost[resource.Hash].push_back(std::get<fs::path>(resourceLinksTyped[res.Id]));
+                        // Хеш теперь доступен по этому расположению.
+                        result.HashToPathNew[resource.Hash].push_back(res.Path);
+                    } else {
+                        // Ресурс без заголовка никак не изменился.
                     }
 
-                    if(!needsUpdate)
-                        continue;
-
-                    PendingResource resource = buildResource(static_cast<AssetType>(type), domain, key, info);
-                    result.NewOrChange[(int) type][domain].push_back(std::move(resource));
+                    // Чтобы там не поменялось, мог поменятся заголовок. Уведомляем о новой привязке.
+                    result.ResourceUpdates[type].emplace_back(res.Id, resource.Hash, std::move(resource.Header), resource.Timestamp, res.Path);
+                } else {
+                    // Ресурс не изменился
                 }
             }
         }
     }
 
-    return result;
-}
-
-AssetsPreloader::Out_applyResourceChange AssetsPreloader::applyResourceChange(const Out_reloadResources& orr) {
-    Out_applyResourceChange result;
-
-    // Удаляем ресурсы
-    /*
-        Удаляются только ресурсы, при этом за ними остаётся бронь на идентификатор
-        Уже скомпилированные зависимости к ресурсам не будут
-        перекомпилироваться для смены идентификатора.
-        Если нужный ресурс появится, то привязка останется.
-        Новые клиенты не получат ресурс которого нет,
-        но он может использоваться
-    */
-    for(size_t type = 0; type < static_cast<size_t>(AssetType::MAX_ENUM); type++) {
-        for(const auto& [domain, keys] : orr.Lost[type]) {
-            auto iterDomain = DKToId[type].find(domain);
-
-            // Если уже было решено, что ресурсы были, и стали потерянными, то так и должно быть
-            assert(iterDomain != DKToId[type].end());
-
-            for(const auto& key : keys) {
-                auto iterKey = iterDomain->second.find(key);
-
-                // Ресурс был и должен быть
-                assert(iterKey != iterDomain->second.end());
-
-                uint32_t id = iterKey->second;
-                auto& resType = MediaResources[type];
-                auto iterRes = resType.find(id);
-                if(iterRes == resType.end())
-                    continue;
-
-                // Ресурс был потерян
-                result.Lost[type].push_back(id);
-                // Hash более нам неизвестен
-                HashToId.erase(iterRes->second.Hash);
-                // Затираем ресурс
-                resType.erase(iterRes);
-            }
-        }
-    }
-
-    // Добавляем
-    for(int type = 0; type < (int) AssetType::MAX_ENUM; type++) {
-        auto& typeTable = DKToId[type];
-        for(const auto& [domain, resources] : orr.NewOrChange[type]) {
-            auto& domainTable = typeTable[domain];
-            for(const PendingResource& pending : resources) {
-                MediaResource resource {
-                    .Domain = domain,
-                    .Key = std::move(pending.Key),
-                    .Timestamp = pending.Timestamp,
-                    .Resource = std::move(pending.Resource),
-                    .Hash = pending.Hash,
-                    .Header = std::move(pending.Header)
-                };
-
-                auto& table = MediaResources[type];
-                // Нужно затереть старую ссылку хеша на данный ресурс
-                if(auto iter = table.find(pending.Id); iter != table.end())
-                    HashToId.erase(iter->second.Hash);
-
-                // Добавили ресурс
-                table[pending.Id] = resource;
-                // Связали с хешем
-                HashToId[resource.Hash] = {static_cast<AssetType>(type), pending.Id};
-                // Осведомили о новом/изменённом ресурсе
-                result.NewOrChange[type].emplace_back(pending.Id, resource.Hash, std::move(resource.Header));
-            }
-        }
-
-        // Не должно быть ресурсов, которые были помечены как потерянные
-        #ifndef NDEBUG
-        std::unordered_set<uint32_t> changed;
-        for(const auto& [id, _, _2] : result.NewOrChange[type])
-            changed.insert(id);
-
-        auto& lost = result.Lost[type];
-        for(auto iter : lost)
-            assert(!changed.contains(iter));
-        #endif
-    }
-
-    return result;
-}
-
-AssetsPreloader::Out_bakeId AssetsPreloader::bakeIdTables() {
-    #ifndef NDEBUG
-
-    assert(!DKToIdInBakingMode);
-    DKToIdInBakingMode = true;
-    struct _tempStruct {
-        AssetsPreloader* handler;
-        ~_tempStruct() { handler->DKToIdInBakingMode = false; }
-    } _lock{this};
-
-    #endif
-
-    Out_bakeId result;
-
+    // 3) Определяем какие ресурсы пропали
     for(size_t type = 0; type < static_cast<size_t>(AssetType::MAX_ENUM); ++type) {
-        // домен+ключ -> id
-        {
-            auto lock = NewDKToId[type].lock();
-            auto& dkToId = DKToId[type];
-            for(auto& [domain, keys] : *lock) {
-                // Если домен не существует, просто воткнёт новые ключи
-                auto [iterDomain, inserted] = dkToId.try_emplace(domain, std::move(keys));
-                if(!inserted) {
-                    // Домен уже существует, сливаем новые ключи
-                    iterDomain->second.merge(keys);
-                }
-            }
+        const auto& resourceLinksTyped = ResourceLinks[type];
 
-            lock->clear();
-        }
+        size_t counter = 0;
+        for(const auto& [hash, header, timestamp, path, isExist] : resourceLinksTyped) {
+            size_t id = counter++;
+            if(!isExist)
+                continue;
 
-        // id -> домен+ключ
-        {
-            auto lock = NewIdToDK[type].lock();
+            if(uniqueExists[type].contains(id))
+                continue;
 
-            auto& idToDK = IdToDK[type];
-            result.IdToDK[type] = std::move(*lock);
-            lock->clear();
-            idToDK.append_range(result.IdToDK[type]);
-
-            // result.LastSendId[type] = LastSendId[type];
-            LastSendId[type] = NextId[type];
+            // Ресурс потерян
+            // Хэш более не доступен по этому расположению.
+            result.HashToPathLost[hash].push_back(path);
+            result.LostLinks[type].push_back(id);
         }
     }
 
     return result;
 }
 
-AssetsPreloader::Out_fullSync AssetsPreloader::collectFullSync() const {
-    Out_fullSync out;
+AssetsPreloader::Out_applyResourcesUpdate AssetsPreloader::applyResourcesUpdate(const Out_checkAndPrepareResourcesUpdate& orr) {
+    Out_applyResourcesUpdate result;
 
-    for(size_t type = 0; type < static_cast<size_t>(AssetType::MAX_ENUM); ++type) {
-        out.IdToDK[type] = IdToDK[type];
-    }
+    for(size_t type = 0; type < static_cast<size_t>(EnumAssets::MAX_ENUM); ++type) {
+        // Затираем потерянные
+        for(ResourceId id : orr.LostLinks[type]) {
+            assert(id < ResourceLinks[type].size());
+            auto& [hash, header, timestamp, path, isExist] = ResourceLinks[type][id];
+            hash = {0};
+            header = {};
+            timestamp = fs::file_time_type();
+            path.clear();
+            isExist = false;
 
-    for(size_t type = 0; type < static_cast<size_t>(AssetType::MAX_ENUM); ++type) {
-        for(const auto& [id, resource] : MediaResources[type]) {
-            out.HashHeaders[type].push_back(BindHashHeaderInfo{
-                .Id = id,
-                .Hash = resource.Hash,
-                .Header = resource.Header
-            });
-            out.Resources.emplace_back(
-                static_cast<AssetType>(type),
-                id,
-                &resource
-            );
+            result.NewOrUpdates[type].emplace_back(id, hash, header);
+        }
+
+        // Увеличиваем размер, если необходимо
+        if(orr.MaxNewSize[type] > ResourceLinks[type].size()) {
+            std::tuple<
+                ResourceFile::Hash_t, 
+                ResourceHeader,
+                fs::file_time_type,
+                fs::path,
+                bool
+            > def{
+                ResourceFile::Hash_t{0},
+                ResourceHeader(),
+                fs::file_time_type(),
+                fs::path{""},
+                false
+            };
+
+            ResourceLinks[type].resize(orr.MaxNewSize[type], def);
+        }
+
+        // Обновляем / добавляем
+        for(auto& [id, hash, header, timestamp, path] : orr.ResourceUpdates[type]) {
+            ResourceLinks[type][id] = {hash, std::move(header), timestamp, std::move(path), true};
+            result.NewOrUpdates[type].emplace_back(id, hash, header);
         }
     }
 
-    return out;
-}
-
-std::tuple<AssetsNodestate, std::vector<AssetsModel>, std::vector<AssetsTexture>>
-AssetsPreloader::getNodeDependency(const std::string& domain, const std::string& key) {
-    (void)domain;
-    (void)key;
-    return {0, {}, {}};
+    return result;
 }
 
 }

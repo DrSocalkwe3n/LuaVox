@@ -11,13 +11,14 @@
 #include <boost/system/system_error.hpp>
 #include <exception>
 #include <Common/Packets.hpp>
+#include <unordered_set>
 
 
 namespace LV::Server {
 
 Net::Packet RemoteClient::makePacket_informateAssets_DK(
     const std::array<
-        std::vector<AssetsPreloader::BindDomainKeyInfo>, 
+        std::vector<AssetsManager::BindDomainKeyInfo>, 
         static_cast<size_t>(EnumAssets::MAX_ENUM)
     >& dkVector
 ) {
@@ -46,7 +47,7 @@ Net::Packet RemoteClient::makePacket_informateAssets_DK(
 
     // Запись связок домен+ключ
     for(size_t type = 0; type < static_cast<size_t>(EnumAssets::MAX_ENUM); type++) {
-        const std::vector<AssetsPreloader::BindDomainKeyInfo>& binds = dkVector[type];
+        const std::vector<AssetsManager::BindDomainKeyInfo>& binds = dkVector[type];
         pack << uint32_t(binds.size());
 
         for(const auto& bind : binds) {
@@ -67,7 +68,7 @@ Net::Packet RemoteClient::makePacket_informateAssets_DK(
 
 Net::Packet RemoteClient::makePacket_informateAssets_HH(
     const std::array< 
-        std::vector<AssetsPreloader::BindHashHeaderInfo>,
+        std::vector<AssetsManager::BindHashHeaderInfo>,
         static_cast<size_t>(EnumAssets::MAX_ENUM)
     >& hhVector,
     const std::array<
@@ -430,21 +431,21 @@ ResourceRequest RemoteClient::pushPreparedPackets() {
     return std::move(nextRequest);
 }
 
-void RemoteClient::informateBinaryAssets(const std::vector<AssetBinaryInfo>& resources)
+void RemoteClient::informateBinaryAssets(const std::vector<std::tuple<ResourceFile::Hash_t, std::shared_ptr<const std::u8string>>>& resources)
 {
-    for(const AssetBinaryInfo& resource : resources) {
+    for(const auto& [hash, resource] : resources) {
         auto lock = NetworkAndResource.lock();
-        auto iter = std::find(lock->ClientRequested.begin(), lock->ClientRequested.end(), resource.Hash);
+        auto iter = std::find(lock->ClientRequested.begin(), lock->ClientRequested.end(), hash);
         if(iter == lock->ClientRequested.end())
             continue;
 
         lock->ClientRequested.erase(iter);
         lock.unlock();
 
-        auto it = std::lower_bound(AssetsInWork.OnClient.begin(), AssetsInWork.OnClient.end(), resource.Hash);
-        if(it == AssetsInWork.OnClient.end() || *it != resource.Hash) {
-            AssetsInWork.OnClient.insert(it, resource.Hash);
-            AssetsInWork.ToSend.emplace_back(resource.Data, 0);
+        auto it = std::lower_bound(AssetsInWork.OnClient.begin(), AssetsInWork.OnClient.end(), hash);
+        if(it == AssetsInWork.OnClient.end() || *it != hash) {
+            AssetsInWork.OnClient.insert(it, hash);
+            AssetsInWork.ToSend.emplace_back(hash, resource, 0);
         } else {
             LOG.warn() << "Клиент повторно запросил имеющийся у него ресурс";
         }
@@ -611,36 +612,36 @@ void RemoteClient::onUpdate() {
 
         bool hasFullSended = false;
 
-        for(auto& [res, sended] : toSend) {
+        for(auto& [hash, res, sended] : toSend) {
             if(sended == 0) {
                 // Оповещаем о начале отправки ресурса
                 const size_t initSize = 1 + 1 + 4 + 32 + 4 + 1;
                 if(p.size() + initSize > kMaxAssetPacketSize)
                     flushAssetsPacket();
                 p << (uint8_t) ToClient::AssetsInitSend
-                    << uint32_t(res.size());
-                p.write((const std::byte*) res.hash().data(), 32);
+                    << uint32_t(res->size());
+                p.write((const std::byte*) hash.data(), 32);
             }
 
             // Отправляем чанк
-            size_t willSend = std::min(chunkSize, res.size()-sended);
+            size_t willSend = std::min(chunkSize, res->size()-sended);
             const size_t chunkMsgSize = 1 + 1 + 32 + 4 + willSend;
             if(p.size() + chunkMsgSize > kMaxAssetPacketSize)
                 flushAssetsPacket();
             p << (uint8_t) ToClient::AssetsNextSend;
-            p.write((const std::byte*) res.hash().data(), 32);
+            p.write((const std::byte*) hash.data(), 32);
             p << uint32_t(willSend);
-            p.write(res.data() + sended, willSend);
+            p.write((const std::byte*) res->data() + sended, willSend);
             sended += willSend;
 
-            if(sended == res.size()) {
+            if(sended == res->size()) {
                 hasFullSended = true;
             }
         }
 
         if(hasFullSended) {
             for(ssize_t iter = toSend.size()-1; iter >= 0; iter--) {
-                if(std::get<0>(toSend[iter]).size() == std::get<1>(toSend[iter])) {
+                if(std::get<1>(toSend[iter])->size() == std::get<2>(toSend[iter])) {
                     toSend.erase(toSend.begin()+iter);
                 }
             }

@@ -34,24 +34,6 @@ using PlayerId_t = ResourceId;
 using DefGeneratorId_t = ResourceId;
 
 
-/*
-    Сервер загружает информацию о локальных текстурах
-    Пересмотр списка текстур?
-    Динамичные текстуры?
-
-*/
-
-struct ResourceFile {
-    using Hash_t = sha2::sha256_hash; // boost::uuids::detail::sha1::digest_type;
-
-    Hash_t Hash;
-    std::vector<std::byte> Data;
-
-    void calcHash() {
-        Hash = sha2::sha256((const uint8_t*) Data.data(), Data.size());
-    }
-};
-
 struct ServerTime {
     uint32_t Seconds : 24, Sub : 8;
 };

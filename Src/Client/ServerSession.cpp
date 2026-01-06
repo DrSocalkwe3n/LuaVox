@@ -71,7 +71,7 @@ ServerSession::ServerSession(asio::io_context &ioc, std::unique_ptr<Net::AsyncSo
     Profiles.DefNode[3] = {3};
     Profiles.DefNode[4] = {4};
 
-    std::fill(NextServerId.begin(), NextServerId.end(), 1);
+    std::fill(NextServerId.begin(), NextServerId.end(), 0);
     for(auto& vec : ServerIdToDK)
         vec.emplace_back();
 

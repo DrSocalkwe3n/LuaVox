@@ -158,6 +158,25 @@ struct DefNode_t {
 
 };
 
+struct AssetEntry {
+    ResourceId Id = 0;
+    std::string Domain;
+    std::string Key;
+
+    HeadlessModel Model;
+    HeadlessModel::Header ModelHeader;
+
+    HeadlessNodeState Nodestate;
+    HeadlessNodeState::Header NodestateHeader;
+
+    uint16_t Width = 0;
+    uint16_t Height = 0;
+    std::vector<uint32_t> Pixels;
+    ResourceHeader Header;
+
+    std::u8string Data;
+};
+
 /* 
     Интерфейс обработчика сессии с сервером.
 
@@ -172,7 +191,7 @@ public:
     bool DebugLogPackets = false;
 
     // Используемые двоичные ресурсы
-    // std::unordered_map<EnumAssets, std::unordered_map<ResourceId, AssetEntry>> Assets;
+    std::unordered_map<EnumAssets, std::unordered_map<ResourceId, AssetEntry>> Assets;
 
     // Используемые профили контента
     struct {

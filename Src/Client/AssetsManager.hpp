@@ -13,13 +13,17 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <cstring>
 #include "Client/AssetsCacheManager.hpp"
 #include "Client/AssetsHeaderCodec.hpp"
 #include "Common/Abstract.hpp"
 #include "Common/IdProvider.hpp"
 #include "Common/AssetsPreloader.hpp"
+#include "Common/TexturePipelineProgram.hpp"
 #include "TOSLib.hpp"
+#include "assets.hpp"
 #include "boost/asio/io_context.hpp"
+#include "png++/image.hpp"
 #include <fstream>
 
 namespace LV::Client {
@@ -29,8 +33,41 @@ namespace fs = std::filesystem;
 class AssetsManager : public IdProvider<EnumAssets> {
 public:
     struct ResourceUpdates {
+        struct ModelUpdate {
+            ResourceId Id = 0;
+            HeadlessModel Model;
+            HeadlessModel::Header Header;
+        };
+
+        struct NodestateUpdate {
+            ResourceId Id = 0;
+            HeadlessNodeState Nodestate;
+            HeadlessNodeState::Header Header;
+        };
+
+        struct TextureUpdate {
+            ResourceId Id = 0;
+            uint16_t Width = 0;
+            uint16_t Height = 0;
+            std::vector<uint32_t> Pixels;
+            std::string Domain;
+            std::string Key;
+            ResourceHeader Header;
+        };
+
+        struct BinaryUpdate {
+            ResourceId Id = 0;
+            std::u8string Data;
+        };
+
+        std::vector<ModelUpdate> Models;
+        std::vector<NodestateUpdate> Nodestates;
         /// TODO: Добавить анимацию из меты
-        std::vector<std::tuple<ResourceId, uint16_t, uint16_t, std::vector<uint32_t>>> Textures;
+        std::vector<TextureUpdate> Textures;
+        std::vector<BinaryUpdate> Particles;
+        std::vector<BinaryUpdate> Animations;
+        std::vector<BinaryUpdate> Sounds;
+        std::vector<BinaryUpdate> Fonts;
     };
 
 public:
@@ -148,6 +185,7 @@ public:
             static_cast<size_t>(EnumAssets::MAX_ENUM)
         >& keys
     ) {
+        LOG.debug() << "BindDK domains=" << domains.size();
         for(size_t type = 0; type < static_cast<size_t>(EnumAssets::MAX_ENUM); ++type) {
             for(size_t forDomainIter = 0; forDomainIter < keys[type].size(); ++forDomainIter) {
                 for(const std::string& key : keys[type][forDomainIter]) {
@@ -164,21 +202,18 @@ public:
             static_cast<size_t>(EnumAssets::MAX_ENUM)
         >&& hash_and_headers
     ) {
-        std::array<
-            std::vector<std::tuple<ResourceId, ResourceFile::Hash_t, ResourceHeader>>,
-            static_cast<size_t>(EnumAssets::MAX_ENUM)
-        > hah = std::move(hash_and_headers);
-
         std::unordered_set<ResourceFile::Hash_t> needHashes;
 
+        size_t totalBinds = 0;
         for(size_t type = 0; type < static_cast<size_t>(EnumAssets::MAX_ENUM); ++type) {
             size_t maxSize = 0;
 
             for(auto& [id, hash, header] : hash_and_headers[type]) {
+                totalBinds++;
                 assert(id < ServerToClientMap[type].size());
                 id = ServerToClientMap[type][id];
 
-                if(id > maxSize)
+                if(id >= maxSize)
                     maxSize = id+1;
 
                 // Добавляем идентификатор в таблицу ожидающих обновлений.
@@ -207,6 +242,9 @@ public:
                 ServerIdToHH[type][id] = {hash, std::move(header)};
             }
         }
+
+        if(totalBinds)
+            LOG.debug() << "BindHH total=" << totalBinds << " wait=" << WaitingHashes.size();
 
         // Нужно убрать хеши, которые уже запрошены
         // needHashes ^ WaitingHashes.
@@ -251,8 +289,8 @@ public:
         vec.reserve(resources.size());
 
         for(auto& [hash, res] : resources) {
-            vec.emplace_back(std::move(res));
-            files.emplace(hash, res);
+            vec.emplace_back(res);
+            files.emplace(hash, std::move(res));
         }
 
         _onHashLoad(files);
@@ -260,7 +298,7 @@ public:
     }
 
     // Для запроса отсутствующих ресурсов с сервера на клиент.
-    std::vector<ResourceFile::Hash_t> pollNeededResources() {
+    std::vector<ResourceFile::Hash_t> pullNeededResources() {
         return std::move(NeedToRequestFromServer);
     }
     
@@ -283,13 +321,35 @@ public:
                     needToProceed.emplace(hash, std::u8string{(const char8_t*) res->data(), res->size()});
             }
 
+            if(!NeedToRequestFromServer.empty())
+                LOG.debug() << "CacheMiss count=" << NeedToRequestFromServer.size();
+
             if(!needToProceed.empty())
                 _onHashLoad(needToProceed);
         }
 
-        // Почитаем с диска
+        /// Читаем с диска TODO: получилась хрень с определением типа, чтобы получать headless ресурс
         if(!NeedToReadFromDisk.empty()) {
             std::unordered_map<ResourceFile::Hash_t, std::u8string> files;
+            files.reserve(NeedToReadFromDisk.size());
+
+            auto detectTypeDomainKey = [&](const fs::path& path, EnumAssets& typeOut, std::string& domainOut, std::string& keyOut) -> bool {
+                fs::path cur = path.parent_path();
+                for(; !cur.empty(); cur = cur.parent_path()) {
+                    std::string name = cur.filename().string();
+                    for(size_t typeIndex = 0; typeIndex < static_cast<size_t>(EnumAssets::MAX_ENUM); ++typeIndex) {
+                        EnumAssets type = static_cast<EnumAssets>(typeIndex);
+                        if(name == ::EnumAssetsToDirectory(type)) {
+                            typeOut = type;
+                            domainOut = cur.parent_path().filename().string();
+                            keyOut = fs::relative(path, cur).generic_string();
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            };
+
             for(const auto& [hash, path] : NeedToReadFromDisk) {
                 std::u8string data;
                 std::ifstream file(path, std::ios::binary);
@@ -305,7 +365,50 @@ public:
                         if(!file)
                             data.clear();
                     }
+                } else {
+                    LOG.warn() << "DiskReadFail " << path.string();
                 }
+
+                if(!data.empty()) {
+                    EnumAssets type{};
+                    std::string domain;
+                    std::string key;
+                    if(detectTypeDomainKey(path, type, domain, key)) {
+                        if(type == EnumAssets::Nodestate) {
+                            std::string_view view(reinterpret_cast<const char*>(data.data()), data.size());
+                            js::object obj = js::parse(view).as_object();
+                            HeadlessNodeState hns;
+                            auto modelResolver = [&](const std::string_view model) -> AssetsModel {
+                                auto [mDomain, mKey] = parseDomainKey(model, domain);
+                                return getId(EnumAssets::Model, mDomain, mKey);
+                            };
+                            hns.parse(obj, modelResolver);
+                            data = hns.dump();
+                        } else if(type == EnumAssets::Model) {
+                            std::string_view view(reinterpret_cast<const char*>(data.data()), data.size());
+                            js::object obj = js::parse(view).as_object();
+                            HeadlessModel hm;
+                            auto modelResolver = [&](const std::string_view model) -> AssetsModel {
+                                auto [mDomain, mKey] = parseDomainKey(model, domain);
+                                return getId(EnumAssets::Model, mDomain, mKey);
+                            };
+                            auto textureIdResolver = [&](const std::string_view texture) -> std::optional<uint32_t> {
+                                auto [tDomain, tKey] = parseDomainKey(texture, domain);
+                                return getId(EnumAssets::Texture, tDomain, tKey);
+                            };
+                            auto textureResolver = [&](const std::string_view texturePipelineSrc) -> std::vector<uint8_t> {
+                                TexturePipelineProgram tpp;
+                                if(!tpp.compile(texturePipelineSrc))
+                                    return {};
+                                tpp.link(textureIdResolver);
+                                return tpp.toBytes();
+                            };
+                            hm.parse(obj, modelResolver, textureResolver);
+                            data = hm.dump();
+                        }
+                    }
+                }
+
                 files.emplace(hash, std::move(data));
             }
 
@@ -315,6 +418,8 @@ public:
     }
 
 private:
+    Logger LOG = "Client>AssetsManager";
+
     // Менеджеры учёта дисковых ресурсов
     AssetsPreloader
         // В приоритете ищутся ресурсы из ресурспаков по Domain+Key.
@@ -364,7 +469,157 @@ private:
 
     // Когда данные были получены с диска, кеша или сервера
     void _onHashLoad(const std::unordered_map<ResourceFile::Hash_t, std::u8string>& files) {
-        /// TODO: скомпилировать ресурсы
+        const auto& rpLinks = ResourcePacks.getResourceLinks();
+        const auto& esLinks = ExtraSource.getResourceLinks();
+
+        auto mapModelId = [&](ResourceId id) -> ResourceId {
+            const auto& map = ServerToClientMap[static_cast<size_t>(EnumAssets::Model)];
+            if(id >= map.size())
+                return 0;
+            return map[id];
+        };
+        auto mapTextureId = [&](ResourceId id) -> ResourceId {
+            const auto& map = ServerToClientMap[static_cast<size_t>(EnumAssets::Texture)];
+            if(id >= map.size())
+                return 0;
+            return map[id];
+        };
+        auto rebindHeader = [&](EnumAssets type, const ResourceHeader& header) -> ResourceHeader {
+            if(header.empty())
+                return {};
+            std::vector<uint8_t> bytes;
+            bytes.resize(header.size());
+            std::memcpy(bytes.data(), header.data(), header.size());
+            std::vector<uint8_t> rebound = AssetsHeaderCodec::rebindHeader(
+                type,
+                bytes,
+                mapModelId,
+                mapTextureId,
+                [](const std::string&) {}
+            );
+            return ResourceHeader(reinterpret_cast<const char8_t*>(rebound.data()), rebound.size());
+        };
+
+        for(size_t typeIndex = 0; typeIndex < static_cast<size_t>(EnumAssets::MAX_ENUM); ++typeIndex) {
+            auto& pending = PendingUpdateFromAsync[typeIndex];
+            if(pending.empty())
+                continue;
+
+            std::vector<ResourceId> stillPending;
+            stillPending.reserve(pending.size());
+            size_t updated = 0;
+            size_t missingSource = 0;
+            size_t missingData = 0;
+
+            for(ResourceId id : pending) {
+                ResourceFile::Hash_t hash{};
+                ResourceHeader header;
+                bool hasSource = false;
+                bool localHeader = false;
+
+                if(id < rpLinks[typeIndex].size() && rpLinks[typeIndex][id].IsExist) {
+                    hash = rpLinks[typeIndex][id].Hash;
+                    header = rpLinks[typeIndex][id].Header;
+                    hasSource = true;
+                    localHeader = true;
+                } else if(id < ServerIdToHH[typeIndex].size()) {
+                    std::tie(hash, header) = ServerIdToHH[typeIndex][id];
+                    hasSource = true;
+                }
+
+                if(!hasSource) {
+                    missingSource++;
+                    stillPending.push_back(id);
+                    continue;
+                }
+
+                auto dataIter = files.find(hash);
+                if(dataIter == files.end()) {
+                    missingData++;
+                    stillPending.push_back(id);
+                    continue;
+                }
+
+                const auto& dkTable = IdToDK[typeIndex];
+                std::string domain = "core";
+                std::string key;
+                if(id < dkTable.size()) {
+                    domain = dkTable[id].Domain;
+                    key = dkTable[id].Key;
+                }
+
+                std::u8string data = dataIter->second;
+                EnumAssets type = static_cast<EnumAssets>(typeIndex);
+                ResourceHeader finalHeader = localHeader ? header : rebindHeader(type, header);
+
+                if(id == 0)
+                    continue;
+
+                if(type == EnumAssets::Nodestate) {
+                    HeadlessNodeState ns;
+                    ns.load(data);
+                    HeadlessNodeState::Header headerParsed;
+                    headerParsed.load(finalHeader);
+                    RU.Nodestates.push_back({id, std::move(ns), std::move(headerParsed)});
+                    updated++;
+                } else if(type == EnumAssets::Model) {
+                    HeadlessModel hm;
+                    hm.load(data);
+                    HeadlessModel::Header headerParsed;
+                    headerParsed.load(finalHeader);
+                    RU.Models.push_back({id, std::move(hm), std::move(headerParsed)});
+                    updated++;
+                } else if(type == EnumAssets::Texture) {
+                    ResourceUpdates::TextureUpdate update;
+                    update.Id = id;
+                    update.Domain = std::move(domain);
+                    update.Key = std::move(key);
+                    update.Header = std::move(finalHeader);
+                    if(!data.empty()) {
+                        iResource sres(reinterpret_cast<const uint8_t*>(data.data()), data.size());
+                        iBinaryStream stream = sres.makeStream();
+                        png::image<png::rgba_pixel> img(stream.Stream);
+                        update.Width = static_cast<uint16_t>(img.get_width());
+                        update.Height = static_cast<uint16_t>(img.get_height());
+                        update.Pixels.resize(static_cast<size_t>(update.Width) * update.Height);
+                        for(uint32_t y = 0; y < update.Height; ++y) {
+                            const auto& row = img.get_pixbuf().operator[](y);
+                            for(uint32_t x = 0; x < update.Width; ++x) {
+                                const auto& px = row[x];
+                                uint32_t rgba = (uint32_t(px.alpha) << 24)
+                                    | (uint32_t(px.red) << 16)
+                                    | (uint32_t(px.green) << 8)
+                                    | uint32_t(px.blue);
+                                update.Pixels[x + y * update.Width] = rgba;
+                            }
+                        }
+                    }
+                    RU.Textures.push_back(std::move(update));
+                    updated++;
+                } else if(type == EnumAssets::Particle) {
+                    RU.Particles.push_back({id, std::move(data)});
+                    updated++;
+                } else if(type == EnumAssets::Animation) {
+                    RU.Animations.push_back({id, std::move(data)});
+                    updated++;
+                } else if(type == EnumAssets::Sound) {
+                    RU.Sounds.push_back({id, std::move(data)});
+                    updated++;
+                } else if(type == EnumAssets::Font) {
+                    RU.Fonts.push_back({id, std::move(data)});
+                    updated++;
+                }
+            }
+
+            if(updated || missingSource || missingData) {
+                LOG.debug() << "HashLoad type=" << int(typeIndex)
+                    << " updated=" << updated
+                    << " missingSource=" << missingSource
+                    << " missingData=" << missingData;
+            }
+
+            pending = std::move(stillPending);
+        }
 
         for(const auto& [hash, res] : files)
             WaitingHashes.erase(hash);

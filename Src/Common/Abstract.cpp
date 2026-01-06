@@ -828,19 +828,117 @@ Hash_t ResourceFile::calcHash(const char8_t* data, size_t size) {
     return sha2::sha256((const uint8_t*) data, size);
 }
 
+uint16_t HeadlessNodeState::Header::addModel(AssetsModel id) {
+    auto iter = std::find(Models.begin(), Models.end(), id);
+    if(iter == Models.end()) {
+        Models.push_back(id);
+        return Models.size() - 1;
+    }
+
+    return iter - Models.begin();
+}
+
+void HeadlessNodeState::Header::load(std::u8string_view data) {
+    Models.clear();
+    if(data.empty())
+        return;
+    if(data.size() % sizeof(AssetsModel) != 0)
+        MAKE_ERROR("Invalid nodestate header size");
+
+    const size_t count = data.size() / sizeof(AssetsModel);
+    Models.resize(count);
+    std::memcpy(Models.data(), data.data(), data.size());
+}
+
+ResourceHeader HeadlessNodeState::Header::dump() const {
+    ResourceHeader rh;
+    rh.reserve(Models.size() * sizeof(AssetsModel));
+
+    for(AssetsModel id : Models) {
+        rh += std::u8string_view((const char8_t*) &id, sizeof(AssetsModel));
+    }
+
+    return rh;
+}
+
+uint16_t HeadlessModel::Header::addModel(AssetsModel id) {
+    auto iter = std::find(Models.begin(), Models.end(), id);
+    if(iter == Models.end()) {
+        Models.push_back(id);
+        return Models.size() - 1;
+    }
+
+    return iter - Models.begin();
+}
+
+uint16_t HeadlessModel::Header::addTexturePipeline(std::vector<uint8_t> pipeline) {
+    TexturePipelines.push_back(std::move(pipeline));
+    return TexturePipelines.size() - 1;
+}
+
+void HeadlessModel::Header::load(std::u8string_view data) {
+    Models.clear();
+    TexturePipelines.clear();
+    if(data.empty())
+        return;
+
+    try {
+        TOS::ByteBuffer buffer(data.size(), reinterpret_cast<const uint8_t*>(data.data()));
+        auto reader = buffer.reader();
+
+        uint16_t modelCount = reader.readUInt16();
+        Models.reserve(modelCount);
+        for(uint16_t i = 0; i < modelCount; ++i)
+            Models.push_back(reader.readUInt32());
+
+        uint16_t texCount = reader.readUInt16();
+        TexturePipelines.reserve(texCount);
+        for(uint16_t i = 0; i < texCount; ++i) {
+            uint32_t size32 = reader.readUInt32();
+            TOS::ByteBuffer pipe;
+            reader.readBuffer(pipe);
+            if(pipe.size() != size32)
+                MAKE_ERROR("Invalid model header size");
+            TexturePipelines.emplace_back(pipe.begin(), pipe.end());
+        }
+    } catch(const std::exception&) {
+        MAKE_ERROR("Invalid model header");
+    }
+}
+
+ResourceHeader HeadlessModel::Header::dump() const {
+    TOS::ByteBuffer rh;
+
+    {
+        uint32_t fullSize = 0;
+        for(const auto& vector : TexturePipelines)
+            fullSize += vector.size();
+        rh.reserve(2 + Models.size() * sizeof(AssetsModel) + 2 + 4 * TexturePipelines.size() + fullSize);
+    }
+
+    TOS::ByteBuffer::Writer wr;
+    wr << uint16_t(Models.size());
+    for(AssetsModel id : Models)
+        wr << id;
+
+    wr << uint16_t(TexturePipelines.size());
+    for(const auto& pipe : TexturePipelines) {
+        wr << uint32_t(pipe.size());
+        wr << pipe;
+    }
+
+    TOS::ByteBuffer buff = wr.complite();
+
+    return std::u8string((const char8_t*) buff.data(), buff.size());
+}
+
 ResourceHeader HeadlessNodeState::parse(const js::object& profile, const std::function<AssetsModel(const std::string_view model)>& modelResolver) {
-    std::vector<AssetsModel> headerIds;
+    Header header;
     
     std::function<uint16_t(const std::string_view model)> headerResolver =
         [&](const std::string_view model) -> uint16_t {
             AssetsModel id = modelResolver(model);
-            auto iter = std::find(headerIds.begin(), headerIds.end(), id);
-            if(iter == headerIds.end()) {
-                headerIds.push_back(id);
-                return headerIds.size()-1;
-            }
-
-            return iter-headerIds.begin();
+            return header.addModel(id);
         };
     
     for(auto& [condition, variability] : profile) {
@@ -869,14 +967,7 @@ ResourceHeader HeadlessNodeState::parse(const js::object& profile, const std::fu
         Routes.emplace_back(node, std::move(models));
     }
 
-    ResourceHeader rh;
-    rh.reserve(headerIds.size()*sizeof(AssetsModel));
-
-    for(AssetsModel id : headerIds) {
-        rh += std::u8string_view((const char8_t*) &id, sizeof(AssetsModel));
-    }
-
-    return rh;
+    return header.dump();
 }
 
 ResourceHeader HeadlessNodeState::parse(const sol::table& profile, const std::function<AssetsModel(const std::string_view model)>& modelResolver) {
@@ -1494,21 +1585,14 @@ ResourceHeader HeadlessModel::parse(
     const std::function<AssetsModel(const std::string_view model)>& modelResolver,
     const std::function<std::vector<uint8_t>(const std::string_view texturePipelineSrc)>& textureResolver
 ) {
-    std::vector<AssetsModel> headerIdsModels;
+    Header header;
     
     std::function<uint16_t(const std::string_view model)> headerResolverModel =
         [&](const std::string_view model) -> uint16_t {
             AssetsModel id = modelResolver(model);
-            auto iter = std::find(headerIdsModels.begin(), headerIdsModels.end(), id);
-            if(iter == headerIdsModels.end()) {
-                headerIdsModels.push_back(id);
-                return headerIdsModels.size()-1;
-            }
-
-            return iter-headerIdsModels.begin();
+            return header.addModel(id);
         };
 
-    std::vector<std::vector<uint8_t>> headerIdsTextures;
     std::unordered_map<std::string, uint32_t, detail::TSVHash, detail::TSVEq> textureToLocal;
 
     std::function<uint16_t(const std::string_view texturePipelineSrc)> headerResolverTexture =
@@ -1518,9 +1602,8 @@ ResourceHeader HeadlessModel::parse(
                 return iter->second;
             }
 
-            std::vector<uint8_t> program = textureResolver(texturePipelineSrc);
-            headerIdsTextures.push_back(program);
-            uint16_t id = textureToLocal[(std::string) texturePipelineSrc] = headerIdsTextures.size()-1;
+            uint16_t id = header.addTexturePipeline(textureResolver(texturePipelineSrc));
+            textureToLocal[(std::string) texturePipelineSrc] = id;
             return id;
         };
 
@@ -1748,27 +1831,7 @@ ResourceHeader HeadlessModel::parse(
     // Заголовок
     TOS::ByteBuffer rh;
 
-    {
-        uint32_t fullSize = 0;
-        for(const auto& vector : headerIdsTextures)
-            fullSize += vector.size();
-        rh.reserve(2+headerIdsModels.size()*sizeof(AssetsModel)+2+(4)*headerIdsTextures.size()+fullSize);
-    }
-
-    TOS::ByteBuffer::Writer wr;
-    wr << uint16_t(headerIdsModels.size());
-    for(AssetsModel id : headerIdsModels)
-        wr << id;
-
-    wr << uint16_t(headerIdsTextures.size());
-    for(const auto& pipe : headerIdsTextures) {
-        wr << uint32_t(pipe.size());
-        wr << pipe;
-    }
-
-    TOS::ByteBuffer buff = wr.complite();
-
-    return std::u8string((const char8_t*) buff.data(), buff.size());
+    return header.dump();
 }
 
 ResourceHeader HeadlessModel::parse(

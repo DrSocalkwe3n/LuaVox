@@ -310,25 +310,27 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
     // Если AssetsManager запрашивает ресурсы с сервера
     {
         std::vector<Hash_t> needRequest = AM.pullNeededResources();
-        Net::Packet pack;
-        std::vector<Net::Packet> packets;
+        if(!needRequest.empty()) {
+            Net::Packet pack;
+            std::vector<Net::Packet> packets;
 
-        auto check = [&]() {
-            if(pack.size() > 64000)
+            auto check = [&]() {
+                if(pack.size() > 64000)
+                    packets.emplace_back(std::move(pack));
+            };
+
+            pack << (uint8_t) ToServer::L1::System << (uint8_t) ToServer::L2System::ResourceRequest;
+            pack << (uint16_t) needRequest.size();
+            for(const Hash_t& hash : needRequest) {
+                pack.write((const std::byte*) hash.data(), 32);
+                check();
+            }
+
+            if(pack.size())
                 packets.emplace_back(std::move(pack));
-        };
 
-        pack << (uint8_t) ToServer::L1::System << (uint8_t) ToServer::L2System::ResourceRequest;
-        pack << (uint16_t) needRequest.size();
-        for(const Hash_t& hash : needRequest) {
-            pack.write((const std::byte*) hash.data(), 32);
-            check();
+            Socket->pushPackets(&packets);
         }
-
-        if(pack.size())
-            packets.emplace_back(std::move(pack));
-
-        Socket->pushPackets(&packets);
     }
 
     if(!AsyncContext.TickSequence.get_read().empty()) {
@@ -489,10 +491,10 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                 }
 
                 {
-                    for(auto& [id, info] : data.Entity_AddOrChange) {
-                        auto iter = std::lower_bound(entity_Lost.begin(), entity_Lost.end(), id);
-                        if(iter != entity_Lost.end() && *iter == id)
-                            entity_Lost.erase(iter);
+            for(auto& [id, info] : data.Entity_AddOrChange) {
+                auto iter = std::lower_bound(entity_Lost.begin(), entity_Lost.end(), id);
+                if(iter != entity_Lost.end() && *iter == id)
+                    entity_Lost.erase(iter);
 
                         entity_AddOrChange[id] = info;
                     }
@@ -504,13 +506,101 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                     entity_Lost.insert(entity_Lost.end(), data.Entity_Lost.begin(), data.Entity_Lost.end());
                     std::sort(entity_Lost.begin(), entity_Lost.end());
                     auto eraseIter = std::unique(entity_Lost.begin(), entity_Lost.end());
-                    entity_Lost.erase(eraseIter, entity_Lost.end());
+                entity_Lost.erase(eraseIter, entity_Lost.end());
+            }
+        }
+
+        {
+            AssetsManager::ResourceUpdates updates = AM.pullResourceUpdates();
+
+            if(!updates.Models.empty()) {
+                auto& map = Assets[EnumAssets::Model];
+                for(auto& update : updates.Models) {
+                    AssetEntry entry;
+                    entry.Id = update.Id;
+                    entry.Model = std::move(update.Model);
+                    entry.ModelHeader = std::move(update.Header);
+                    map[entry.Id] = std::move(entry);
+                    result.Assets_ChangeOrAdd[EnumAssets::Model].push_back(update.Id);
                 }
             }
 
-            for(auto& [id, _] : profile_Voxel_AddOrChange)
-                result.Profiles_ChangeOrAdd[EnumDefContent::Voxel].push_back(id);
-            result.Profiles_Lost[EnumDefContent::Voxel] = profile_Voxel_Lost;
+            if(!updates.Nodestates.empty()) {
+                auto& map = Assets[EnumAssets::Nodestate];
+                for(auto& update : updates.Nodestates) {
+                    AssetEntry entry;
+                    entry.Id = update.Id;
+                    entry.Nodestate = std::move(update.Nodestate);
+                    entry.NodestateHeader = std::move(update.Header);
+                    map[entry.Id] = std::move(entry);
+                    result.Assets_ChangeOrAdd[EnumAssets::Nodestate].push_back(update.Id);
+                }
+            }
+
+            if(!updates.Textures.empty()) {
+                auto& map = Assets[EnumAssets::Texture];
+                for(auto& update : updates.Textures) {
+                    AssetEntry entry;
+                    entry.Id = update.Id;
+                    entry.Domain = std::move(update.Domain);
+                    entry.Key = std::move(update.Key);
+                    entry.Width = update.Width;
+                    entry.Height = update.Height;
+                    entry.Pixels = std::move(update.Pixels);
+                    entry.Header = std::move(update.Header);
+                    map[entry.Id] = std::move(entry);
+                    result.Assets_ChangeOrAdd[EnumAssets::Texture].push_back(update.Id);
+                }
+            }
+
+            if(!updates.Particles.empty()) {
+                auto& map = Assets[EnumAssets::Particle];
+                for(auto& update : updates.Particles) {
+                    AssetEntry entry;
+                    entry.Id = update.Id;
+                    entry.Data = std::move(update.Data);
+                    map[entry.Id] = std::move(entry);
+                    result.Assets_ChangeOrAdd[EnumAssets::Particle].push_back(update.Id);
+                }
+            }
+
+            if(!updates.Animations.empty()) {
+                auto& map = Assets[EnumAssets::Animation];
+                for(auto& update : updates.Animations) {
+                    AssetEntry entry;
+                    entry.Id = update.Id;
+                    entry.Data = std::move(update.Data);
+                    map[entry.Id] = std::move(entry);
+                    result.Assets_ChangeOrAdd[EnumAssets::Animation].push_back(update.Id);
+                }
+            }
+
+            if(!updates.Sounds.empty()) {
+                auto& map = Assets[EnumAssets::Sound];
+                for(auto& update : updates.Sounds) {
+                    AssetEntry entry;
+                    entry.Id = update.Id;
+                    entry.Data = std::move(update.Data);
+                    map[entry.Id] = std::move(entry);
+                    result.Assets_ChangeOrAdd[EnumAssets::Sound].push_back(update.Id);
+                }
+            }
+
+            if(!updates.Fonts.empty()) {
+                auto& map = Assets[EnumAssets::Font];
+                for(auto& update : updates.Fonts) {
+                    AssetEntry entry;
+                    entry.Id = update.Id;
+                    entry.Data = std::move(update.Data);
+                    map[entry.Id] = std::move(entry);
+                    result.Assets_ChangeOrAdd[EnumAssets::Font].push_back(update.Id);
+                }
+            }
+        }
+
+        for(auto& [id, _] : profile_Voxel_AddOrChange)
+            result.Profiles_ChangeOrAdd[EnumDefContent::Voxel].push_back(id);
+        result.Profiles_Lost[EnumDefContent::Voxel] = profile_Voxel_Lost;
 
             for(auto& [id, _] : profile_Node_AddOrChange)
                 result.Profiles_ChangeOrAdd[EnumDefContent::Node].push_back(id);
@@ -758,6 +848,8 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
         if(RS)
             RS->tickSync(result);
     }
+
+    AM.tick();
 
     // Здесь нужно обработать управляющие пакеты
 

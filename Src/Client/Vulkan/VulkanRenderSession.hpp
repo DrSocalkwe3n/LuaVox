@@ -89,10 +89,11 @@ public:
     }
 
     // Применяет изменения, возвращая все затронутые модели
-    std::vector<AssetsModel> onModelChanges(std::vector<std::tuple<AssetsModel, Resource, const std::vector<uint8_t>*>> newOrChanged,
+    std::vector<AssetsModel> onModelChanges(std::vector<const AssetEntry*> newOrChanged,
         std::vector<AssetsModel> lost,
         const std::unordered_map<ResourceId, AssetEntry>* modelAssets) {
         std::vector<AssetsModel> result;
+        (void)modelAssets;
 
         std::move_only_function<void(ResourceId)> makeUnready;
         makeUnready = [&](ResourceId id) {
@@ -136,87 +137,52 @@ public:
             Models.erase(iterModel);
         }
         
-        for(const auto& [key, resource, deps] : newOrChanged) {
+        for(const AssetEntry* entry : newOrChanged) {
+            if(!entry)
+                continue;
+            const AssetsModel key = entry->Id;
             result.push_back(key);
 
             makeUnready(key);
             ModelObject model;
-            std::string type = "unknown";
-            std::optional<AssetsManager::ParsedHeader> header;
-            if(deps && !deps->empty())
-                header = AssetsManager::parseHeader(EnumAssets::Model, *deps);
-            const std::vector<uint32_t>* textureDeps = header ? &header->TextureDeps : nullptr;
-            auto remapTextureId = [&](uint32_t placeholder) -> uint32_t {
-                if(!textureDeps || placeholder >= textureDeps->size())
-                    return 0;
-                return (*textureDeps)[placeholder];
-            };
-            auto remapPipeline = [&](TexturePipeline pipe) {
-                if(textureDeps) {
-                    for(auto& texId : pipe.BinTextures)
-                        texId = remapTextureId(texId);
-                    if(!pipe.Pipeline.empty()) {
-                        std::vector<uint8_t> code;
-                        code.resize(pipe.Pipeline.size());
-                        std::memcpy(code.data(), pipe.Pipeline.data(), code.size());
-                        TexturePipelineProgram::remapTexIds(code, *textureDeps, nullptr);
-                        pipe.Pipeline.resize(code.size());
-                        std::memcpy(pipe.Pipeline.data(), code.data(), code.size());
-                    }
-                }
-                return pipe;
-            };
+            const HeadlessModel& hm = entry->Model;
+            const HeadlessModel::Header& header = entry->ModelHeader;
                 
-            size_t dataSize = 0;
-            std::array<uint8_t, 4> prefix = {};
             try {
-                std::u8string_view data((const char8_t*) resource.data(), resource.size());
-                dataSize = data.size();
-                if(!data.empty()) {
-                    const size_t prefixLen = std::min<size_t>(prefix.size(), data.size());
-                    for(size_t i = 0; i < prefixLen; ++i)
-                        prefix[i] = static_cast<uint8_t>(data[i]);
-                }
-                if(data.starts_with((const char8_t*) "bm")) {
-                    type = "InternalBinary";
-                    // Компилированная модель внутреннего формата
-                    HeadlessModel hm;
-                    hm.load(data);
-                    model.TextureMap.clear();
-                    model.TextureMap.reserve(hm.Textures.size());
-                    for(const auto& [tkey, id] : hm.Textures) {
-                        TexturePipeline pipe;
-                        if(header && id < header->TexturePipelines.size()) {
-                            pipe.Pipeline = header->TexturePipelines[id];
-                        } else {
-                            LOG.warn() << "Model texture pipeline id out of range: model=" << key
-                                << " local=" << id
-                                << " pipelines=" << (header ? header->TexturePipelines.size() : 0);
-                            pipe.BinTextures.push_back(id);
-                            pipe = remapPipeline(std::move(pipe));
-                        }
-                        model.TextureMap.emplace(tkey, std::move(pipe));
+                model.TextureMap.clear();
+                model.TextureMap.reserve(hm.Textures.size());
+                for(const auto& [tkey, id] : hm.Textures) {
+                    TexturePipeline pipe;
+                    if(id < header.TexturePipelines.size()) {
+                        pipe.Pipeline = header.TexturePipelines[id];
+                    } else {
+                        LOG.warn() << "Model texture pipeline id out of range: model=" << key
+                            << " local=" << id
+                            << " pipelines=" << header.TexturePipelines.size();
+                        pipe.BinTextures.push_back(id);
                     }
-                    model.TextureKeys = {};
+                    model.TextureMap.emplace(tkey, std::move(pipe));
+                }
+                model.TextureKeys = {};
 
-                    for(const HeadlessModel::Cuboid& cb : hm.Cuboids) {
-                        glm::vec3 min = glm::min(cb.From, cb.To), max = glm::max(cb.From, cb.To);
+                for(const HeadlessModel::Cuboid& cb : hm.Cuboids) {
+                    glm::vec3 min = glm::min(cb.From, cb.To), max = glm::max(cb.From, cb.To);
                         
-                        for(const auto& [face, params] : cb.Faces) {
-                            glm::vec2 from_uv = {params.UV[0], params.UV[1]}, to_uv = {params.UV[2], params.UV[3]};
+                    for(const auto& [face, params] : cb.Faces) {
+                        glm::vec2 from_uv = {params.UV[0], params.UV[1]}, to_uv = {params.UV[2], params.UV[3]};
 
-                            uint32_t texId;
-                            {
-                                auto iter = std::find(model.TextureKeys.begin(), model.TextureKeys.end(), params.Texture);
-                                if(iter == model.TextureKeys.end()) {
-                                    texId = model.TextureKeys.size();
-                                    model.TextureKeys.push_back(params.Texture);
-                                } else {
-                                    texId = iter-model.TextureKeys.begin();
-                                }
+                        uint32_t texId;
+                        {
+                            auto iter = std::find(model.TextureKeys.begin(), model.TextureKeys.end(), params.Texture);
+                            if(iter == model.TextureKeys.end()) {
+                                texId = model.TextureKeys.size();
+                                model.TextureKeys.push_back(params.Texture);
+                            } else {
+                                texId = iter-model.TextureKeys.begin();
                             }
+                        }
 
-                            std::vector<Vertex> v;
+                        std::vector<Vertex> v;
 
                             auto addQuad = [&](const glm::vec3& p0,
                                 const glm::vec3& p1,
@@ -277,20 +243,20 @@ public:
                             cb.Trs.apply(v);
                             model.Vertecies[params.Cullface].append_range(v);
                         }
-                    }
+                }
 
-                    if(!hm.SubModels.empty()) {
-                        model.Depends.reserve(hm.SubModels.size());
-                        for(const auto& sub : hm.SubModels) {
-                            if(!header || sub.Id >= header->ModelDeps.size()) {
-                                LOG.warn() << "Model sub-model id out of range: model=" << key
-                                    << " local=" << sub.Id
-                                    << " deps=" << (header ? header->ModelDeps.size() : 0);
-                                continue;
-                            }
-                            model.Depends.emplace_back(header->ModelDeps[sub.Id], Transformations{});
+                if(!hm.SubModels.empty()) {
+                    model.Depends.reserve(hm.SubModels.size());
+                    for(const auto& sub : hm.SubModels) {
+                        if(sub.Id >= header.Models.size()) {
+                            LOG.warn() << "Model sub-model id out of range: model=" << key
+                                << " local=" << sub.Id
+                                << " deps=" << header.Models.size();
+                            continue;
                         }
+                        model.Depends.emplace_back(header.Models[sub.Id], Transformations{});
                     }
+                }
 
         // struct Face {
         //     int TintIndex = -1;
@@ -299,18 +265,8 @@ public:
     
         // std::vector<Transformation> Transformations;
                     
-                } else if(data.starts_with((const char8_t*) "glTF")) {
-                    type = "glb";
-
-                } else if(data.starts_with((const char8_t*) "bgl")) {
-                    type = "InternalGLTF";
-
-                } else if(data.starts_with((const char8_t*) "{")) {
-                    type = "InternalJson или glTF";
-                    // Модель внутреннего формата или glTF
-                }
             } catch(const std::exception& exc) {
-                LOG.warn() << "Не удалось распарсить модель " << type << ":\n\t" << exc.what();
+                LOG.warn() << "Не удалось собрать модель:\n\t" << exc.what();
                 continue;
             }
 
@@ -321,11 +277,10 @@ public:
                     size_t vertexCount = 0;
                     for(const auto& [_, verts] : model.Vertecies)
                         vertexCount += verts.size();
-                    size_t texDepsCount = textureDeps ? textureDeps->size() : 0;
                     LOG.debug() << "Model loaded id=" << key
                         << " verts=" << vertexCount
                         << " texKeys=" << model.TextureKeys.size()
-                        << " texDeps=" << texDepsCount;
+                        << " pipelines=" << header.TexturePipelines.size();
                 }
             }
 
@@ -334,12 +289,7 @@ public:
                 uint32_t idx = debugEmptyModelLogCount.fetch_add(1);
                 if(idx < 128) {
                     LOG.warn() << "Model has empty geometry id=" << key
-                        << " type=" << type
-                        << " size=" << dataSize
-                        << " prefix=" << int(prefix[0]) << '.'
-                        << int(prefix[1]) << '.'
-                        << int(prefix[2]) << '.'
-                        << int(prefix[3]);
+                        << " pipelines=" << header.TexturePipelines.size();
                 }
             }
 
@@ -495,7 +445,9 @@ class TextureProvider {
 public:
     struct TextureUpdate {
         AssetsTexture Id = 0;
-        Resource Res;
+        uint16_t Width = 0;
+        uint16_t Height = 0;
+        std::vector<uint32_t> Pixels;
         std::string Domain;
         std::string Key;
     };
@@ -639,40 +591,21 @@ public:
         std::lock_guard lock(Mutex);
         std::vector<AssetsTexture> result;
 
-        for(const auto& update : newOrChanged) {
+        for(auto& update : newOrChanged) {
             const AssetsTexture key = update.Id;
-            const Resource& res = update.Res;
             result.push_back(key);
 
-            iResource sres((const uint8_t*) res.data(), res.size());
-            iBinaryStream stream = sres.makeStream();
-            png::image<png::rgba_pixel> img(stream.Stream);
-            uint32_t width = img.get_width();
-            uint32_t height = img.get_height();
-
-            std::vector<uint32_t> pixels;
-            pixels.resize(width*height);
-
-            for(uint32_t y = 0; y < height; y++) {
-                const auto& row = img.get_pixbuf().operator [](y);
-                for(uint32_t x = 0; x < width; x++) {
-                    const auto& px = row[x];
-                    uint32_t rgba = (uint32_t(px.alpha) << 24)
-                        | (uint32_t(px.red) << 16)
-                        | (uint32_t(px.green) << 8)
-                        | uint32_t(px.blue);
-                    pixels[x + y * width] = rgba;
-                }
-            }
+            if(update.Width == 0 || update.Height == 0 || update.Pixels.empty())
+                continue;
 
             Atlas->updateTexture(key, StoredTexture(
-                static_cast<uint16_t>(width),
-                static_cast<uint16_t>(height),
-                std::move(pixels)
+                update.Width,
+                update.Height,
+                std::move(update.Pixels)
             ));
 
             bool animated = false;
-            if(auto anim = getDefaultAnimation(update.Key, width, height)) {
+            if(auto anim = getDefaultAnimation(update.Key, update.Width, update.Height)) {
                 AnimatedSources[key] = *anim;
                 animated = true;
             } else {
@@ -686,7 +619,7 @@ public:
             if(idx < 128) {
                 LOG.debug() << "Texture loaded id=" << key
                     << " key=" << update.Domain << ':' << update.Key
-                    << " size=" << width << 'x' << height
+                    << " size=" << update.Width << 'x' << update.Height
                     << " animated=" << (animated ? 1 : 0);
             }
         }
@@ -911,7 +844,7 @@ public:
     {}
 
     // Применяет изменения, возвращает изменённые описания состояний
-    std::vector<AssetsNodestate> onNodestateChanges(std::vector<std::tuple<AssetsNodestate, Resource, const std::vector<uint8_t>*>> newOrChanged, std::vector<AssetsNodestate> lost, std::vector<AssetsModel> changedModels) {
+    std::vector<AssetsNodestate> onNodestateChanges(std::vector<const AssetEntry*> newOrChanged, std::vector<AssetsNodestate> lost, std::vector<AssetsModel> changedModels) {
         std::vector<AssetsNodestate> result;
 
         for(ResourceId lostId : lost) {
@@ -923,42 +856,15 @@ public:
             Nodestates.erase(iterNodestate);
         }
         
-        for(const auto& [key, resource, deps] : newOrChanged) {
+        for(const AssetEntry* entry : newOrChanged) {
+            if(!entry)
+                continue;
+            const AssetsNodestate key = entry->Id;
             result.push_back(key);
 
             PreparedNodeState nodestate;
-            std::string type = "unknown";
-                
-            try {
-                std::u8string_view data((const char8_t*) resource.data(), resource.size());
-                if(data.starts_with((const char8_t*) "bn")) {
-                    type = "InternalBinary";
-                    // Компилированный nodestate внутреннего формата
-                    nodestate = PreparedNodeState(data);
-                } else if(data.starts_with((const char8_t*) "{")) {
-                    type = "InternalJson";
-                    // nodestate в json формате
-                } else {
-                    type = "InternalBinaryLegacy";
-                    // Старый двоичный формат без заголовка "bn"
-                    std::u8string patched;
-                    patched.reserve(data.size() + 2);
-                    patched.push_back(u8'b');
-                    patched.push_back(u8'n');
-                    patched.append(data);
-                    nodestate = PreparedNodeState(patched);
-                }
-            } catch(const std::exception& exc) {
-                LOG.warn() << "Не удалось распарсить nodestate " << type << ":\n\t" << exc.what();
-                continue;
-            }
-
-            if(deps && !deps->empty()) {
-                auto header = AssetsManager::parseHeader(EnumAssets::Nodestate, *deps);
-                if(header && header->Type == EnumAssets::Nodestate) {
-                    nodestate.LocalToModel.assign(header->ModelDeps.begin(), header->ModelDeps.end());
-                }
-            }
+            static_cast<HeadlessNodeState&>(nodestate) = entry->Nodestate;
+            nodestate.LocalToModel.assign(entry->NodestateHeader.Models.begin(), entry->NodestateHeader.Models.end());
 
             Nodestates.insert_or_assign(key, std::move(nodestate));
             if(key < 64) {

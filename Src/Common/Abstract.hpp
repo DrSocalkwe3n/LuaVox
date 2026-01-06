@@ -675,6 +675,14 @@ struct HeadlessNodeState {
         std::vector<Transformation> Transforms;
     };
 
+    struct Header {
+        std::vector<AssetsModel> Models;
+
+        uint16_t addModel(AssetsModel id);
+        void load(std::u8string_view data);
+        ResourceHeader dump() const;
+    };
+
     // Ноды выражений
     std::vector<Node> Nodes;
     // Условия -> вариации модели + веса
@@ -911,6 +919,16 @@ struct HeadlessModel {
     
     std::optional<EnumGuiLight> GuiLight = EnumGuiLight::Default;
     std::optional<bool> AmbientOcclusion = false;
+
+    struct Header {
+        std::vector<AssetsModel> Models;
+        std::vector<std::vector<uint8_t>> TexturePipelines;
+
+        uint16_t addModel(AssetsModel id);
+        uint16_t addTexturePipeline(std::vector<uint8_t> pipeline);
+        void load(std::u8string_view data);
+        ResourceHeader dump() const;
+    };
     
     struct FullTransformation {
         glm::vec3

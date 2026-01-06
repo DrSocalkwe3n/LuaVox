@@ -64,7 +64,6 @@ AssetsPreloader::Out_checkAndPrepareResourcesUpdate AssetsPreloader::checkAndPre
     ReloadStatus* status
 ) {
     assert(idResolver);
-    assert(onNewResourceParsed);
 
     bool expected = false;
     assert(_Reloading.compare_exchange_strong(expected, true) && "Двойной вызов reloadResources");
@@ -287,35 +286,36 @@ AssetsPreloader::Out_checkAndPrepareResourcesUpdate AssetsPreloader::_checkAndPr
             for(const auto& [key, res] : keys) {
                 uniqueExistsTypes.insert(res.Id);
 
-                if(res.Id >= resourceLinksTyped.size() || !std::get<bool>(resourceLinksTyped[res.Id]))
+                if(res.Id >= resourceLinksTyped.size() || !resourceLinksTyped[res.Id].IsExist)
                 {   // Если идентификатора нет в таблице или ресурс не привязан
                     PendingResource resource = buildResource(static_cast<AssetType>(type), domain, key, res);
-                    onNewResourceParsed(std::move(resource.Resource), resource.Hash, res.Path);
+                    if(onNewResourceParsed)
+                        onNewResourceParsed(std::move(resource.Resource), resource.Hash, res.Path);
                     result.HashToPathNew[resource.Hash].push_back(res.Path);
 
                     if(res.Id >= result.MaxNewSize[type])
                         result.MaxNewSize[type] = res.Id+1;
 
                     result.ResourceUpdates[type].emplace_back(res.Id, resource.Hash, std::move(resource.Header), resource.Timestamp, res.Path);
-                } else if(
-                    std::get<fs::path>(resourceLinksTyped[res.Id]) != res.Path
-                    || std::get<fs::file_time_type>(resourceLinksTyped[res.Id]) != res.Timestamp
+                } else if(resourceLinksTyped[res.Id].Path != res.Path
+                    || resourceLinksTyped[res.Id].LastWrite != res.Timestamp
                 ) { // Если ресурс теперь берётся с другого места или изменилось время изменения файла
                     const auto& lastResource = resourceLinksTyped[res.Id];
                     PendingResource resource = buildResource(static_cast<AssetType>(type), domain, key, res);
                     
-                    if(auto lastHash = std::get<ResourceFile::Hash_t>(lastResource); lastHash != resource.Hash) {
+                    if(lastResource.Hash != resource.Hash) {
                         // Хэш изменился
                         // Сообщаем о новом ресурсе
-                        onNewResourceParsed(std::move(resource.Resource), resource.Hash, res.Path);
+                        if(onNewResourceParsed)
+                            onNewResourceParsed(std::move(resource.Resource), resource.Hash, res.Path);
                         // Старый хэш более не доступен по этому расположению.
-                        result.HashToPathLost[lastHash].push_back(std::get<fs::path>(resourceLinksTyped[res.Id]));
+                        result.HashToPathLost[lastResource.Hash].push_back(resourceLinksTyped[res.Id].Path);
                         // Новый хеш стал доступен по этому расположению.
                         result.HashToPathNew[resource.Hash].push_back(res.Path);
-                    } else if(std::get<fs::path>(resourceLinksTyped[res.Id]) != res.Path) {
+                    } else if(resourceLinksTyped[res.Id].Path != res.Path) {
                         // Изменился конечный путь.
                         // Хэш более не доступен по этому расположению.
-                        result.HashToPathLost[resource.Hash].push_back(std::get<fs::path>(resourceLinksTyped[res.Id]));
+                        result.HashToPathLost[resource.Hash].push_back(resourceLinksTyped[res.Id].Path);
                         // Хеш теперь доступен по этому расположению.
                         result.HashToPathNew[resource.Hash].push_back(res.Path);
                     } else {
@@ -373,13 +373,7 @@ AssetsPreloader::Out_applyResourcesUpdate AssetsPreloader::applyResourcesUpdate(
 
         // Увеличиваем размер, если необходимо
         if(orr.MaxNewSize[type] > ResourceLinks[type].size()) {
-            std::tuple<
-                ResourceFile::Hash_t, 
-                ResourceHeader,
-                fs::file_time_type,
-                fs::path,
-                bool
-            > def{
+            ResourceLink def{
                 ResourceFile::Hash_t{0},
                 ResourceHeader(),
                 fs::file_time_type(),

@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -175,7 +176,7 @@ public:
     Out_checkAndPrepareResourcesUpdate checkAndPrepareResourcesUpdate(
         const AssetsRegister& instances,
         const std::function<ResourceId(EnumAssets type, std::string_view domain, std::string_view key)>& idResolver,
-        const std::function<void(std::u8string&& resource, ResourceFile::Hash_t hash, fs::path resPath)>& onNewResourceParsed,
+        const std::function<void(std::u8string&& resource, ResourceFile::Hash_t hash, fs::path resPath)>& onNewResourceParsed = nullptr,
         ReloadStatus* status = nullptr
     );
 
@@ -223,6 +224,23 @@ public:
         return result;
     }
 
+    const auto& getResourceLinks() const {
+        return ResourceLinks;
+    }
+
+    struct Out_Resource {
+        ResourceFile::Hash_t Hash;
+        fs::path Path;
+    };
+
+    std::optional<Out_Resource> getResource(EnumAssets type, ResourceId id) const {
+        const auto& rl = ResourceLinks[static_cast<size_t>(type)];
+        if(id >= rl.size() || !rl[id].IsExist)
+            return std::nullopt;
+
+        return Out_Resource{rl[id].Hash, rl[id].Path};
+    }
+
 private:
     struct ResourceFindInfo {
         // Путь к архиву (если есть), и путь до ресурса
@@ -249,6 +267,15 @@ private:
     std::atomic<bool> _Reloading = false;
     #endif
 
+    struct ResourceLink {
+        ResourceFile::Hash_t Hash;      // Хэш ресурса на диске
+        /// TODO: клиенту не нужны хедеры
+        ResourceHeader Header;          // Хедер ресурса (со всеми зависимостями)
+        fs::file_time_type LastWrite;   // Время изменения ресурса на диске
+        fs::path Path;                  // Путь до ресурса
+        bool IsExist;
+    };
+
     Out_checkAndPrepareResourcesUpdate _checkAndPrepareResourcesUpdate(
         const AssetsRegister& instances,
         const std::function<ResourceId(EnumAssets type, std::string_view domain, std::string_view key)>& idResolver,
@@ -258,15 +285,7 @@ private:
 
     // Привязка Id -> Hash + Header + Timestamp + Path
     std::array<
-        std::vector<
-            std::tuple<
-                ResourceFile::Hash_t,   // Хэш ресурса на диске
-                ResourceHeader,         // Хедер ресурса (со всеми зависимостями)
-                fs::file_time_type,     // Время изменения ресурса на диске
-                fs::path,               // Путь до ресурса
-                bool                    // IsExist
-            >
-        >, 
+        std::vector<ResourceLink>, 
         static_cast<size_t>(AssetType::MAX_ENUM)
     > ResourceLinks;
 };

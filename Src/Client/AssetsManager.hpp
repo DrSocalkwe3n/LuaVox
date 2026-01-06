@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -9,285 +10,365 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 #include "Client/AssetsCacheManager.hpp"
 #include "Client/AssetsHeaderCodec.hpp"
 #include "Common/Abstract.hpp"
+#include "Common/IdProvider.hpp"
+#include "Common/AssetsPreloader.hpp"
 #include "TOSLib.hpp"
+#include "boost/asio/io_context.hpp"
+#include <fstream>
 
 namespace LV::Client {
 
 namespace fs = std::filesystem;
 
-class AssetsManager {
+class AssetsManager : public IdProvider<EnumAssets> {
 public:
-    using Ptr = std::shared_ptr<AssetsManager>;
-    using AssetType = EnumAssets;
-    using AssetId = ResourceId;
-
-    // Ключ запроса ресурса (идентификация + хеш для поиска источника).
-    struct ResourceKey {
-        // Хеш ресурса, используемый для поиска в источниках и кэше.
-        Hash_t Hash{};
-        // Тип ресурса (модель, текстура и т.д.).
-        AssetType Type{};
-        // Домен ресурса.
-        std::string Domain;
-        // Ключ ресурса внутри домена.
-        std::string Key;
-        // Идентификатор ресурса на стороне клиента/локальный.
-        AssetId Id = 0;
+    struct ResourceUpdates {
+        /// TODO: Добавить анимацию из меты
+        std::vector<std::tuple<ResourceId, uint16_t, uint16_t, std::vector<uint32_t>>> Textures;
     };
 
-    // Информация о биндинге серверного ресурса на локальный id.
-    struct BindInfo {
-        // Тип ресурса.
-        AssetType Type{};
-        // Локальный идентификатор.
-        AssetId LocalId = 0;
-        // Домен ресурса.
-        std::string Domain;
-        // Ключ ресурса.
-        std::string Key;
-        // Хеш ресурса.
-        Hash_t Hash{};
-        // Бинарный заголовок с зависимостями.
-        std::vector<uint8_t> Header;
-    };
-
-    // Результат биндинга ресурса сервера.
-    struct BindResult {
-        // Итоговый локальный идентификатор.
-        AssetId LocalId = 0;
-        // Признак изменения бинда (хеш/заголовок).
-        bool Changed = false;
-        // Признак новой привязки.
-        bool NewBinding = false;
-        // Идентификатор, от которого произошёл ребинд (если был).
-        std::optional<AssetId> ReboundFrom;
-    };
-
-    // Регистрация набора ресурспаков.
-    struct PackRegister {
-        // Пути до паков (директории/архивы).
-        std::vector<fs::path> Packs;
-    };
-
-    // Ресурс, собранный из пака.
-    struct PackResource {
-        // Тип ресурса.
-        AssetType Type{};
-        // Локальный идентификатор.
-        AssetId LocalId = 0;
-        // Домен ресурса.
-        std::string Domain;
-        // Ключ ресурса.
-        std::string Key;
-        // Тело ресурса.
-        Resource Res;
-        // Хеш ресурса.
-        Hash_t Hash{};
-        // Заголовок ресурса (например, зависимости).
-        std::u8string Header;
-    };
-
-    // Результат пересканирования паков.
-    struct PackReloadResult {
-        // Добавленные/изменённые ресурсы по типам.
-        std::array<std::vector<AssetId>, static_cast<size_t>(AssetType::MAX_ENUM)> ChangeOrAdd;
-        // Потерянные ресурсы по типам.
-        std::array<std::vector<AssetId>, static_cast<size_t>(AssetType::MAX_ENUM)> Lost;
-    };
-
-    using ParsedHeader = AssetsHeaderCodec::ParsedHeader;
-
-    // Фабрика с настройкой лимитов кэша.
-    static Ptr Create(asio::io_context& ioc, const fs::path& cachePath,
-        size_t maxCacheDirectorySize = 8 * 1024 * 1024 * 1024ULL,
-        size_t maxLifeTime = 7 * 24 * 60 * 60) {
-        return Ptr(new AssetsManager(ioc, cachePath, maxCacheDirectorySize, maxLifeTime));
+public:
+    AssetsManager(asio::io_context& ioc, fs::path cachePath)
+    : Cache(AssetsCacheManager::Create(ioc, cachePath)) {
     }
 
-    // Пересканировать ресурспаки и вернуть изменившиеся/утраченные ресурсы.
-    PackReloadResult reloadPacks(const PackRegister& reg);
+// Ручные обновления
+    struct Out_checkAndPrepareResourcesUpdate {
+        AssetsPreloader::Out_checkAndPrepareResourcesUpdate RP, ES;
 
-    // Связать серверный ресурс с локальным id и записать метаданные.
-    BindResult bindServerResource(AssetType type, AssetId serverId, std::string domain, std::string key,
-        const Hash_t& hash, std::vector<uint8_t> header);
-    // Отвязать серверный id и вернуть актуальный локальный id (если был).
-    std::optional<AssetId> unbindServerResource(AssetType type, AssetId serverId);
-    // Сбросить все серверные бинды.
-    void clearServerBindings();
+        std::unordered_map<ResourceFile::Hash_t, std::u8string> Files;
+    };
 
-    // Получить данные бинда по локальному id.
-    const BindInfo* getBind(AssetType type, AssetId localId) const;
+    Out_checkAndPrepareResourcesUpdate checkAndPrepareResourcesUpdate(
+        const std::vector<fs::path>& resourcePacks,
+        const std::vector<fs::path>& extraSources
+    ) {
+        Out_checkAndPrepareResourcesUpdate result;
 
-    // Перебиндить хедер, заменив id зависимостей.
-    std::vector<uint8_t> rebindHeader(AssetType type, const std::vector<uint8_t>& header, bool serverIds = true);
-    // Распарсить хедер ресурса.
-    static std::optional<ParsedHeader> parseHeader(AssetType type, const std::vector<uint8_t>& header);
+        result.RP = ResourcePacks.checkAndPrepareResourcesUpdate(
+            AssetsPreloader::AssetsRegister{resourcePacks},
+            [&](EnumAssets type, std::string_view domain, std::string_view key) -> ResourceId {
+                return getId(type, domain, key);
+            },
+            [&](std::u8string&& data, ResourceFile::Hash_t hash, fs::path path) {
+                result.Files.emplace(hash, std::move(data));
+            }
+        );
 
-    // Протолкнуть новые ресурсы в память и кэш.
-    void pushResources(std::vector<Resource> resources);
+        result.ES = ExtraSource.checkAndPrepareResourcesUpdate(
+            AssetsPreloader::AssetsRegister{resourcePacks},
+            [&](EnumAssets type, std::string_view domain, std::string_view key) -> ResourceId {
+                return getId(type, domain, key);
+            }
+        );
 
-    // Поставить запросы чтения ресурсов.
-    void pushReads(std::vector<ResourceKey> reads);
-    // Получить готовые результаты чтения.
-    std::vector<std::pair<ResourceKey, std::optional<Resource>>> pullReads();
-    // Продвинуть асинхронные источники (кэш).
-    void tickSources();
+        return result;
+    }
 
-    // Получить или создать локальный id по домену/ключу.
-    AssetId getOrCreateLocalId(AssetType type, std::string_view domain, std::string_view key);
-    // Получить локальный id по серверному id (если есть).
-    std::optional<AssetId> getLocalIdFromServer(AssetType type, AssetId serverId) const;
+    struct Out_applyResourcesUpdate {
+        
+    };
+
+    Out_applyResourcesUpdate applyResourcesUpdate(const Out_checkAndPrepareResourcesUpdate& orr) {
+        Out_applyResourcesUpdate result;
+            
+        ResourcePacks.applyResourcesUpdate(orr.RP);
+        ExtraSource.applyResourcesUpdate(orr.ES);
+
+        std::unordered_set<ResourceFile::Hash_t> needHashes;
+
+        for(size_t type = 0; type < static_cast<size_t>(EnumAssets::MAX_ENUM); ++type) {
+            for(const auto& res : orr.RP.ResourceUpdates[type]) {
+                // Помечаем ресурс для обновления
+                PendingUpdateFromAsync[type].push_back(std::get<ResourceId>(res));
+            }
+
+            for(ResourceId id : orr.RP.LostLinks[type]) {
+                // Помечаем ресурс для обновления
+                PendingUpdateFromAsync[type].push_back(id);
+
+                auto& hh = ServerIdToHH[type];
+                if(id < hh.size())
+                    needHashes.insert(std::get<ResourceFile::Hash_t>(hh[id]));
+            }
+        }
+
+        {
+            for(const auto& [hash, data] : orr.Files) {
+                WaitingHashes.insert(hash);
+            }
+
+            for(const auto& hash : WaitingHashes)
+                needHashes.erase(hash);
+
+            std::vector<std::tuple<ResourceFile::Hash_t, fs::path>> toDisk;
+            std::vector<ResourceFile::Hash_t> toCache;
+
+            // Теперь раскидаем хеши по доступным источникам.
+            for(const auto& hash : needHashes) {
+                auto iter = HashToPath.find(hash);
+                if(iter != HashToPath.end()) {
+                    // Ставим задачу загрузить с диска.
+                    toDisk.emplace_back(hash, iter->second.front());
+                } else {
+                    // Сделаем запрос в кеш.
+                    toCache.push_back(hash);
+                }
+            }
+
+            // Запоминаем, что эти ресурсы уже ожидаются.
+            WaitingHashes.insert_range(needHashes);
+
+            // Запрос в кеш (если там не найдётся, то запрос уйдёт на сервер).
+            if(!toCache.empty())
+                Cache->pushReads(std::move(toCache));
+
+            // Запрос к диску.
+            if(!toDisk.empty())
+                NeedToReadFromDisk.append_range(std::move(toDisk));
+
+            _onHashLoad(orr.Files);
+        }
+
+        return result;
+    }
+
+// ServerSession
+    // Новые привязки ассетов к Домен+Ключ.
+    void pushAssetsBindDK(
+        const std::vector<std::string>& domains,
+        const std::array<
+            std::vector<std::vector<std::string>>,
+            static_cast<size_t>(EnumAssets::MAX_ENUM)
+        >& keys
+    ) {
+        for(size_t type = 0; type < static_cast<size_t>(EnumAssets::MAX_ENUM); ++type) {
+            for(size_t forDomainIter = 0; forDomainIter < keys[type].size(); ++forDomainIter) {
+                for(const std::string& key : keys[type][forDomainIter]) {
+                    ServerToClientMap[type].push_back(getId((EnumAssets) type, domains[forDomainIter], key));
+                }
+            }
+        }
+    }
+
+    // Новые привязки ассетов к Hash+Header.
+    void pushAssetsBindHH(
+        std::array<
+            std::vector<std::tuple<ResourceId, ResourceFile::Hash_t, ResourceHeader>>,
+            static_cast<size_t>(EnumAssets::MAX_ENUM)
+        >&& hash_and_headers
+    ) {
+        std::array<
+            std::vector<std::tuple<ResourceId, ResourceFile::Hash_t, ResourceHeader>>,
+            static_cast<size_t>(EnumAssets::MAX_ENUM)
+        > hah = std::move(hash_and_headers);
+
+        std::unordered_set<ResourceFile::Hash_t> needHashes;
+
+        for(size_t type = 0; type < static_cast<size_t>(EnumAssets::MAX_ENUM); ++type) {
+            size_t maxSize = 0;
+
+            for(auto& [id, hash, header] : hash_and_headers[type]) {
+                assert(id < ServerToClientMap[type].size());
+                id = ServerToClientMap[type][id];
+
+                if(id > maxSize)
+                    maxSize = id+1;
+
+                // Добавляем идентификатор в таблицу ожидающих обновлений.
+                PendingUpdateFromAsync[type].push_back(id);
+
+                // Поискать есть ли ресурс в ресурспаках.
+                std::optional<AssetsPreloader::Out_Resource> res = ResourcePacks.getResource((EnumAssets) type, id);
+                if(res) {
+                    needHashes.insert(res->Hash);
+                } else {
+                    needHashes.insert(hash);
+                }
+            }
+
+            {
+                // Уберём повторения в идентификаторах.
+                auto& vec = PendingUpdateFromAsync[type];
+                std::sort(vec.begin(), vec.end());
+                vec.erase(std::unique(vec.begin(), vec.end()), vec.end());
+            }
+
+            if(ServerIdToHH[type].size() < maxSize)
+                ServerIdToHH[type].resize(maxSize);
+
+            for(auto& [id, hash, header] : hash_and_headers[type]) {
+                ServerIdToHH[type][id] = {hash, std::move(header)};
+            }
+        }
+
+        // Нужно убрать хеши, которые уже запрошены
+        // needHashes ^ WaitingHashes.
+
+        for(const auto& hash : WaitingHashes)
+            needHashes.erase(hash);
+
+        std::vector<std::tuple<ResourceFile::Hash_t, fs::path>> toDisk;
+        std::vector<ResourceFile::Hash_t> toCache;
+
+        // Теперь раскидаем хеши по доступным источникам.
+        for(const auto& hash : needHashes) {
+            auto iter = HashToPath.find(hash);
+            if(iter != HashToPath.end()) {
+                // Ставим задачу загрузить с диска.
+                toDisk.emplace_back(hash, iter->second.front());
+            } else {
+                // Сделаем запрос в кеш.
+                toCache.push_back(hash);
+            }
+        }
+
+        // Запоминаем, что эти ресурсы уже ожидаются.
+        WaitingHashes.insert_range(needHashes);
+
+        // Запрос к диску.
+        if(!toDisk.empty())
+            NeedToReadFromDisk.append_range(std::move(toDisk));
+
+        // Запрос в кеш (если там не найдётся, то запрос уйдёт на сервер).
+        if(!toCache.empty())
+            Cache->pushReads(std::move(toCache));
+    }
+
+    // Новые ресурсы, полученные с сервера.
+    void pushNewResources(
+        std::vector<std::tuple<ResourceFile::Hash_t, std::u8string>> &&resources
+    ) {
+        std::unordered_map<ResourceFile::Hash_t, std::u8string> files;
+        std::vector<Resource> vec;
+        files.reserve(resources.size());
+        vec.reserve(resources.size());
+
+        for(auto& [hash, res] : resources) {
+            vec.emplace_back(std::move(res));
+            files.emplace(hash, res);
+        }
+
+        _onHashLoad(files);
+        Cache->pushResources(std::move(vec));
+    }
+
+    // Для запроса отсутствующих ресурсов с сервера на клиент.
+    std::vector<ResourceFile::Hash_t> pollNeededResources() {
+        return std::move(NeedToRequestFromServer);
+    }
+    
+    // Получить изменённые ресурсы (для передачи другим модулям).
+    ResourceUpdates pullResourceUpdates() {
+        return std::move(RU);
+    }
+
+    void tick() {
+        // Проверим кеш
+        std::vector<std::pair<Hash_t, std::optional<Resource>>> resources = Cache->pullReads();
+        if(!resources.empty()) {
+            std::unordered_map<ResourceFile::Hash_t, std::u8string> needToProceed;
+            needToProceed.reserve(resources.size());
+
+            for(auto& [hash, res] : resources) {
+                if(!res)
+                    NeedToRequestFromServer.push_back(hash);
+                else
+                    needToProceed.emplace(hash, std::u8string{(const char8_t*) res->data(), res->size()});
+            }
+
+            if(!needToProceed.empty())
+                _onHashLoad(needToProceed);
+        }
+
+        // Почитаем с диска
+        if(!NeedToReadFromDisk.empty()) {
+            std::unordered_map<ResourceFile::Hash_t, std::u8string> files;
+            for(const auto& [hash, path] : NeedToReadFromDisk) {
+                std::u8string data;
+                std::ifstream file(path, std::ios::binary);
+                if(file) {
+                    file.seekg(0, std::ios::end);
+                    std::streamoff size = file.tellg();
+                    if(size < 0)
+                        size = 0;
+                    file.seekg(0, std::ios::beg);
+                    data.resize(static_cast<size_t>(size));
+                    if(size > 0) {
+                        file.read(reinterpret_cast<char*>(data.data()), size);
+                        if(!file)
+                            data.clear();
+                    }
+                }
+                files.emplace(hash, std::move(data));
+            }
+
+            NeedToReadFromDisk.clear();
+            _onHashLoad(files);
+        }
+    }
 
 private:
-    // Связка домен/ключ для локального id.
-    struct DomainKey {
-        // Домен ресурса.
-        std::string Domain;
-        // Ключ ресурса.
-        std::string Key;
-        // Признак валидности записи.
-        bool Known = false;
-    };
+    // Менеджеры учёта дисковых ресурсов
+    AssetsPreloader
+        // В приоритете ищутся ресурсы из ресурспаков по Domain+Key.
+        ResourcePacks,
+        /*
+            Дополнительные источники ресурсов.
+            Используется для поиска ресурса по хешу от сервера (может стоит тот же мод с совпадающими ресурсами),
+            или для временной подгрузки ресурса по Domain+Key пока ресурс не был получен с сервера.
+        */
+        ExtraSource;
 
-    using IdTable = std::unordered_map<
-        std::string,
-        std::unordered_map<std::string, AssetId, detail::TSVHash, detail::TSVEq>,
-        detail::TSVHash,
-        detail::TSVEq>;
-
-    using PackTable = std::unordered_map<
-        std::string,
-        std::unordered_map<std::string, PackResource, detail::TSVHash, detail::TSVEq>,
-        detail::TSVHash,
-        detail::TSVEq>;
-
-    struct PerType {
-        // Таблица домен/ключ -> локальный id.
-        IdTable DKToLocal;
-        // Таблица локальный id -> домен/ключ.
-        std::vector<DomainKey> LocalToDK;
-        // Union-Find родительские ссылки для ребиндов.
-        std::vector<AssetId> LocalParent;
-        // Таблица серверный id -> локальный id.
-        std::vector<AssetId> ServerToLocal;
-        // Бинды с сервером по локальному id.
-        std::vector<std::optional<BindInfo>> BindInfos;
-        // Ресурсы, собранные из паков.
-        PackTable PackResources;
-        // Следующий локальный id.
-        AssetId NextLocalId = 1;
-    };
-
-    enum class SourceStatus {
-        Hit,
-        Miss,
-        Pending
-    };
-
-    struct SourceResult {
-        // Статус ответа источника.
-        SourceStatus Status = SourceStatus::Miss;
-        // Значение ресурса, если найден.
-        std::optional<Resource> Value;
-        // Индекс источника.
-        size_t SourceIndex = 0;
-    };
-
-    struct SourceReady {
-        // Хеш готового ресурса.
-        Hash_t Hash{};
-        // Значение ресурса, если найден.
-        std::optional<Resource> Value;
-        // Индекс источника.
-        size_t SourceIndex = 0;
-    };
-
-    class IResourceSource {
-    public:
-        virtual ~IResourceSource() = default;
-        // Попытка получить ресурс синхронно.
-        virtual SourceResult tryGet(const ResourceKey& key) = 0;
-        // Забрать готовые результаты асинхронных запросов.
-        virtual void collectReady(std::vector<SourceReady>& out) = 0;
-        // Признак асинхронности источника.
-        virtual bool isAsync() const = 0;
-        // Запустить асинхронные запросы по хешам.
-        virtual void startPending(std::vector<Hash_t> hashes) = 0;
-    };
-
-    struct SourceEntry {
-        // Экземпляр источника.
-        std::unique_ptr<IResourceSource> Source;
-        // Поколение для инвалидирования кэша.
-        size_t Generation = 0;
-    };
-
-    struct SourceCacheEntry {
-        // Индекс источника, где был найден хеш.
-        size_t SourceIndex = 0;
-        // Поколение источника на момент кэширования.
-        size_t Generation = 0;
-    };
-
-    // Конструктор с зависимостью от io_context и кэш-пути.
-    AssetsManager(asio::io_context& ioc, const fs::path& cachePath,
-        size_t maxCacheDirectorySize, size_t maxLifeTime);
-
-    // Инициализация списка источников.
-    void initSources();
-    // Забрать готовые результаты из источников.
-    void collectReadyFromSources();
-    // Запросить ресурс в источниках, с учётом кэша.
-    SourceResult querySources(const ResourceKey& key);
-    // Запомнить успешный источник для хеша.
-    void registerSourceHit(const Hash_t& hash, size_t sourceIndex);
-    // Инвалидировать кэш по конкретному источнику.
-    void invalidateSourceCache(size_t sourceIndex);
-    // Инвалидировать весь кэш источников.
-    void invalidateAllSourceCache();
-
-    // Выделить новый локальный id.
-    AssetId allocateLocalId(AssetType type);
-    // Получить корневой локальный id с компрессией пути.
-    AssetId resolveLocalIdMutable(AssetType type, AssetId localId);
-    // Получить корневой локальный id без мутаций.
-    AssetId resolveLocalId(AssetType type, AssetId localId) const;
-    // Объединить два локальных id в один.
-    void unionLocalIds(AssetType type, AssetId fromId, AssetId toId, std::optional<AssetId>* reboundFrom);
-
-    // Найти ресурс в паке по домену/ключу.
-    std::optional<PackResource> findPackResource(AssetType type, std::string_view domain, std::string_view key) const;
-
-    // Логгер подсистемы.
-    Logger LOG = "Client>AssetsManager";
     // Менеджер файлового кэша.
     AssetsCacheManager::Ptr Cache;
 
-    // Таблицы данных по каждому типу ресурсов.
-    std::array<PerType, static_cast<size_t>(AssetType::MAX_ENUM)> Types;
+    // Указатели на доступные ресурсы
+    std::unordered_map<ResourceFile::Hash_t, std::vector<fs::path>> HashToPath;
 
-    // Список источников ресурсов.
-    std::vector<SourceEntry> Sources;
-    // Кэш попаданий по хешу.
-    std::unordered_map<Hash_t, SourceCacheEntry> SourceCacheByHash;
-    // Индекс источника паков.
-    size_t PackSourceIndex = 0;
-    // Индекс памяти (RAM) как источника.
-    size_t MemorySourceIndex = 0;
-    // Индекс файлового кэша.
-    size_t CacheSourceIndex = 0;
+    // Таблица релинковки ассетов с идентификаторов сервера на клиентские.
+    std::array<
+        std::vector<ResourceId>,
+        static_cast<size_t>(EnumAssets::MAX_ENUM)
+    > ServerToClientMap;
+    
+    // Таблица серверных привязок HH (id клиентские)
+    std::array<
+        std::vector<std::tuple<ResourceFile::Hash_t, ResourceHeader>>,
+        static_cast<size_t>(EnumAssets::MAX_ENUM)
+    > ServerIdToHH;
 
-    // Ресурсы в памяти по хешу.
-    std::unordered_map<Hash_t, Resource> MemoryResourcesByHash;
-    // Ожидающие запросы, сгруппированные по хешу.
-    std::unordered_map<Hash_t, std::vector<ResourceKey>> PendingReadsByHash;
-    // Готовые ответы на чтение.
-    std::vector<std::pair<ResourceKey, std::optional<Resource>>> ReadyReads;
+    // Ресурсы в ожидании данных по хешу для обновления (с диска, кеша, сервера).
+    std::array<
+        std::vector<ResourceId>,
+        static_cast<size_t>(EnumAssets::MAX_ENUM)
+    > PendingUpdateFromAsync;
+
+    // Хеши, для которых где-то висит задача на загрузку.
+    std::unordered_set<ResourceFile::Hash_t> WaitingHashes;
+
+    // Хеши, которые необходимо запросить с сервера.
+    std::vector<ResourceFile::Hash_t> NeedToRequestFromServer;
+
+    // Ресурсы, которые нужно считать с диска
+    std::vector<std::tuple<ResourceFile::Hash_t, fs::path>> NeedToReadFromDisk;
+
+    // Обновлённые ресурсы
+    ResourceUpdates RU;
+
+    // Когда данные были получены с диска, кеша или сервера
+    void _onHashLoad(const std::unordered_map<ResourceFile::Hash_t, std::u8string>& files) {
+        /// TODO: скомпилировать ресурсы
+
+        for(const auto& [hash, res] : files)
+            WaitingHashes.erase(hash);
+    }
 };
 
 } // namespace LV::Client

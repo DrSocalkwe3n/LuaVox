@@ -69,14 +69,14 @@ private:
     IRenderSession *RS = nullptr;
 
     // Обработчик кеша ресурсов сервера
-    AssetsManager::Ptr AM;
+    AssetsManager AM;
 
     static constexpr uint64_t TIME_BEFORE_UNLOAD_RESOURCE = 180;
     struct {
         // Существующие привязки ресурсов
-        std::unordered_set<ResourceId> ExistBinds[(int) EnumAssets::MAX_ENUM];
+        // std::unordered_set<ResourceId> ExistBinds[(int) EnumAssets::MAX_ENUM];
         // Недавно использованные ресурсы, пока хранятся здесь в течении TIME_BEFORE_UNLOAD_RESOURCE секунд
-        std::unordered_map<std::string, std::pair<AssetEntry, uint64_t>> NotInUse[(int) EnumAssets::MAX_ENUM];
+        // std::unordered_map<std::string, std::pair<AssetEntry, uint64_t>> NotInUse[(int) EnumAssets::MAX_ENUM];
     } MyAssets;
 
     struct AssetLoadingEntry {
@@ -87,7 +87,6 @@ private:
     };
 
     struct AssetLoading {
-        std::vector<AssetLoadingEntry> Entries;
         std::u8string Data;
         size_t Offset = 0;
     };
@@ -100,10 +99,29 @@ private:
         std::vector<uint8_t> Header;
     };
 
-    std::array<std::vector<std::pair<std::string, std::string>>, (int) EnumAssets::MAX_ENUM> ServerIdToDK;
-    std::array<ResourceId, (int) EnumAssets::MAX_ENUM> NextServerId = {};
+    struct UpdateAssetsBindsDK {
+        std::vector<std::string> Domains;
+        std::array<
+            std::vector<std::vector<std::string>>,
+            static_cast<size_t>(EnumAssets::MAX_ENUM)
+        > Keys;
+    };
+
+    struct UpdateAssetsBindsHH {
+        std::array<
+            std::vector<std::tuple<ResourceId, ResourceFile::Hash_t, ResourceHeader>>,
+            static_cast<size_t>(EnumAssets::MAX_ENUM)
+        > HashAndHeaders;
+    };
 
     struct TickData {
+        // Полученные изменения привязок Domain+Key
+        std::vector<UpdateAssetsBindsDK> BindsDK;
+        // Полученные изменения привязок Hash+Header
+        std::vector<UpdateAssetsBindsHH> BindsHH;
+        // Полученные с сервера ресурсы
+        std::vector<std::tuple<ResourceFile::Hash_t, std::u8string>> ReceivedAssets;
+
         std::vector<std::pair<DefVoxelId, void*>> Profile_Voxel_AddOrChange;
         std::vector<DefVoxelId> Profile_Voxel_Lost;
         std::vector<std::pair<DefNodeId, DefNode_t>> Profile_Node_AddOrChange;
@@ -132,13 +150,6 @@ private:
         uint32_t Nodes = 0;
     };
 
-    struct AssetsBindsChange {
-        // Новые привязки ресурсов
-        std::vector<AssetBindEntry> Binds;
-        // Потерянные из видимости ресурсы
-        std::vector<ResourceId> Lost[(int) EnumAssets::MAX_ENUM];
-    };
-
     struct {
     // Сюда обращается ветка, обрабатывающая сокет; run()
         // Получение ресурсов с сервера
@@ -146,22 +157,7 @@ private:
         // Накопление данных за такт сервера
         TickData ThisTickEntry;
 
-    // Сюда обращается ветка обновления IServerSession, накапливая данные до SyncTick
-        // Ресурсы, ожидающие либо кеш, либо сервер; используются для сопоставления hash->domain/key
-        std::unordered_map<std::string, std::vector<std::pair<std::string, Hash_t>>> ResourceWait[(int) EnumAssets::MAX_ENUM];
-        // Полученные изменения связок в ожидании стадии синхронизации такта
-        std::vector<AssetsBindsChange> Binds;
-        // Подгруженные или принятые меж тактами ресурсы
-        std::vector<AssetEntry> LoadedResources;
-        // Список ресурсов на которые уже был отправлен запрос на загрузку ресурса
-        std::vector<Hash_t> AlreadyLoading;
-
-
     // Обменный пункт
-        // Полученные ресурсы с сервера
-        TOS::SpinlockObject<std::vector<AssetEntry>> LoadedAssets;
-        // Изменения в наблюдаемых ресурсах
-        TOS::SpinlockObject<std::vector<AssetsBindsChange>> AssetsBinds;
         // Пакеты обновлений игрового мира
         TOS::SpinlockObject<std::vector<TickData>> TickSequence;
     } AsyncContext;

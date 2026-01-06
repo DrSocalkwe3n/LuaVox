@@ -158,15 +158,6 @@ struct DefNode_t {
 
 };
 
-struct AssetEntry {
-    EnumAssets Type;
-    ResourceId Id;
-    std::string Domain, Key;
-    Resource Res;
-    Hash_t Hash = {};
-    std::vector<uint8_t> Dependencies;
-};
-
 /* 
     Интерфейс обработчика сессии с сервером.
 
@@ -181,7 +172,7 @@ public:
     bool DebugLogPackets = false;
 
     // Используемые двоичные ресурсы
-    std::unordered_map<EnumAssets, std::unordered_map<ResourceId, AssetEntry>> Assets;
+    // std::unordered_map<EnumAssets, std::unordered_map<ResourceId, AssetEntry>> Assets;
 
     // Используемые профили контента
     struct {

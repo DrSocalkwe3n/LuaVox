@@ -25,6 +25,7 @@
 #include "boost/asio/io_context.hpp"
 #include "png++/image.hpp"
 #include <fstream>
+#include "Abstract.hpp"
 
 namespace LV::Client {
 
@@ -33,41 +34,14 @@ namespace fs = std::filesystem;
 class AssetsManager : public IdProvider<EnumAssets> {
 public:
     struct ResourceUpdates {
-        struct ModelUpdate {
-            ResourceId Id = 0;
-            HeadlessModel Model;
-            HeadlessModel::Header Header;
-        };
 
-        struct NodestateUpdate {
-            ResourceId Id = 0;
-            HeadlessNodeState Nodestate;
-            HeadlessNodeState::Header Header;
-        };
-
-        struct TextureUpdate {
-            ResourceId Id = 0;
-            uint16_t Width = 0;
-            uint16_t Height = 0;
-            std::vector<uint32_t> Pixels;
-            std::string Domain;
-            std::string Key;
-            ResourceHeader Header;
-        };
-
-        struct BinaryUpdate {
-            ResourceId Id = 0;
-            std::u8string Data;
-        };
-
-        std::vector<ModelUpdate> Models;
-        std::vector<NodestateUpdate> Nodestates;
-        /// TODO: Добавить анимацию из меты
-        std::vector<TextureUpdate> Textures;
-        std::vector<BinaryUpdate> Particles;
-        std::vector<BinaryUpdate> Animations;
-        std::vector<BinaryUpdate> Sounds;
-        std::vector<BinaryUpdate> Fonts;
+        std::vector<AssetsModelUpdate> Models;
+        std::vector<AssetsNodestateUpdate> Nodestates;
+        std::vector<AssetsTextureUpdate> Textures;
+        std::vector<AssetsBinaryUpdate> Particles;
+        std::vector<AssetsBinaryUpdate> Animations;
+        std::vector<AssetsBinaryUpdate> Sounds;
+        std::vector<AssetsBinaryUpdate> Fonts;
     };
 
 public:
@@ -115,6 +89,23 @@ public:
     Out_applyResourcesUpdate applyResourcesUpdate(const Out_checkAndPrepareResourcesUpdate& orr) {
         Out_applyResourcesUpdate result;
             
+        for(size_t type = 0; type < static_cast<size_t>(EnumAssets::MAX_ENUM); ++type) {
+            for(ResourceId id : orr.RP.LostLinks[type]) {
+                std::optional<AssetsPreloader::Out_Resource> res = ResourcePacks.getResource((EnumAssets) type, id);
+                assert(res);
+
+                auto hashIter = HashToPath.find(res->Hash);
+                assert(hashIter != HashToPath.end());
+                auto& entry = hashIter->second;
+                auto iter = std::find(entry.begin(), entry.end(), res->Path);
+                assert(iter != entry.end());
+                entry.erase(iter);
+
+                if(entry.empty())
+                    HashToPath.erase(hashIter);
+            }
+        }
+
         ResourcePacks.applyResourcesUpdate(orr.RP);
         ExtraSource.applyResourcesUpdate(orr.ES);
 
@@ -124,6 +115,7 @@ public:
             for(const auto& res : orr.RP.ResourceUpdates[type]) {
                 // Помечаем ресурс для обновления
                 PendingUpdateFromAsync[type].push_back(std::get<ResourceId>(res));
+                HashToPath[std::get<ResourceFile::Hash_t>(res)].push_back(std::get<fs::path>(res));
             }
 
             for(ResourceId id : orr.RP.LostLinks[type]) {
@@ -476,17 +468,20 @@ private:
             const auto& map = ServerToClientMap[static_cast<size_t>(EnumAssets::Model)];
             if(id >= map.size())
                 return 0;
+
             return map[id];
         };
         auto mapTextureId = [&](ResourceId id) -> ResourceId {
             const auto& map = ServerToClientMap[static_cast<size_t>(EnumAssets::Texture)];
             if(id >= map.size())
                 return 0;
+
             return map[id];
         };
         auto rebindHeader = [&](EnumAssets type, const ResourceHeader& header) -> ResourceHeader {
             if(header.empty())
                 return {};
+
             std::vector<uint8_t> bytes;
             bytes.resize(header.size());
             std::memcpy(bytes.data(), header.data(), header.size());
@@ -497,6 +492,7 @@ private:
                 mapTextureId,
                 [](const std::string&) {}
             );
+
             return ResourceHeader(reinterpret_cast<const char8_t*>(rebound.data()), rebound.size());
         };
 
@@ -570,31 +566,30 @@ private:
                     RU.Models.push_back({id, std::move(hm), std::move(headerParsed)});
                     updated++;
                 } else if(type == EnumAssets::Texture) {
-                    ResourceUpdates::TextureUpdate update;
-                    update.Id = id;
-                    update.Domain = std::move(domain);
-                    update.Key = std::move(key);
-                    update.Header = std::move(finalHeader);
+                    AssetsTextureUpdate entry;
+                    entry.Id = id;
+                    entry.Header = std::move(finalHeader);
                     if(!data.empty()) {
                         iResource sres(reinterpret_cast<const uint8_t*>(data.data()), data.size());
                         iBinaryStream stream = sres.makeStream();
                         png::image<png::rgba_pixel> img(stream.Stream);
-                        update.Width = static_cast<uint16_t>(img.get_width());
-                        update.Height = static_cast<uint16_t>(img.get_height());
-                        update.Pixels.resize(static_cast<size_t>(update.Width) * update.Height);
-                        for(uint32_t y = 0; y < update.Height; ++y) {
+                        entry.Width = static_cast<uint16_t>(img.get_width());
+                        entry.Height = static_cast<uint16_t>(img.get_height());
+                        entry.Pixels.resize(static_cast<size_t>(entry.Width) * entry.Height);
+                        for(uint32_t y = 0; y < entry.Height; ++y) {
                             const auto& row = img.get_pixbuf().operator[](y);
-                            for(uint32_t x = 0; x < update.Width; ++x) {
+                            for(uint32_t x = 0; x < entry.Width; ++x) {
                                 const auto& px = row[x];
                                 uint32_t rgba = (uint32_t(px.alpha) << 24)
                                     | (uint32_t(px.red) << 16)
                                     | (uint32_t(px.green) << 8)
                                     | uint32_t(px.blue);
-                                update.Pixels[x + y * update.Width] = rgba;
+                                entry.Pixels[x + y * entry.Width] = rgba;
                             }
                         }
                     }
-                    RU.Textures.push_back(std::move(update));
+                    
+                    RU.Textures.push_back(std::move(entry));
                     updated++;
                 } else if(type == EnumAssets::Particle) {
                     RU.Particles.push_back({id, std::move(data)});

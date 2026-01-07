@@ -512,90 +512,9 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
 
         {
             AssetsManager::ResourceUpdates updates = AM.pullResourceUpdates();
-
-            if(!updates.Models.empty()) {
-                auto& map = Assets[EnumAssets::Model];
-                for(auto& update : updates.Models) {
-                    AssetEntry entry;
-                    entry.Id = update.Id;
-                    entry.Model = std::move(update.Model);
-                    entry.ModelHeader = std::move(update.Header);
-                    map[entry.Id] = std::move(entry);
-                    result.Assets_ChangeOrAdd[EnumAssets::Model].push_back(update.Id);
-                }
-            }
-
-            if(!updates.Nodestates.empty()) {
-                auto& map = Assets[EnumAssets::Nodestate];
-                for(auto& update : updates.Nodestates) {
-                    AssetEntry entry;
-                    entry.Id = update.Id;
-                    entry.Nodestate = std::move(update.Nodestate);
-                    entry.NodestateHeader = std::move(update.Header);
-                    map[entry.Id] = std::move(entry);
-                    result.Assets_ChangeOrAdd[EnumAssets::Nodestate].push_back(update.Id);
-                }
-            }
-
-            if(!updates.Textures.empty()) {
-                auto& map = Assets[EnumAssets::Texture];
-                for(auto& update : updates.Textures) {
-                    AssetEntry entry;
-                    entry.Id = update.Id;
-                    entry.Domain = std::move(update.Domain);
-                    entry.Key = std::move(update.Key);
-                    entry.Width = update.Width;
-                    entry.Height = update.Height;
-                    entry.Pixels = std::move(update.Pixels);
-                    entry.Header = std::move(update.Header);
-                    map[entry.Id] = std::move(entry);
-                    result.Assets_ChangeOrAdd[EnumAssets::Texture].push_back(update.Id);
-                }
-            }
-
-            if(!updates.Particles.empty()) {
-                auto& map = Assets[EnumAssets::Particle];
-                for(auto& update : updates.Particles) {
-                    AssetEntry entry;
-                    entry.Id = update.Id;
-                    entry.Data = std::move(update.Data);
-                    map[entry.Id] = std::move(entry);
-                    result.Assets_ChangeOrAdd[EnumAssets::Particle].push_back(update.Id);
-                }
-            }
-
-            if(!updates.Animations.empty()) {
-                auto& map = Assets[EnumAssets::Animation];
-                for(auto& update : updates.Animations) {
-                    AssetEntry entry;
-                    entry.Id = update.Id;
-                    entry.Data = std::move(update.Data);
-                    map[entry.Id] = std::move(entry);
-                    result.Assets_ChangeOrAdd[EnumAssets::Animation].push_back(update.Id);
-                }
-            }
-
-            if(!updates.Sounds.empty()) {
-                auto& map = Assets[EnumAssets::Sound];
-                for(auto& update : updates.Sounds) {
-                    AssetEntry entry;
-                    entry.Id = update.Id;
-                    entry.Data = std::move(update.Data);
-                    map[entry.Id] = std::move(entry);
-                    result.Assets_ChangeOrAdd[EnumAssets::Sound].push_back(update.Id);
-                }
-            }
-
-            if(!updates.Fonts.empty()) {
-                auto& map = Assets[EnumAssets::Font];
-                for(auto& update : updates.Fonts) {
-                    AssetEntry entry;
-                    entry.Id = update.Id;
-                    entry.Data = std::move(update.Data);
-                    map[entry.Id] = std::move(entry);
-                    result.Assets_ChangeOrAdd[EnumAssets::Font].push_back(update.Id);
-                }
-            }
+            result.AssetsNodestates = std::move(updates.Nodestates);
+            result.AssetsModels = std::move(updates.Models);
+            result.AssetsTextures = std::move(updates.Textures);
         }
 
         for(auto& [id, _] : profile_Voxel_AddOrChange)

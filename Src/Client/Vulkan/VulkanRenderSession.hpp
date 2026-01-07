@@ -89,11 +89,8 @@ public:
     }
 
     // Применяет изменения, возвращая все затронутые модели
-    std::vector<AssetsModel> onModelChanges(std::vector<const AssetEntry*> newOrChanged,
-        std::vector<AssetsModel> lost,
-        const std::unordered_map<ResourceId, AssetEntry>* modelAssets) {
+    std::vector<AssetsModel> onModelChanges(std::vector<AssetsModelUpdate> entries) {
         std::vector<AssetsModel> result;
-        (void)modelAssets;
 
         std::move_only_function<void(ResourceId)> makeUnready;
         makeUnready = [&](ResourceId id) {
@@ -124,29 +121,15 @@ public:
 
             iterModel->second.Ready = false;
         };
-
-        for(ResourceId lostId : lost) {
-            makeUnready(lostId);
-        }
-
-        for(ResourceId lostId : lost) {
-            auto iterModel = Models.find(lostId);
-            if(iterModel == Models.end())
-                continue;
-
-            Models.erase(iterModel);
-        }
         
-        for(const AssetEntry* entry : newOrChanged) {
-            if(!entry)
-                continue;
-            const AssetsModel key = entry->Id;
+        for(const AssetsModelUpdate& entry : entries) {
+            const AssetsModel key = entry.Id;
             result.push_back(key);
 
             makeUnready(key);
             ModelObject model;
-            const HeadlessModel& hm = entry->Model;
-            const HeadlessModel::Header& header = entry->ModelHeader;
+            const HeadlessModel& hm = entry.Model;
+            const HeadlessModel::Header& header = entry.Header;
                 
             try {
                 model.TextureMap.clear();
@@ -587,30 +570,25 @@ public:
     }
 
     // Применяет изменения, возвращая все затронутые модели
-    std::vector<AssetsTexture> onTexturesChanges(std::vector<TextureUpdate> newOrChanged, std::vector<AssetsTexture> lost) {
+    std::vector<AssetsTexture> onTexturesChanges(std::vector<AssetsTextureUpdate> entries) {
         std::lock_guard lock(Mutex);
         std::vector<AssetsTexture> result;
 
-        for(auto& update : newOrChanged) {
-            const AssetsTexture key = update.Id;
+        for(auto& entry : entries) {
+            const AssetsTexture key = entry.Id;
             result.push_back(key);
 
-            if(update.Width == 0 || update.Height == 0 || update.Pixels.empty())
+            if(entry.Width == 0 || entry.Height == 0 || entry.Pixels.empty())
                 continue;
 
             Atlas->updateTexture(key, StoredTexture(
-                update.Width,
-                update.Height,
-                std::move(update.Pixels)
+                entry.Width,
+                entry.Height,
+                std::move(entry.Pixels)
             ));
 
             bool animated = false;
-            if(auto anim = getDefaultAnimation(update.Key, update.Width, update.Height)) {
-                AnimatedSources[key] = *anim;
-                animated = true;
-            } else {
-                AnimatedSources.erase(key);
-            }
+            AnimatedSources.erase(key);
 
             NeedsUpload = true;
 
@@ -618,17 +596,9 @@ public:
             uint32_t idx = debugTextureLogCount.fetch_add(1);
             if(idx < 128) {
                 LOG.debug() << "Texture loaded id=" << key
-                    << " key=" << update.Domain << ':' << update.Key
-                    << " size=" << update.Width << 'x' << update.Height
+                    << " size=" << entry.Width << 'x' << entry.Height
                     << " animated=" << (animated ? 1 : 0);
             }
-        }
-
-        for(AssetsTexture key : lost) {
-            result.push_back(key);
-            Atlas->freeTexture(key);
-            AnimatedSources.erase(key);
-            NeedsUpload = true;
         }
 
         std::sort(result.begin(), result.end());
@@ -844,27 +814,16 @@ public:
     {}
 
     // Применяет изменения, возвращает изменённые описания состояний
-    std::vector<AssetsNodestate> onNodestateChanges(std::vector<const AssetEntry*> newOrChanged, std::vector<AssetsNodestate> lost, std::vector<AssetsModel> changedModels) {
+    std::vector<AssetsNodestate> onNodestateChanges(std::vector<AssetsNodestateUpdate> newOrChanged, std::vector<AssetsModel> changedModels) {
         std::vector<AssetsNodestate> result;
-
-        for(ResourceId lostId : lost) {
-            auto iterNodestate = Nodestates.find(lostId);
-            if(iterNodestate == Nodestates.end())
-                continue;
-
-            result.push_back(lostId);
-            Nodestates.erase(iterNodestate);
-        }
         
-        for(const AssetEntry* entry : newOrChanged) {
-            if(!entry)
-                continue;
-            const AssetsNodestate key = entry->Id;
+        for(const AssetsNodestateUpdate& entry : newOrChanged) {
+            const AssetsNodestate key = entry.Id;
             result.push_back(key);
 
             PreparedNodeState nodestate;
-            static_cast<HeadlessNodeState&>(nodestate) = entry->Nodestate;
-            nodestate.LocalToModel.assign(entry->NodestateHeader.Models.begin(), entry->NodestateHeader.Models.end());
+            static_cast<HeadlessNodeState&>(nodestate) = entry.Nodestate;
+            nodestate.LocalToModel.assign(entry.Header.Models.begin(), entry.Header.Models.end());
 
             Nodestates.insert_or_assign(key, std::move(nodestate));
             if(key < 64) {
@@ -1321,7 +1280,7 @@ public:
 
     virtual void prepareTickSync() override;
     virtual void pushStageTickSync() override;
-    virtual void tickSync(const TickSyncData& data) override;
+    virtual void tickSync(TickSyncData& data) override;
 
     virtual void setCameraPos(WorldId_t worldId, Pos::Object pos, glm::quat quat) override;
 

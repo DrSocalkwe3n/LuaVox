@@ -1662,7 +1662,7 @@ void VulkanRenderSession::pushStageTickSync() {
     CP.pushStageTickSync();
 }
 
-void VulkanRenderSession::tickSync(const TickSyncData& data) {
+void VulkanRenderSession::tickSync(TickSyncData& data) {
     // Изменение ассетов
     // Профили
     // Чанки
@@ -1680,77 +1680,16 @@ void VulkanRenderSession::tickSync(const TickSyncData& data) {
     if(auto iter = data.Profiles_Lost.find(EnumDefContent::Voxel); iter != data.Profiles_Lost.end())
         mcpData.ChangedVoxels.insert(mcpData.ChangedVoxels.end(), iter->second.begin(), iter->second.end());
 
-    std::vector<const AssetEntry*> modelResources;
-    std::vector<AssetsModel> modelLost;
-    if(auto iter = data.Assets_ChangeOrAdd.find(EnumAssets::Model); iter != data.Assets_ChangeOrAdd.end()) {
-        const auto& list = ServerSession->Assets[EnumAssets::Model];
-        for(ResourceId id : iter->second) {
-            auto entryIter = list.find(id);
-            if(entryIter == list.end())
-                continue;
-
-            modelResources.push_back(&entryIter->second);
-        }
-    }
-    if(auto iter = data.Assets_Lost.find(EnumAssets::Model); iter != data.Assets_Lost.end())
-        modelLost.insert(modelLost.end(), iter->second.begin(), iter->second.end());
-
     std::vector<AssetsModel> changedModels;
-    if(!modelResources.empty() || !modelLost.empty()) {
-        const auto& modelAssets = ServerSession->Assets[EnumAssets::Model];
-        changedModels = MP.onModelChanges(std::move(modelResources), std::move(modelLost), &modelAssets);
-    }
+    if(!data.AssetsModels.empty())
+        changedModels = MP.onModelChanges(std::move(data.AssetsModels));
 
-    if(TP) {
-        std::vector<TextureProvider::TextureUpdate> textureResources;
-        std::vector<AssetsTexture> textureLost;
-
-        if(auto iter = data.Assets_ChangeOrAdd.find(EnumAssets::Texture); iter != data.Assets_ChangeOrAdd.end()) {
-            const auto& list = ServerSession->Assets[EnumAssets::Texture];
-            for(ResourceId id : iter->second) {
-                auto entryIter = list.find(id);
-                if(entryIter == list.end())
-                    continue;
-
-                textureResources.push_back({
-                    .Id = id,
-                    .Width = entryIter->second.Width,
-                    .Height = entryIter->second.Height,
-                    .Pixels = entryIter->second.Pixels,
-                    .Domain = entryIter->second.Domain,
-                    .Key = entryIter->second.Key
-                });
-            }
-        }
-
-        if(auto iter = data.Assets_Lost.find(EnumAssets::Texture); iter != data.Assets_Lost.end())
-            textureLost.insert(textureLost.end(), iter->second.begin(), iter->second.end());
-
-        if(!textureResources.empty() || !textureLost.empty())
-            TP->onTexturesChanges(std::move(textureResources), std::move(textureLost));
-    }
+    if(TP && !data.AssetsTextures.empty())
+        TP->onTexturesChanges(std::move(data.AssetsTextures));
 
     std::vector<AssetsNodestate> changedNodestates;
-    if(NSP) {
-        std::vector<const AssetEntry*> nodestateResources;
-        std::vector<AssetsNodestate> nodestateLost;
-
-        if(auto iter = data.Assets_ChangeOrAdd.find(EnumAssets::Nodestate); iter != data.Assets_ChangeOrAdd.end()) {
-            const auto& list = ServerSession->Assets[EnumAssets::Nodestate];
-            for(ResourceId id : iter->second) {
-                auto entryIter = list.find(id);
-                if(entryIter == list.end())
-                    continue;
-
-                nodestateResources.push_back(&entryIter->second);
-            }
-        }
-
-        if(auto iter = data.Assets_Lost.find(EnumAssets::Nodestate); iter != data.Assets_Lost.end())
-            nodestateLost.insert(nodestateLost.end(), iter->second.begin(), iter->second.end());
-
-        if(!nodestateResources.empty() || !nodestateLost.empty() || !changedModels.empty())
-            changedNodestates = NSP->onNodestateChanges(std::move(nodestateResources), std::move(nodestateLost), changedModels);
+    if(NSP && (!data.AssetsNodestates.empty() || !changedModels.empty())) {
+        changedNodestates = NSP->onNodestateChanges(std::move(data.AssetsNodestates), std::move(changedModels));
     }
 
     if(!changedNodestates.empty()) {
@@ -2050,29 +1989,7 @@ void VulkanRenderSession::ensureEntityTexture() {
     if(EntityTextureReady || !TP || !NSP)
         return;
 
-    auto iter = ServerSession->Assets.find(EnumAssets::Texture);
-    if(iter == ServerSession->Assets.end() || iter->second.empty())
-        return;
-
-    const AssetEntry* picked = nullptr;
-    for(const auto& [id, entry] : iter->second) {
-        if(entry.Key == "default.png") {
-            picked = &entry;
-            break;
-        }
-    }
-    if(!picked) {
-        for(const auto& [id, entry] : iter->second) {
-            if(entry.Key == "grass.png") {
-                picked = &entry;
-                break;
-            }
-        }
-    }
-    if(!picked)
-        picked = &iter->second.begin()->second;
-
-    updateTestQuadTexture(NSP->getTextureId(picked->Id));
+    return;
 }
 
 void VulkanRenderSession::ensureAtlasLayerPreview() {

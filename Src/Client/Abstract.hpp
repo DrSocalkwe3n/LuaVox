@@ -60,15 +60,40 @@ public:
     // states
 };
 
+struct AssetsModelUpdate {
+    ResourceId Id = 0;
+    HeadlessModel Model;
+    HeadlessModel::Header Header;
+};
+
+struct AssetsNodestateUpdate {
+    ResourceId Id = 0;
+    HeadlessNodeState Nodestate;
+    HeadlessNodeState::Header Header;
+};
+
+struct AssetsTextureUpdate {
+    ResourceId Id = 0;
+    uint16_t Width = 0;
+    uint16_t Height = 0;
+    std::vector<uint32_t> Pixels;
+    ResourceHeader Header;
+};
+
+struct AssetsBinaryUpdate {
+    ResourceId Id = 0;
+    std::u8string Data;
+};
+
 /* Интерфейс рендера текущего подключения к серверу */
 class IRenderSession {
 public:
     // Объект уведомления об изменениях
     struct TickSyncData {
-        // Новые или изменённые используемые теперь двоичные ресурсы
-        std::unordered_map<EnumAssets, std::vector<ResourceId>> Assets_ChangeOrAdd;
-        // Более не используемые ресурсы
-        std::unordered_map<EnumAssets, std::vector<ResourceId>> Assets_Lost;
+        // Изменения в ассетах.
+        std::vector<AssetsModelUpdate> AssetsModels;
+        std::vector<AssetsNodestateUpdate> AssetsNodestates;
+        std::vector<AssetsTextureUpdate> AssetsTextures;
 
         // Новые или изменённые профили контента 
         std::unordered_map<EnumDefContent, std::vector<ResourceId>> Profiles_ChangeOrAdd;
@@ -87,7 +112,7 @@ public:
     // Началась стадия изменения данных IServerSession, все должны приостановить работу
     virtual void pushStageTickSync() = 0;
     // После изменения внутренних данных IServerSession, IRenderSession уведомляется об изменениях
-    virtual void tickSync(const TickSyncData& data) = 0;
+    virtual void tickSync(TickSyncData& data) = 0;
 
     // Установить позицию для камеры
     virtual void setCameraPos(WorldId_t worldId, Pos::Object pos, glm::quat quat) = 0;
@@ -189,9 +214,6 @@ class IServerSession {
 public:
     // Включить логирование входящих сетевых пакетов на клиенте.
     bool DebugLogPackets = false;
-
-    // Используемые двоичные ресурсы
-    std::unordered_map<EnumAssets, std::unordered_map<ResourceId, AssetEntry>> Assets;
 
     // Используемые профили контента
     struct {

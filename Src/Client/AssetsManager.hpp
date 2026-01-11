@@ -536,12 +536,14 @@ private:
                     continue;
                 }
 
-                const auto& dkTable = IdToDK[typeIndex];
                 std::string domain = "core";
                 std::string key;
-                if(id < dkTable.size()) {
-                    domain = dkTable[id].Domain;
-                    key = dkTable[id].Key;
+                {
+                    auto d = getDK((EnumAssets) typeIndex, id);
+                    if(d) {
+                        domain = d->Domain;
+                        key = d->Key;
+                    }
                 }
 
                 std::u8string data = dataIter->second;

@@ -84,6 +84,16 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(Boost)
 target_link_libraries(luavox_common INTERFACE Boost::asio Boost::thread Boost::json Boost::iostreams Boost::interprocess Boost::timer Boost::circular_buffer Boost::lockfree Boost::stacktrace Boost::uuid Boost::serialization Boost::nowide)
 
+# unordered_dense
+FetchContent_Declare(
+  unordered_dense
+  GIT_REPOSITORY https://github.com/martinus/unordered_dense.git
+  GIT_TAG v4.8.1
+)
+FetchContent_MakeAvailable(unordered_dense)
+
+target_link_libraries(luavox_common INTERFACE unordered_dense::unordered_dense)
+
 # glm
 # find_package(glm REQUIRED)
 # target_include_directories(${PROJECT_NAME} PUBLIC ${GLM_INCLUDE_DIR})

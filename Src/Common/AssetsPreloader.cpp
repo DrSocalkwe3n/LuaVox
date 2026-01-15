@@ -65,12 +65,14 @@ AssetsPreloader::Out_checkAndPrepareResourcesUpdate AssetsPreloader::checkAndPre
 ) {
     assert(idResolver);
 
+    #ifndef NDEBUG
     bool expected = false;
     assert(_Reloading.compare_exchange_strong(expected, true) && "Двойной вызов reloadResources");
     struct ReloadGuard {
         std::atomic<bool>& Flag;
         ~ReloadGuard() { Flag.exchange(false); }
     } guard{_Reloading};
+    #endif
 
     try {
         ReloadStatus secondStatus;

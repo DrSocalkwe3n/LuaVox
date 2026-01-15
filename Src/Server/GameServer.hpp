@@ -88,6 +88,8 @@ class GameServer : public AsyncObject {
     struct {
         std::vector<std::shared_ptr<RemoteClient>> RemoteClients;
         ServerTime AfterStartTime = {0, 0};
+        // Счётчик тактов (увеличивается на 1 каждый тик в GameServer::run)
+        uint32_t Tick = 0;
 
     } Game;
 

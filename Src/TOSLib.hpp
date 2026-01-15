@@ -338,9 +338,10 @@ class ByteBuffer : public std::vector<uint8_t> {
 			if(Index + sizeof(T) > Obj->size())
 				throw std::runtime_error("Вышли за пределы буфера");
 
-			const uint8_t *ptr = Obj->data()+Index; 
-			Index += sizeof(T); 
-			return swapEndian(*(const T*) ptr); 
+			T value{};
+			std::memcpy(&value, Obj->data() + Index, sizeof(T));
+			Index += sizeof(T);
+			return swapEndian(value);
 		}
 
 	public:
@@ -362,8 +363,8 @@ class ByteBuffer : public std::vector<uint8_t> {
 		inline Reader& operator>>(int64_t &value) 	{ value = readOffset<int64_t>();	return *this; }
 		inline Reader& operator>>(uint64_t &value) 	{ value = readOffset<uint64_t>();	return *this; }
 		inline Reader& operator>>(bool &value) 		{ value = readOffset<uint8_t>(); 	return *this; }
-		inline Reader& operator>>(float &value) 	{ return operator>>(*(uint32_t*) &value); }
-		inline Reader& operator>>(double &value) 	{ return operator>>(*(uint64_t*) &value); }
+		inline Reader& operator>>(float &value) 	{ uint32_t raw = readOffset<uint32_t>(); std::memcpy(&value, &raw, sizeof(raw)); return *this; }
+		inline Reader& operator>>(double &value) 	{ uint64_t raw = readOffset<uint64_t>(); std::memcpy(&value, &raw, sizeof(raw)); return *this; }
 
 		inline int8_t 	readInt8() 		{ int8_t value; this->operator>>(value); return value; }
 		inline uint8_t 	readUInt8() 	{ uint8_t value; this->operator>>(value); return value; }
@@ -449,6 +450,17 @@ class ByteBuffer : public std::vector<uint8_t> {
 		size_t Index = 0;
 		uint16_t BlockSize = 256;
 
+		template<typename T> inline void writeRaw(const T &value)
+		{
+			uint8_t *ptr = checkBorder(sizeof(T));
+			std::memcpy(ptr, &value, sizeof(T));
+		}
+
+		template<typename T> inline void writeSwapped(const T &value)
+		{
+			T temp = swapEndian(value);
+			writeRaw(temp);
+		}
 
 		inline uint8_t* checkBorder(size_t count)
 		{
@@ -469,17 +481,17 @@ class ByteBuffer : public std::vector<uint8_t> {
 		Writer& operator=(const Writer&) = default;
 		Writer& operator=(Writer&&) = default;
 
-		inline Writer& operator<<(const int8_t &value) 		{ *(int8_t*) checkBorder(sizeof(value)) = value; return *this; }
-		inline Writer& operator<<(const uint8_t &value) 	{ *(uint8_t*) checkBorder(sizeof(value)) = value; return *this; }
-		inline Writer& operator<<(const int16_t &value)  	{ *(int16_t*) checkBorder(sizeof(value)) = swapEndian(value); return *this; }
-		inline Writer& operator<<(const uint16_t &value) 	{ *(uint16_t*) checkBorder(sizeof(value)) = swapEndian(value); return *this; }
-		inline Writer& operator<<(const int32_t &value)  	{ *(int32_t*) checkBorder(sizeof(value)) = swapEndian(value); return *this; }
-		inline Writer& operator<<(const uint32_t &value) 	{ *(uint32_t*) checkBorder(sizeof(value)) = swapEndian(value); return *this; }
-		inline Writer& operator<<(const int64_t &value)  	{ *(int64_t*) checkBorder(sizeof(value)) = swapEndian(value); return *this; }
-		inline Writer& operator<<(const uint64_t &value) 	{ *(uint64_t*) checkBorder(sizeof(value)) = swapEndian(value); return *this; }
-		inline Writer& operator<<(const bool &value)  		{ *(uint8_t*) checkBorder(sizeof(value)) = uint8_t(value ? 1 : 0); return *this; }
-		inline Writer& operator<<(const float &value) 		{ *(uint32_t*) checkBorder(sizeof(value)) = swapEndian(*(uint32_t*) &value); return *this; }
-		inline Writer& operator<<(const double &value) 		{ *(uint64_t*) checkBorder(sizeof(value)) = swapEndian(*(uint64_t*) &value); return *this; }
+		inline Writer& operator<<(const int8_t &value) 		{ writeRaw(value); return *this; }
+		inline Writer& operator<<(const uint8_t &value) 	{ writeRaw(value); return *this; }
+		inline Writer& operator<<(const int16_t &value)  	{ writeSwapped(value); return *this; }
+		inline Writer& operator<<(const uint16_t &value) 	{ writeSwapped(value); return *this; }
+		inline Writer& operator<<(const int32_t &value)  	{ writeSwapped(value); return *this; }
+		inline Writer& operator<<(const uint32_t &value) 	{ writeSwapped(value); return *this; }
+		inline Writer& operator<<(const int64_t &value)  	{ writeSwapped(value); return *this; }
+		inline Writer& operator<<(const uint64_t &value) 	{ writeSwapped(value); return *this; }
+		inline Writer& operator<<(const bool &value)  		{ uint8_t temp = value ? 1 : 0; writeRaw(temp); return *this; }
+		inline Writer& operator<<(const float &value) 		{ uint32_t raw; std::memcpy(&raw, &value, sizeof(raw)); writeSwapped(raw); return *this; }
+		inline Writer& operator<<(const double &value) 		{ uint64_t raw; std::memcpy(&raw, &value, sizeof(raw)); writeSwapped(raw); return *this; }
 
 		inline void writeInt8(const int8_t &value) 			{ this->operator<<(value); }
 		inline void writeUInt8(const uint8_t &value) 		{ this->operator<<(value); }

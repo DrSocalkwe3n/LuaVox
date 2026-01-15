@@ -277,6 +277,10 @@ public:
     ContentViewInfo ContentViewState;
     // Если игрок пересекал границы региона (для перерасчёта ContentViewState)
     bool CrossedRegion = true;
+
+    // Отложенная выгрузка регионов (гистерезис + задержка)
+    // worldId -> (regionPos -> tick_deadline)
+    std::unordered_map<WorldId_t, std::unordered_map<Pos::GlobalRegion, uint32_t>> PendingRegionUnload;
     std::queue<Pos::GlobalNode> Build, Break;
     std::optional<ServerEntityId_t> PlayerEntity;
 

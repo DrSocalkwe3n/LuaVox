@@ -1635,6 +1635,8 @@ VulkanRenderSession::VulkanRenderSession(Vulkan *vkInst, IServerSession *serverS
 }
 
 VulkanRenderSession::~VulkanRenderSession() {
+    
+
     if(VoxelOpaquePipeline)
         vkDestroyPipeline(VkInst->Graphics.Device, VoxelOpaquePipeline, nullptr);
     if(VoxelTransparentPipeline)

@@ -1223,10 +1223,10 @@ class VulkanRenderSession : public IRenderSession {
     glm::vec3 X64Offset_f, X64Delta;        // Смещение мира относительно игрока в матрице вида (0 -> 64)
     glm::quat Quat;
 
-    ChunkPreparator CP;
-    ModelProvider MP;
     std::unique_ptr<TextureProvider> TP;
+    ModelProvider MP;
     std::unique_ptr<NodestateProvider> NSP;
+    ChunkPreparator CP;
 
     AtlasImage LightDummy;
     Buffer TestQuad;

@@ -925,9 +925,9 @@ void GameServer::BackingAsyncLua_t::run(int id) {
                     constexpr int kTestGlobalY = 64;
                     if(regionBase.y <= kTestGlobalY && (regionBase.y + 63) >= kTestGlobalY) {
                         int localY = kTestGlobalY - regionBase.y;
-                        setNode(2, localY, 2, kNodeLava, 0, false);
-                        setNode(4, localY, 2, kNodeWater, 0, false);
-                        setNode(6, localY, 2, kNodeFire, 0, false);
+                        setNode(7, localY, 2, kNodeLava, 0, false);
+                        setNode(8, localY, 2, kNodeWater, 0, false);
+                        setNode(9, localY, 2, kNodeFire, 0, false);
                     }
                 }
             } 
@@ -1432,6 +1432,7 @@ void GameServer::run() {
 
     while(true) {
         ((uint32_t&) Game.AfterStartTime) += (uint32_t) (CurrentTickDuration*256);
+        Game.Tick++;
 
         std::chrono::steady_clock::time_point atTickStart = std::chrono::steady_clock::now();
 
@@ -1725,72 +1726,201 @@ void GameServer::reloadMods() {
 IWorldSaveBackend::TickSyncInfo_Out GameServer::stepDatabaseSync() {
     IWorldSaveBackend::TickSyncInfo_In toDB;
     
-    for(std::shared_ptr<RemoteClient>& remoteClient : Game.RemoteClients) {
-        assert(remoteClient);
-        // Пересчитать зоны наблюдения
-        if(remoteClient->CrossedRegion) {
-            remoteClient->CrossedRegion = false;
-            
-            // Пересчёт зон наблюдения
-            std::vector<ContentViewCircle> newCVCs;
+    constexpr uint32_t kRegionUnloadDelayTicks = 300;
+constexpr uint8_t kUnloadHysteresisExtraRegions = 1;
+const uint32_t nowTick = Game.Tick;
 
-            {
-                std::vector<std::tuple<WorldId_t, Pos::Object, uint8_t>> points = remoteClient->getViewPoints();
-                for(auto& [wId, pos, radius] : points) {
-                    assert(radius < 5);
+for(std::shared_ptr<RemoteClient>& remoteClient : Game.RemoteClients) {
+    assert(remoteClient);
+
+    // 1) Если игрок пересёк границу региона — пересчитываем области наблюдения.
+    //    Вводим гистерезис: загрузка по "внутренней" границе, выгрузка по "внешней" (+1 регион).
+    if(remoteClient->CrossedRegion) {
+        remoteClient->CrossedRegion = false;
+
+        std::vector<ContentViewCircle> innerCVCs;
+        std::vector<ContentViewCircle> outerCVCs;
+
+        {
+            std::vector<std::tuple<WorldId_t, Pos::Object, uint8_t>> points = remoteClient->getViewPoints();
+            for(auto& [wId, pos, radius] : points) {
+                assert(radius < 5);
+
+                // Внутренняя область (на загрузку)
+                {
                     ContentViewCircle cvc;
                     cvc.WorldId = wId;
                     cvc.Pos = Pos::Object_t::asRegionsPos(pos);
-                    cvc.Range = radius*radius;
+                    cvc.Range = int16_t(radius * radius);
 
                     std::vector<ContentViewCircle> list = Expanse.accumulateContentViewCircles(cvc);
-                    newCVCs.insert(newCVCs.end(), list.begin(), list.end());
+                    innerCVCs.insert(innerCVCs.end(), list.begin(), list.end());
+                }
+
+                // Внешняя область (на удержание/выгрузку) = внутренняя + 1 регион
+                {
+                    uint8_t outerRadius = radius + kUnloadHysteresisExtraRegions;
+                    if(outerRadius > 5) outerRadius = 5;
+
+                    ContentViewCircle cvc;
+                    cvc.WorldId = wId;
+                    cvc.Pos = Pos::Object_t::asRegionsPos(pos);
+                    cvc.Range = int16_t(outerRadius * outerRadius);
+
+                    std::vector<ContentViewCircle> list = Expanse.accumulateContentViewCircles(cvc);
+                    outerCVCs.insert(outerCVCs.end(), list.begin(), list.end());
                 }
             }
+        }
 
-            ContentViewInfo newCbg = Expanse_t::makeContentViewInfo(newCVCs);
+        ContentViewInfo viewInner = Expanse_t::makeContentViewInfo(innerCVCs);
+        ContentViewInfo viewOuter = Expanse_t::makeContentViewInfo(outerCVCs);
 
-            ContentViewInfo_Diff diff = newCbg.diffWith(remoteClient->ContentViewState);
-            if(!diff.WorldsNew.empty()) {
-                // Сообщить о новых мирах
-                for(const WorldId_t id : diff.WorldsNew) {
-                    auto iter = Expanse.Worlds.find(id);
-                    assert(iter != Expanse.Worlds.end());
+        // Отменяем отложенную выгрузку для регионов, которые снова попали во внешнюю область
+        for(const auto& [worldId, regions] : viewOuter.Regions) {
+            auto itWorld = remoteClient->PendingRegionUnload.find(worldId);
+            if(itWorld == remoteClient->PendingRegionUnload.end())
+                continue;
 
-                    remoteClient->prepareWorldUpdate(id, iter->second.get());
-                }
+            for(const Pos::GlobalRegion& pos : regions) {
+                itWorld->second.erase(pos);
             }
 
-            remoteClient->ContentViewState = newCbg;
-            // Вычистка не наблюдаемых регионов
-            for(const auto& [worldId, regions] : diff.RegionsLost)
-                remoteClient->prepareRegionsRemove(worldId, regions);
-            // и миров
-            for(const WorldId_t worldId : diff.WorldsLost)
-                remoteClient->prepareWorldRemove(worldId);
+            if(itWorld->second.empty())
+                remoteClient->PendingRegionUnload.erase(itWorld);
+        }
 
-            // Подписываем игрока на наблюдение за регионами
-            for(const auto& [worldId, regions] : diff.RegionsNew) {
-                auto iterWorld = Expanse.Worlds.find(worldId);
-                assert(iterWorld != Expanse.Worlds.end());
+        // Загрузка: только по внутренней границе
+        ContentViewInfo_Diff diffInner = viewInner.diffWith(remoteClient->ContentViewState);
 
-                std::vector<Pos::GlobalRegion> notLoaded = iterWorld->second->onRemoteClient_RegionsEnter(worldId, remoteClient, regions);
-                if(!notLoaded.empty()) {
-                    // Добавляем к списку на загрузку
-                    std::vector<Pos::GlobalRegion> &tl = toDB.Load[worldId];
-                    tl.insert(tl.end(), notLoaded.begin(), notLoaded.end());
-                }
+        if(!diffInner.WorldsNew.empty()) {
+            // Сообщить о новых мирах
+            for(const WorldId_t id : diffInner.WorldsNew) {
+                auto iter = Expanse.Worlds.find(id);
+                assert(iter != Expanse.Worlds.end());
+
+                remoteClient->prepareWorldUpdate(id, iter->second.get());
+            }
+        }
+
+        // Подписываем игрока на наблюдение за регионами (внутренняя область)
+        for(const auto& [worldId, regions] : diffInner.RegionsNew) {
+            // Добавляем в состояние клиента (слиянием, т.к. там могут быть регионы на удержании)
+            {
+                auto& cur = remoteClient->ContentViewState.Regions[worldId];
+                std::vector<Pos::GlobalRegion> merged;
+                merged.reserve(cur.size() + regions.size());
+                std::merge(cur.begin(), cur.end(), regions.begin(), regions.end(), std::back_inserter(merged));
+                merged.erase(std::unique(merged.begin(), merged.end()), merged.end());
+                cur = std::move(merged);
             }
 
-            // Отписываем то, что игрок больше не наблюдает
-            for(const auto& [worldId, regions] : diff.RegionsLost) {
-                auto iterWorld = Expanse.Worlds.find(worldId);
-                assert(iterWorld != Expanse.Worlds.end());
+            auto iterWorld = Expanse.Worlds.find(worldId);
+            assert(iterWorld != Expanse.Worlds.end());
 
-                iterWorld->second->onRemoteClient_RegionsLost(worldId, remoteClient, regions);
+            std::vector<Pos::GlobalRegion> notLoaded = iterWorld->second->onRemoteClient_RegionsEnter(worldId, remoteClient, regions);
+            if(!notLoaded.empty()) {
+                // Добавляем к списку на загрузку
+                std::vector<Pos::GlobalRegion> &tl = toDB.Load[worldId];
+                tl.insert(tl.end(), notLoaded.begin(), notLoaded.end());
+            }
+        }
+
+        // Кандидаты на выгрузку: то, что есть у клиента, но не попадает во внешнюю область (гистерезис)
+        for(const auto& [worldId, curRegions] : remoteClient->ContentViewState.Regions) {
+            std::vector<Pos::GlobalRegion> outer;
+            auto itOuter = viewOuter.Regions.find(worldId);
+            if(itOuter != viewOuter.Regions.end())
+                outer = itOuter->second;
+
+            std::vector<Pos::GlobalRegion> toDelay;
+            toDelay.reserve(curRegions.size());
+
+            if(outer.empty()) {
+                toDelay = curRegions;
+            } else {
+                std::set_difference(
+                    curRegions.begin(), curRegions.end(),
+                    outer.begin(), outer.end(),
+                    std::back_inserter(toDelay)
+                );
+            }
+
+            if(!toDelay.empty()) {
+                auto& pending = remoteClient->PendingRegionUnload[worldId];
+                for(const Pos::GlobalRegion& pos : toDelay) {
+                    // если уже ждёт выгрузки — не трогаем
+                    if(pending.find(pos) == pending.end())
+                        pending[pos] = nowTick + kRegionUnloadDelayTicks;
+                }
             }
         }
     }
+
+    // 2) Отложенная выгрузка: если истекла задержка — реально удаляем регион из зоны видимости
+    if(!remoteClient->PendingRegionUnload.empty()) {
+        std::unordered_map<WorldId_t, std::vector<Pos::GlobalRegion>> expiredByWorld;
+
+        for(auto itWorld = remoteClient->PendingRegionUnload.begin(); itWorld != remoteClient->PendingRegionUnload.end(); ) {
+            const WorldId_t worldId = itWorld->first;
+            auto& regMap = itWorld->second;
+
+            std::vector<Pos::GlobalRegion> expired;
+            for(auto itReg = regMap.begin(); itReg != regMap.end(); ) {
+                if(itReg->second <= nowTick) {
+                    expired.push_back(itReg->first);
+                    itReg = regMap.erase(itReg);
+                } else {
+                    ++itReg;
+                }
+            }
+
+            if(!expired.empty()) {
+                std::sort(expired.begin(), expired.end());
+                expiredByWorld[worldId] = std::move(expired);
+            }
+
+            if(regMap.empty())
+                itWorld = remoteClient->PendingRegionUnload.erase(itWorld);
+            else
+                ++itWorld;
+        }
+
+        // Применяем выгрузку: отписка + сообщение клиенту + актуализация ContentViewState
+        for(auto& [worldId, expired] : expiredByWorld) {
+            // Удаляем регионы из состояния клиента
+            auto itCur = remoteClient->ContentViewState.Regions.find(worldId);
+            if(itCur != remoteClient->ContentViewState.Regions.end()) {
+                std::vector<Pos::GlobalRegion> kept;
+                kept.reserve(itCur->second.size());
+
+                std::set_difference(
+                    itCur->second.begin(), itCur->second.end(),
+                    expired.begin(), expired.end(),
+                    std::back_inserter(kept)
+                );
+
+                itCur->second = std::move(kept);
+            }
+
+            // Сообщаем клиенту и мирам
+            remoteClient->prepareRegionsRemove(worldId, expired);
+
+            auto iterWorld = Expanse.Worlds.find(worldId);
+            if(iterWorld != Expanse.Worlds.end()) {
+                iterWorld->second->onRemoteClient_RegionsLost(worldId, remoteClient, expired);
+            }
+
+            // Если в мире больше нет наблюдаемых регионов — удалить мир у клиента
+            auto itStateWorld = remoteClient->ContentViewState.Regions.find(worldId);
+            if(itStateWorld != remoteClient->ContentViewState.Regions.end() && itStateWorld->second.empty()) {
+                remoteClient->ContentViewState.Regions.erase(itStateWorld);
+                remoteClient->prepareWorldRemove(worldId);
+            }
+        }
+    }
+}
+
 
     for(auto& [worldId, regions] : toDB.Load) {
         std::sort(regions.begin(), regions.end());

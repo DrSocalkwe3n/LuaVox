@@ -249,6 +249,13 @@ class GameServer : public AsyncObject {
         std::vector<std::thread> Threads;
         TOS::SpinlockObject<std::queue<std::pair<BackingNoiseGenerator_t::NoiseKey, std::array<float, 64*64*64>>>> NoiseIn;
         TOS::SpinlockObject<std::vector<std::pair<BackingNoiseGenerator_t::NoiseKey, World::RegionIn>>> RegionOut;
+        ContentManager &CM;
+
+        BackingAsyncLua_t(ContentManager& cm)
+        : CM(cm)
+        {
+
+        } 
 
         void stop() {
             NeedShutdown = true;

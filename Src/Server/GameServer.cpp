@@ -487,7 +487,7 @@ std::variant<std::vector<ModInfo>, std::vector<std::string>> resolveDepends(cons
 
 GameServer::GameServer(asio::io_context &ioc, fs::path worldPath)
     : AsyncObject(ioc),
-        Content(ioc)
+        Content(ioc), BackingAsyncLua(Content.CM)
 {
     init(worldPath);
 }
@@ -778,17 +778,19 @@ void GameServer::BackingAsyncLua_t::run(int id) {
             out.Voxels.clear();
             out.Entityes.clear();
 
+            auto lru = CM.createLRU();
+
             {
-                constexpr DefNodeId kNodeAir = 0;
-                constexpr DefNodeId kNodeGrass = 2;
-                constexpr uint8_t kMetaGrass = 1;
-                constexpr DefNodeId kNodeDirt = 3;
-                constexpr DefNodeId kNodeStone = 4;
-                constexpr DefNodeId kNodeWood = 1;
-                constexpr DefNodeId kNodeLeaves = 5;
-                constexpr DefNodeId kNodeLava = 7;
-                constexpr DefNodeId kNodeWater = 8;
-                constexpr DefNodeId kNodeFire = 9;
+                DefNodeId kNodeAir = 0;
+                DefNodeId kNodeGrass = lru.getIdNode("test", "grass");
+                uint8_t kMetaGrass = 1;
+                DefNodeId kNodeDirt = lru.getIdNode("test", "dirt");
+                DefNodeId kNodeStone = lru.getIdNode("test", "stone");
+                DefNodeId kNodeWood = lru.getIdNode("test", "wood");
+                DefNodeId kNodeLeaves = lru.getIdNode("test", "leaves");
+                DefNodeId kNodeLava = lru.getIdNode("test", "lava");
+                DefNodeId kNodeWater = lru.getIdNode("test", "water");
+                DefNodeId kNodeFire = lru.getIdNode("test", "fire");
 
                 auto hash32 = [](uint32_t x) {
                     x ^= x >> 16;
@@ -1355,7 +1357,7 @@ void GameServer::init(fs::path worldPath) {
         // Content.CM.registerBase(EnumDefContent::Node, "core", "none", t);
         Content.CM.registerBase(EnumDefContent::World, "test", "devel_world", t);
         Content.CM.registerBase(EnumDefContent::Entity, "core", "player", t);
-        PlayerEntityDefId = Content.CM.getContentId(EnumDefContent::Entity, "core", "player");
+        // PlayerEntityDefId = Content.CM.getContentId(EnumDefContent::Entity, "core", "player");
     }
 
     initLuaPre();

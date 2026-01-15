@@ -26,6 +26,47 @@ public:
         std::string Domain, Key;
     };
 
+    struct BindDomainKeyViewInfo {
+        std::string_view Domain, Key;
+    };
+
+    struct KeyHash {
+        using is_transparent = void;
+
+        static inline std::size_t h(std::string_view sv) noexcept {
+            return std::hash<std::string_view>{}(sv);
+        }
+
+        static inline std::size_t mix(std::size_t a, std::size_t b) noexcept {
+            a ^= b + 0x9e3779b97f4a7c15ULL + (a << 6) + (a >> 2);
+            return a;
+        }
+
+        std::size_t operator()(const BindDomainKeyInfo& k) const noexcept {
+            return mix(h(k.Domain), h(k.Key));
+        }
+
+        std::size_t operator()(const BindDomainKeyViewInfo& kv) const noexcept {
+            return mix(h(kv.Domain), h(kv.Key));
+        }
+    };
+
+    struct KeyEq {
+        using is_transparent = void;
+
+        bool operator()(const BindDomainKeyInfo& a, const BindDomainKeyInfo& b) const noexcept {
+            return a.Domain == b.Domain && a.Key == b.Key;
+        }
+
+        bool operator()(const BindDomainKeyInfo& a, const BindDomainKeyViewInfo& b) const noexcept {
+            return a.Domain == b.Domain && a.Key == b.Key;
+        }
+
+        bool operator()(const BindDomainKeyViewInfo& a, const BindDomainKeyInfo& b) const noexcept {
+            return a.Domain == b.Domain && a.Key == b.Key;
+        }
+    };
+
 public:
     explicit IdProvider() {
         for(size_t type = 0; type < MAX_ENUM; ++type) {
@@ -36,7 +77,7 @@ public:
 
             auto& sh = _shardFor(static_cast<Enum>(type), "core", "none");
             std::unique_lock lk(sh.mutex);
-            sh.map.emplace(Key{"core", "none"}, 0);
+            sh.map.emplace(BindDomainKeyInfo{"core", "none"}, 0);
         }
     }
 
@@ -53,14 +94,14 @@ public:
         // 1) Поиск в режиме для чтения
         {
             std::shared_lock lk(sh.mutex);
-            if(auto it = sh.map.find(KeyView{domain, key}); it != sh.map.end()) {
+            if(auto it = sh.map.find(BindDomainKeyViewInfo{domain, key}); it != sh.map.end()) {
                 return it->second;
             }
         }
 
         // 2) Блокируем и повторно ищем запись (может кто уже успел её добавить)
         std::unique_lock lk(sh.mutex);
-        if (auto it = sh.map.find(KeyView{domain, key}); it != sh.map.end()) {
+        if (auto it = sh.map.find(BindDomainKeyViewInfo{domain, key}); it != sh.map.end()) {
             return it->second;
         }
 
@@ -70,7 +111,7 @@ public:
         std::string d(domain);
         std::string k(key);
 
-        sh.map.emplace(Key{d, k}, id);
+        sh.map.emplace(BindDomainKeyInfo{d, k}, id);
         sh.newlyInserted.push_back(id);
 
         _storeReverse(type, id, std::move(d), std::move(k));
@@ -159,56 +200,7 @@ public:
     }
 
 private:
-    // ---- key types for unordered_dense ----
-    struct Key {
-        std::string domain;
-        std::string key;
-    };
-
-    struct KeyView {
-        std::string_view domain;
-        std::string_view key;
-    };
-
-    struct KeyHash {
-        using is_transparent = void;
-
-        static inline std::size_t h(std::string_view sv) noexcept {
-            // если у тебя есть detail::TSVHash под string_view — можно подставить
-            return std::hash<std::string_view>{}(sv);
-        }
-
-        static inline std::size_t mix(std::size_t a, std::size_t b) noexcept {
-            a ^= b + 0x9e3779b97f4a7c15ULL + (a << 6) + (a >> 2);
-            return a;
-        }
-
-        std::size_t operator()(const Key& k) const noexcept {
-            return mix(h(k.domain), h(k.key));
-        }
-
-        std::size_t operator()(const KeyView& kv) const noexcept {
-            return mix(h(kv.domain), h(kv.key));
-        }
-    };
-
-    struct KeyEq {
-        using is_transparent = void;
-
-        bool operator()(const Key& a, const Key& b) const noexcept {
-            return a.domain == b.domain && a.key == b.key;
-        }
-
-        bool operator()(const Key& a, const KeyView& b) const noexcept {
-            return a.domain == b.domain && a.key == b.key;
-        }
-
-        bool operator()(const KeyView& a, const Key& b) const noexcept {
-            return a.domain == b.domain && a.key == b.key;
-        }
-    };
-
-    using Map = ankerl::unordered_dense::map<Key, ResourceId, KeyHash, KeyEq>;
+    using Map = ankerl::unordered_dense::map<BindDomainKeyInfo, ResourceId, KeyHash, KeyEq>;
 
     struct Shard {
         mutable std::shared_mutex mutex;
@@ -237,13 +229,13 @@ private:
     std::array<std::vector<BindDomainKeyInfo>, MAX_ENUM> IdToDK;
 
 private:
-    Shard& _shardFor(Enum type, std::string_view domain, std::string_view key) {
-        const std::size_t idx = KeyHash{}(KeyView{domain, key}) % ShardCount;
+    Shard& _shardFor(Enum type, const std::string_view domain, const std::string_view key) {
+        const std::size_t idx = KeyHash{}(BindDomainKeyViewInfo{domain, key}) % ShardCount;
         return _Shards[static_cast<size_t>(type)][idx];
     }
 
-    const Shard& _shardFor(Enum type, std::string_view domain, std::string_view key) const {
-        const std::size_t idx = KeyHash{}(KeyView{domain, key}) % ShardCount;
+    const Shard& _shardFor(Enum type, const  std::string_view domain, const std::string_view key) const {
+        const std::size_t idx = KeyHash{}(BindDomainKeyViewInfo{domain, key}) % ShardCount;
         return _Shards[static_cast<size_t>(type)][idx];
     }
 

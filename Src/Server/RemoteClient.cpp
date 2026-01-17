@@ -94,24 +94,122 @@ Net::Packet RemoteClient::makePacket_informateAssets_HH(
     return pack;
 }
 
-std::vector<Net::Packet> RemoteClient::makePackets_sendDefContentUpdate(
-    std::array<
-        std::vector<
-            std::pair<
-                ResourceId,     // Идентификатор профиля
-                std::u8string   // Двоичный формат профиля
-            >
-        >,
-        static_cast<size_t>(EnumDefContent::MAX_ENUM)
-    > newOrUpdate,  // Новые или изменённые
-    std::array<
-        std::vector<ResourceId>,
-        static_cast<size_t>(EnumDefContent::MAX_ENUM)
-    > lost,         // Потерянные профили
-    std::array<
-        std::vector<std::pair<std::string, std::string>>,
-        static_cast<size_t>(EnumDefContent::MAX_ENUM)
-    > idToDK        // Новые привязки
+std::vector<Net::Packet> RemoteClient::makePackets_informateDefContent_Full(
+    const ContentManager::Out_getAllProfiles& profiles
+) {
+    std::vector<Net::Packet> packets;
+    Net::Packet pack;
+
+    auto check = [&](size_t needSize) {
+        if(pack.size()+needSize > 65500) {
+            packets.emplace_back(std::move(pack));
+            pack.clear();
+        }
+    };
+
+    pack << (uint8_t) ToClient::DefinitionsFull;
+
+    {
+        pack << (uint32_t) profiles.ProfilesIds_Voxel.size();
+        for(uint32_t id : profiles.ProfilesIds_Voxel) {
+            check(4);
+            pack << id;
+        }
+
+        for(const auto& profile : profiles.Profiles_Voxel) {
+            std::u8string data = profile->dumpToClient();
+            check(data.size());
+            pack << std::string_view((const char*) data.data(), data.size());
+        }
+    }
+
+    {
+        pack << (uint32_t) profiles.ProfilesIds_Node.size();
+        for(uint32_t id : profiles.ProfilesIds_Node) {
+            check(4);
+            pack << id;
+        }
+
+        for(const auto& profile : profiles.Profiles_Node) {
+            std::u8string data = profile->dumpToClient();
+            check(data.size());
+            pack << std::string_view((const char*) data.data(), data.size());
+        }
+    }
+
+    {
+        pack << (uint32_t) profiles.ProfilesIds_World.size();
+        for(uint32_t id : profiles.ProfilesIds_World) {
+            check(4);
+            pack << id;
+        }
+
+        for(const auto& profile : profiles.Profiles_World) {
+            std::u8string data = profile->dumpToClient();
+            check(data.size());
+            pack << std::string_view((const char*) data.data(), data.size());
+        }
+    }
+
+    {
+        pack << (uint32_t) profiles.ProfilesIds_Portal.size();
+        for(uint32_t id : profiles.ProfilesIds_Portal) {
+            check(4);
+            pack << id;
+        }
+
+        for(const auto& profile : profiles.Profiles_Portal) {
+            std::u8string data = profile->dumpToClient();
+            check(data.size());
+            pack << std::string_view((const char*) data.data(), data.size());
+        }
+    }
+
+    {
+        pack << (uint32_t) profiles.ProfilesIds_Entity.size();
+        for(uint32_t id : profiles.ProfilesIds_Entity) {
+            check(4);
+            pack << id;
+        }
+
+        for(const auto& profile : profiles.Profiles_Entity) {
+            std::u8string data = profile->dumpToClient();
+            check(data.size());
+            pack << std::string_view((const char*) data.data(), data.size());
+        }
+    }
+
+    {
+        pack << (uint32_t) profiles.ProfilesIds_Item.size();
+        for(uint32_t id : profiles.ProfilesIds_Item) {
+            check(4);
+            pack << id;
+        }
+
+        for(const auto& profile : profiles.Profiles_Item) {
+            std::u8string data = profile->dumpToClient();
+            check(data.size());
+            pack << std::string_view((const char*) data.data(), data.size());
+        }
+    }
+
+    for(size_t type = 0; type < static_cast<size_t>(EnumDefContent::MAX_ENUM); type++) {
+        pack << uint32_t(profiles.IdToDK[type].size());
+        
+        for(const auto& [domain, key] : profiles.IdToDK[type]) {
+            check(domain.size() + key.size() + 8);
+            pack << domain << key;
+        }
+    }
+
+    if(pack.size())
+        packets.emplace_back(std::move(pack));
+
+    return packets;
+}
+
+std::vector<Net::Packet> RemoteClient::makePackets_informateDefContentUpdate(
+    const ContentManager::Out_buildEndProfiles& profiles
 ) {
     std::vector<Net::Packet> packets;
     Net::Packet pack;
@@ -124,33 +222,86 @@ std::vector<Net::Packet> RemoteClient::makePackets_sendDefContentUpdate(
     };
 
     pack << (uint8_t) ToClient::DefinitionsUpdate;
-    pack << uint32_t(newOrUpdate.size());
-    for(size_t type = 0; type < static_cast<size_t>(EnumDefContent::MAX_ENUM); type++) {
-        pack << uint32_t(newOrUpdate[type].size());
 
-        for(const auto& [id, data] : newOrUpdate[type]) {
-            check(data.size());
-            pack << id << (const std::string&) data;
-        }
-    }
-
-    pack << uint32_t(lost.size());
-    for(size_t type = 0; type < static_cast<size_t>(EnumDefContent::MAX_ENUM); type++) {
-        pack << uint32_t(lost[type].size());
-        
-        for(ResourceId id : lost[type]) {
-            check(4);
+    {
+        pack << uint32_t(profiles.ChangedProfiles_Voxel.size());
+        for(const auto& [id, profile] : profiles.ChangedProfiles_Voxel) {
             pack << id;
+            std::u8string data = profile->dumpToClient();
+            check(data.size());
+            pack << std::string_view((const char*) data.data(), data.size());
         }
     }
 
-    pack << uint32_t(idToDK.size());
-    for(size_t type = 0; type < static_cast<size_t>(EnumDefContent::MAX_ENUM); type++) {
-        pack << uint32_t(idToDK[type].size());
-        
-        for(const auto& [domain, key] : idToDK[type]) {
-            check(domain.size() + key.size() + 8);
-            pack << key << domain;
+    {
+        pack << uint32_t(profiles.ChangedProfiles_Node.size());
+        for(const auto& [id, profile] : profiles.ChangedProfiles_Node) {
+            pack << id;
+            std::u8string data = profile->dumpToClient();
+            check(data.size());
+            pack << std::string_view((const char*) data.data(), data.size());
+        }
+    }
+
+    {
+        pack << uint32_t(profiles.ChangedProfiles_World.size());
+        for(const auto& [id, profile] : profiles.ChangedProfiles_World) {
+            pack << id;
+            std::u8string data = profile->dumpToClient();
+            check(data.size());
+            pack << std::string_view((const char*) data.data(), data.size());
+        }
+    }
+
+    {
+        pack << uint32_t(profiles.ChangedProfiles_Portal.size());
+        for(const auto& [id, profile] : profiles.ChangedProfiles_Portal) {
+            pack << id;
+            std::u8string data = profile->dumpToClient();
+            check(data.size());
+            pack << std::string_view((const char*) data.data(), data.size());
+        }
+    }
+
+    {
+        pack << uint32_t(profiles.ChangedProfiles_Entity.size());
+        for(const auto& [id, profile] : profiles.ChangedProfiles_Entity) {
+            pack << id;
+            std::u8string data = profile->dumpToClient();
+            check(data.size());
+            pack << std::string_view((const char*) data.data(), data.size());
+        }
+    }
+
+    {
+        pack << uint32_t(profiles.ChangedProfiles_Item.size());
+        for(const auto& [id, profile] : profiles.ChangedProfiles_Item) {
+            pack << id;
+            std::u8string data = profile->dumpToClient();
+            check(data.size());
+            pack << std::string_view((const char*) data.data(), data.size());
+        }
+    }
+
+    {
+        for(size_t type = 0; type < static_cast<size_t>(EnumDefContent::MAX_ENUM); type++) {
+            pack << uint32_t(profiles.LostProfiles[type].size());
+            
+            for(const ResourceId id : profiles.LostProfiles[type]) {
+                check(sizeof(ResourceId));
+                pack << id;
+            }
+        }
+    }
+
+    {
+        for(size_t type = 0; type < static_cast<size_t>(EnumDefContent::MAX_ENUM); type++) {
+            pack << uint32_t(profiles.IdToDK[type].size());
+            
+            for(const auto& [domain, key] : profiles.IdToDK[type]) {
+                check(domain.size() + key.size() + 8);
+                pack << key << domain;
+            }
         }
     }
 

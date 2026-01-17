@@ -46,6 +46,28 @@ public:
     Out_applyResourcesUpdate applyResourcesUpdate(Out_checkAndPrepareResourcesUpdate& orr) {
         Out_applyResourcesUpdate result = AssetsPreloader::applyResourcesUpdate(orr);
 
+        {
+            static TOS::Logger LOG = "Server>AssetsManager";
+
+            for(size_t type = 0; type < static_cast<size_t>(EnumAssets::MAX_ENUM); ++type) {
+                if(result.NewOrUpdates[type].empty())
+                    continue;
+
+                EnumAssets typeEnum = static_cast<EnumAssets>(type);
+                const char* typeName = ::EnumAssetsToDirectory(typeEnum);
+
+                for(const auto& bind : result.NewOrUpdates[type]) {
+                    auto dk = getDK(typeEnum, bind.Id);
+                    if(!dk)
+                        continue;
+
+                    LOG.debug()
+                        << typeName << ": "
+                        << dk->Domain << '+' << dk->Key << " -> " << bind.Id;
+                }
+            }
+        }
+
         for(auto& [hash, data] : orr.NewHeadless) {
             Resources.emplace(hash, ResourceHashData{0, std::make_shared<std::u8string>(std::move(data))});
         }

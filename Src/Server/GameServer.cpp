@@ -786,7 +786,7 @@ void GameServer::BackingAsyncLua_t::run(int id) {
                 uint8_t kMetaGrass = 1;
                 DefNodeId kNodeDirt = lru.getIdNode("test", "dirt");
                 DefNodeId kNodeStone = lru.getIdNode("test", "stone");
-                DefNodeId kNodeWood = lru.getIdNode("test", "wood");
+                DefNodeId kNodeWood = lru.getIdNode("test", "log");
                 DefNodeId kNodeLeaves = lru.getIdNode("test", "leaves");
                 DefNodeId kNodeLava = lru.getIdNode("test", "lava");
                 DefNodeId kNodeWater = lru.getIdNode("test", "water");
@@ -1370,7 +1370,6 @@ void GameServer::init(fs::path worldPath) {
 
     Content.CM.buildEndProfiles();
 
-
     LOG.info() << "Инициализация";
     initLua();
     pushEvent("init");
@@ -1615,6 +1614,7 @@ void GameServer::stepConnections() {
         std::vector<Net::Packet> packets;
         packets.push_back(RemoteClient::makePacket_informateAssets_DK(Content.AM.idToDK()));
         packets.push_back(RemoteClient::makePacket_informateAssets_HH(Content.AM.collectHashBindings(), lost));
+        packets.append_range(RemoteClient::makePackets_informateDefContent_Full(Content.CM.getAllProfiles()));
 
         for(const std::shared_ptr<RemoteClient>& client : newClients) {
             if(!packets.empty()) {
@@ -1685,7 +1685,8 @@ void GameServer::reloadMods() {
     {
         // TODO: перезагрузка модов
 
-        Content.CM.buildEndProfiles();
+        ContentManager::Out_buildEndProfiles out = Content.CM.buildEndProfiles();
+        packetsToSend.append_range(RemoteClient::makePackets_informateDefContentUpdate(out));
     }
 
     LOG.info() << "Перезагрузка ассетов";

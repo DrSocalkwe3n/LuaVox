@@ -1,9 +1,13 @@
 #pragma once
 
+#include "Common/Net.hpp"
 #include <cstdint>
+#include <functional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <variant>
 #include <vector>
 #include <Common/Abstract.hpp>
 
@@ -149,14 +153,6 @@ struct WorldInfo {
     std::unordered_map<Pos::GlobalRegion, Region> Regions;
 };
 
-struct VoxelInfo {
-
-};
-
-struct NodeInfo {
-
-};
-
 struct PortalInfo {
 
 };
@@ -168,19 +164,77 @@ struct EntityInfo {
     glm::quat Quat = glm::quat(1.f, 0.f, 0.f, 0.f);
 };
 
-struct FuncEntityInfo {
+/*
+    Конструируются с серверными идентификаторами
+*/
 
+struct DefVoxel {
+    DefVoxel() = default;
+    DefVoxel(const std::u8string_view view) {
+        
+    }
+
+    void reBind(const std::function<ResourceId(EnumAssets, ResourceId)>& am) {
+
+    }
 };
 
-struct DefItemInfo {
+struct DefNode {
+    std::variant<AssetsNodestate> RenderStates;
 
+    DefNode() = default;
+    DefNode(const std::u8string_view view) {
+        Net::LinearReader lr(view);
+        RenderStates = lr.read<uint32_t>();
+    }
+
+    void reBind(const std::function<ResourceId(EnumAssets, ResourceId)>& am) {
+        RenderStates = am(EnumAssets::Nodestate, std::get<AssetsNodestate>(RenderStates));
+    }
 };
 
-struct DefVoxel_t {};
-struct DefNode_t {
-    AssetsNodestate NodestateId = 0;
-    AssetsTexture TexId = 0;
+struct DefWorld {
+    DefWorld() = default;
+    DefWorld(const std::u8string_view view) {
+        
+    }
 
+    void reBind(const std::function<ResourceId(EnumAssets, ResourceId)>& am) {
+        
+    }
+};
+
+struct DefPortal {
+    DefPortal() = default;
+    DefPortal(const std::u8string_view view) {
+        
+    }
+
+    void reBind(const std::function<ResourceId(EnumAssets, ResourceId)>& am) {
+        
+    }
+};
+
+struct DefEntity {
+    DefEntity() = default;
+    DefEntity(const std::u8string_view view) {
+        
+    }
+
+    void reBind(const std::function<ResourceId(EnumAssets, ResourceId)>& am) {
+        
+    }
+};
+
+struct DefItem {
+    DefItem() = default;
+    DefItem(const std::u8string_view view) {
+        
+    }
+
+    void reBind(const std::function<ResourceId(EnumAssets, ResourceId)>& am) {
+        
+    }
 };
 
 struct AssetEntry {
@@ -217,12 +271,12 @@ public:
 
     // Используемые профили контента
     struct {
-        std::unordered_map<DefVoxelId, DefVoxel_t>                DefVoxel;
-        std::unordered_map<DefNodeId, DefNode_t>                  DefNode;
-        std::unordered_map<DefWorldId, DefWorldInfo>              DefWorld;
-        std::unordered_map<DefPortalId, DefPortalInfo>            DefPortal;
-        std::unordered_map<DefEntityId, DefEntityInfo>            DefEntity;
-        std::unordered_map<DefItemId, DefItemInfo>                DefItem;
+        std::unordered_map<DefVoxelId, DefVoxel>              DefVoxels;
+        std::unordered_map<DefNodeId, DefNode>                DefNodes;
+        std::unordered_map<DefWorldId, DefWorld>              DefWorlds;
+        std::unordered_map<DefPortalId, DefPortal>            DefPortals;
+        std::unordered_map<DefEntityId, DefEntity>            DefEntitys;
+        std::unordered_map<DefItemId, DefItem>                DefItems;
     } Profiles;
 
     // Видимый контент

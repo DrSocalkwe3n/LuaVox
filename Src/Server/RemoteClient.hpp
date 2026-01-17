@@ -388,25 +388,15 @@ public:
         const std::vector<std::tuple<ResourceFile::Hash_t, std::shared_ptr<const std::u8string>>>& resources
     );
 
+
+    // Создаёт пакет со всеми данными об игровых профилях
+    static std::vector<Net::Packet> makePackets_informateDefContent_Full(
+        const ContentManager::Out_getAllProfiles& profiles
+    );
+    
     // Создаёт пакет об обновлении игровых профилей
-    static std::vector<Net::Packet> makePackets_sendDefContentUpdate(
-        std::array<
-            std::vector<
-                std::pair<
-                    ResourceId,     // Идентификатор профиля
-                    std::u8string   // Двоичный формат профиля
-                >
-            >,
-            static_cast<size_t>(EnumDefContent::MAX_ENUM)
-        > newOrUpdate,  // Новые или изменённые
-        std::array<
-            std::vector<ResourceId>,
-            static_cast<size_t>(EnumDefContent::MAX_ENUM)
-        > lost,         // Потерянные профили
-        std::array<
-            std::vector<std::pair<std::string, std::string>>,
-            static_cast<size_t>(EnumDefContent::MAX_ENUM)
-        > idToDK        // Новые привязки
+    static std::vector<Net::Packet> makePackets_informateDefContentUpdate(
+        const ContentManager::Out_buildEndProfiles& profiles
     );
     
     void onUpdate();

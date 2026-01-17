@@ -122,17 +122,17 @@ private:
         // Полученные с сервера ресурсы
         std::vector<std::tuple<ResourceFile::Hash_t, std::u8string>> ReceivedAssets;
 
-        std::vector<std::pair<DefVoxelId, void*>> Profile_Voxel_AddOrChange;
+        std::vector<std::pair<DefVoxelId, DefVoxel>> Profile_Voxel_AddOrChange;
         std::vector<DefVoxelId> Profile_Voxel_Lost;
-        std::vector<std::pair<DefNodeId, DefNode_t>> Profile_Node_AddOrChange;
+        std::vector<std::pair<DefNodeId, DefNode>> Profile_Node_AddOrChange;
         std::vector<DefNodeId> Profile_Node_Lost;
-        std::vector<std::pair<DefWorldId, void*>> Profile_World_AddOrChange;
+        std::vector<std::pair<DefWorldId, DefWorld>> Profile_World_AddOrChange;
         std::vector<DefWorldId> Profile_World_Lost;
-        std::vector<std::pair<DefPortalId, void*>> Profile_Portal_AddOrChange;
+        std::vector<std::pair<DefPortalId, DefPortal>> Profile_Portal_AddOrChange;
         std::vector<DefPortalId> Profile_Portal_Lost;
-        std::vector<std::pair<DefEntityId, DefEntityInfo>> Profile_Entity_AddOrChange;
+        std::vector<std::pair<DefEntityId, DefEntity>> Profile_Entity_AddOrChange;
         std::vector<DefEntityId> Profile_Entity_Lost;
-        std::vector<std::pair<DefItemId, void*>> Profile_Item_AddOrChange;
+        std::vector<std::pair<DefItemId, DefItem>> Profile_Item_AddOrChange;
         std::vector<DefItemId> Profile_Item_Lost;
 
         std::vector<std::pair<WorldId_t, void*>> Worlds_AddOrChange;
@@ -197,6 +197,7 @@ private:
     coro<> rP_AssetsBindHH(Net::AsyncSocket &sock);
     coro<> rP_AssetsInitSend(Net::AsyncSocket &sock);
     coro<> rP_AssetsNextSend(Net::AsyncSocket &sock);
+    coro<> rP_DefinitionsFull(Net::AsyncSocket &sock);
     coro<> rP_DefinitionsUpdate(Net::AsyncSocket &sock);
     coro<> rP_ChunkVoxels(Net::AsyncSocket &sock);
     coro<> rP_ChunkNodes(Net::AsyncSocket &sock);

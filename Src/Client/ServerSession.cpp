@@ -17,6 +17,7 @@
 #include <Common/Packets.hpp>
 #include <glm/ext.hpp>
 #include <optional>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -64,12 +65,6 @@ ServerSession::ServerSession(asio::io_context &ioc, std::unique_ptr<Net::AsyncSo
     : IAsyncDestructible(ioc), Socket(std::move(socket)), AM(ioc, "Cache")
 {
     assert(Socket.get());
-
-    Profiles.DefNode[0] = {0};
-    Profiles.DefNode[1] = {1};
-    Profiles.DefNode[2] = {2};
-    Profiles.DefNode[3] = {3};
-    Profiles.DefNode[4] = {4};
 
     try {
         asio::co_spawn(ioc, run(AUC.use()), asio::detached);
@@ -345,18 +340,19 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
         // Перевариваем данные по тактам
 
         // Профили
-        std::unordered_map<DefVoxelId, void*> profile_Voxel_AddOrChange;
+        std::unordered_map<DefVoxelId, DefVoxel> profile_Voxel_AddOrChange;
         std::vector<DefVoxelId> profile_Voxel_Lost;
-        std::unordered_map<DefNodeId, DefNode_t> profile_Node_AddOrChange;
+        std::unordered_map<DefNodeId, DefNode> profile_Node_AddOrChange;
         std::vector<DefNodeId> profile_Node_Lost;
-        std::unordered_map<DefWorldId, void*> profile_World_AddOrChange;
+        std::unordered_map<DefWorldId, DefWorld> profile_World_AddOrChange;
         std::vector<DefWorldId> profile_World_Lost;
-        std::unordered_map<DefPortalId, void*> profile_Portal_AddOrChange;
+        std::unordered_map<DefPortalId, DefPortal> profile_Portal_AddOrChange;
         std::vector<DefPortalId> profile_Portal_Lost;
-        std::unordered_map<DefEntityId, DefEntityInfo> profile_Entity_AddOrChange;
+        std::unordered_map<DefEntityId, DefEntity> profile_Entity_AddOrChange;
         std::vector<DefEntityId> profile_Entity_Lost;
-        std::unordered_map<DefItemId, void*> profile_Item_AddOrChange;
+        std::unordered_map<DefItemId, DefItem> profile_Item_AddOrChange;
         std::vector<DefItemId> profile_Item_Lost;
+
         std::unordered_map<EntityId_t, EntityInfo> entity_AddOrChange;
         std::vector<EntityId_t> entity_Lost;
 
@@ -382,6 +378,12 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                         if(iter != profile_Voxel_Lost.end() && *iter == id)
                             profile_Voxel_Lost.erase(iter);
 
+                        profile.reBind(
+                            [&](EnumAssets type, ResourceId server) {
+                                return AM.reBind(type, server);
+                            }
+                        );
+
                         profile_Voxel_AddOrChange[id] = profile;
                     }
 
@@ -400,6 +402,12 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                         auto iter = std::lower_bound(profile_Node_Lost.begin(), profile_Node_Lost.end(), id);
                         if(iter != profile_Node_Lost.end() && *iter == id)
                             profile_Node_Lost.erase(iter);
+
+                        profile.reBind(
+                            [&](EnumAssets type, ResourceId server) {
+                                return AM.reBind(type, server);
+                            }
+                        );
 
                         profile_Node_AddOrChange[id] = profile;
                     }
@@ -420,6 +428,12 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                         if(iter != profile_World_Lost.end() && *iter == id)
                             profile_World_Lost.erase(iter);
 
+                        profile.reBind(
+                            [&](EnumAssets type, ResourceId server) {
+                                return AM.reBind(type, server);
+                            }
+                        );
+
                         profile_World_AddOrChange[id] = profile;
                     }
 
@@ -438,6 +452,12 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                         auto iter = std::lower_bound(profile_Portal_Lost.begin(), profile_Portal_Lost.end(), id);
                         if(iter != profile_Portal_Lost.end() && *iter == id)
                             profile_Portal_Lost.erase(iter);
+
+                        profile.reBind(
+                            [&](EnumAssets type, ResourceId server) {
+                                return AM.reBind(type, server);
+                            }
+                        );
 
                         profile_Portal_AddOrChange[id] = profile;
                     }
@@ -458,6 +478,12 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                         if(iter != profile_Entity_Lost.end() && *iter == id)
                             profile_Entity_Lost.erase(iter);
 
+                        profile.reBind(
+                            [&](EnumAssets type, ResourceId server) {
+                                return AM.reBind(type, server);
+                            }
+                        );
+
                         profile_Entity_AddOrChange[id] = profile;
                     }
 
@@ -477,6 +503,12 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                         if(iter != profile_Item_Lost.end() && *iter == id)
                             profile_Item_Lost.erase(iter);
 
+                        profile.reBind(
+                            [&](EnumAssets type, ResourceId server) {
+                                return AM.reBind(type, server);
+                            }
+                        );
+
                         profile_Item_AddOrChange[id] = profile;
                     }
 
@@ -491,10 +523,10 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                 }
 
                 {
-            for(auto& [id, info] : data.Entity_AddOrChange) {
-                auto iter = std::lower_bound(entity_Lost.begin(), entity_Lost.end(), id);
-                if(iter != entity_Lost.end() && *iter == id)
-                    entity_Lost.erase(iter);
+                    for(auto& [id, info] : data.Entity_AddOrChange) {
+                        auto iter = std::lower_bound(entity_Lost.begin(), entity_Lost.end(), id);
+                        if(iter != entity_Lost.end() && *iter == id)
+                            entity_Lost.erase(iter);
 
                         entity_AddOrChange[id] = info;
                     }
@@ -506,20 +538,20 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                     entity_Lost.insert(entity_Lost.end(), data.Entity_Lost.begin(), data.Entity_Lost.end());
                     std::sort(entity_Lost.begin(), entity_Lost.end());
                     auto eraseIter = std::unique(entity_Lost.begin(), entity_Lost.end());
-                entity_Lost.erase(eraseIter, entity_Lost.end());
+                    entity_Lost.erase(eraseIter, entity_Lost.end());
+                }
             }
-        }
 
-        {
-            AssetsManager::ResourceUpdates updates = AM.pullResourceUpdates();
-            result.AssetsNodestates = std::move(updates.Nodestates);
-            result.AssetsModels = std::move(updates.Models);
-            result.AssetsTextures = std::move(updates.Textures);
-        }
+            {
+                AssetsManager::ResourceUpdates updates = AM.pullResourceUpdates();
+                result.AssetsNodestates = std::move(updates.Nodestates);
+                result.AssetsModels = std::move(updates.Models);
+                result.AssetsTextures = std::move(updates.Textures);
+            }
 
-        for(auto& [id, _] : profile_Voxel_AddOrChange)
-            result.Profiles_ChangeOrAdd[EnumDefContent::Voxel].push_back(id);
-        result.Profiles_Lost[EnumDefContent::Voxel] = profile_Voxel_Lost;
+            for(auto& [id, _] : profile_Voxel_AddOrChange)
+                result.Profiles_ChangeOrAdd[EnumDefContent::Voxel].push_back(id);
+            result.Profiles_Lost[EnumDefContent::Voxel] = profile_Voxel_Lost;
 
             for(auto& [id, _] : profile_Node_AddOrChange)
                 result.Profiles_ChangeOrAdd[EnumDefContent::Node].push_back(id);
@@ -657,7 +689,6 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
         for(auto& [wId, regions] : regions_Lost_Result)
             result.Chunks_Lost[wId] = std::vector<Pos::GlobalRegion>(regions.begin(), regions.end());
 
-
         {
             for(TickData& data : ticks) {
             }
@@ -669,12 +700,23 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
         // Применяем изменения по ресурсам, профилям и контенту
         // Определения
         {
-            for(auto& [resId, def] : profile_Node_AddOrChange) {
-                Profiles.DefNode[resId] = def;
-            }
-            for(auto& [resId, def] : profile_Entity_AddOrChange) {
-                Profiles.DefEntity[resId] = def;
-            }
+            for(auto& [resId, def] : profile_Voxel_AddOrChange)
+                Profiles.DefVoxels[resId] = def;
+
+            for(auto& [resId, def] : profile_Node_AddOrChange)
+                Profiles.DefNodes[resId] = def;
+
+            for(auto& [resId, def] : profile_World_AddOrChange)
+                Profiles.DefWorlds[resId] = def;
+
+            for(auto& [resId, def] : profile_Portal_AddOrChange)
+                Profiles.DefPortals[resId] = def;
+            
+            for(auto& [resId, def] : profile_Entity_AddOrChange)
+                Profiles.DefEntitys[resId] = def;
+
+            for(auto& [resId, def] : profile_Item_AddOrChange)
+                Profiles.DefItems[resId] = def;
         }
 
         // Чанки
@@ -724,7 +766,6 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
                     regions[pos >> 2].Chunks[Pos::bvec4u(pos & 0x3).pack()].Nodes = std::move(data);
                 }
             }
-
         }
 
         // Сущности
@@ -904,6 +945,9 @@ coro<> ServerSession::readPacket(Net::AsyncSocket &sock) {
     case ToClient::AssetsNextSend:
         co_await rP_AssetsNextSend(sock);
         co_return;
+    case ToClient::DefinitionsFull:
+        co_await rP_DefinitionsFull(sock);
+        co_return;
     case ToClient::DefinitionsUpdate:
         co_await rP_DefinitionsUpdate(sock);
         co_return;
@@ -1035,55 +1079,281 @@ coro<> ServerSession::rP_AssetsNextSend(Net::AsyncSocket &sock) {
     AsyncContext.AssetsLoading.erase(AsyncContext.AssetsLoading.find(hash));
 }
 
+coro<> ServerSession::rP_DefinitionsFull(Net::AsyncSocket &sock) {
+    std::vector<ResourceId> ids;
+    uint32_t size = 0;
+
+    {
+        size = co_await sock.read<uint32_t>();
+        ids.clear();
+        ids.reserve(size);
+        for(size_t iter = 0; iter < size; iter++) {
+            ids.push_back(co_await sock.read<uint32_t>());
+        }
+
+        AsyncContext.ThisTickEntry.Profile_Voxel_AddOrChange.reserve(AsyncContext.ThisTickEntry.Profile_Voxel_AddOrChange.size()+size);
+        for(size_t iter = 0; iter < size; iter++) {
+            std::string data = co_await sock.read<std::string>();
+            AsyncContext.ThisTickEntry.Profile_Voxel_AddOrChange.emplace_back(
+                ids[iter],
+                DefVoxel{
+                    std::u8string_view((const char8_t*) data.data(), data.size())
+                }
+            );
+        }
+    }
+
+    {
+        size = co_await sock.read<uint32_t>();
+        ids.clear();
+        ids.reserve(size);
+        for(size_t iter = 0; iter < size; iter++) {
+            ids.push_back(co_await sock.read<uint32_t>());
+        }
+
+        AsyncContext.ThisTickEntry.Profile_Node_AddOrChange.reserve(AsyncContext.ThisTickEntry.Profile_Node_AddOrChange.size()+size);
+        for(size_t iter = 0; iter < size; iter++) {
+            std::string data = co_await sock.read<std::string>();
+            AsyncContext.ThisTickEntry.Profile_Node_AddOrChange.emplace_back(
+                ids[iter], 
+                DefNode{
+                    std::u8string_view((const char8_t*) data.data(), data.size())
+                }
+            );
+        }
+    }
+
+    {
+        size = co_await sock.read<uint32_t>();
+        ids.clear();
+        ids.reserve(size);
+        for(size_t iter = 0; iter < size; iter++) {
+            ids.push_back(co_await sock.read<uint32_t>());
+        }
+
+        AsyncContext.ThisTickEntry.Profile_World_AddOrChange.reserve(AsyncContext.ThisTickEntry.Profile_World_AddOrChange.size()+size);
+        for(size_t iter = 0; iter < size; iter++) {
+            std::string data = co_await sock.read<std::string>();
+            AsyncContext.ThisTickEntry.Profile_World_AddOrChange.emplace_back(
+                ids[iter], 
+                DefWorld{
+                    std::u8string_view((const char8_t*) data.data(), data.size())
+                }
+            );
+        }
+    }
+
+    {
+        size = co_await sock.read<uint32_t>();
+        ids.clear();
+        ids.reserve(size);
+        for(size_t iter = 0; iter < size; iter++) {
+            ids.push_back(co_await sock.read<uint32_t>());
+        }
+
+        AsyncContext.ThisTickEntry.Profile_Portal_AddOrChange.reserve(AsyncContext.ThisTickEntry.Profile_Portal_AddOrChange.size()+size);
+        for(size_t iter = 0; iter < size; iter++) {
+            std::string data = co_await sock.read<std::string>();
+            AsyncContext.ThisTickEntry.Profile_Portal_AddOrChange.emplace_back(
+                ids[iter], 
+                DefPortal{
+                    std::u8string_view((const char8_t*) data.data(), data.size())
+                }
+            );
+        }
+    }
+
+    {
+        size = co_await sock.read<uint32_t>();
+        ids.clear();
+        ids.reserve(size);
+        for(size_t iter = 0; iter < size; iter++) {
+            ids.push_back(co_await sock.read<uint32_t>());
+        }
+
+        AsyncContext.ThisTickEntry.Profile_Entity_AddOrChange.reserve(AsyncContext.ThisTickEntry.Profile_Entity_AddOrChange.size()+size);
+        for(size_t iter = 0; iter < size; iter++) {
+            std::string data = co_await sock.read<std::string>();
+            AsyncContext.ThisTickEntry.Profile_Entity_AddOrChange.emplace_back(
+                ids[iter], 
+                DefEntity{
+                    std::u8string_view((const char8_t*) data.data(), data.size())
+                }
+        );}
+    }
+
+    {
+        size = co_await sock.read<uint32_t>();
+        ids.clear();
+        ids.reserve(size);
+        for(size_t iter = 0; iter < size; iter++) {
+            ids.push_back(co_await sock.read<uint32_t>());
+        }
+
+        AsyncContext.ThisTickEntry.Profile_Item_AddOrChange.reserve(AsyncContext.ThisTickEntry.Profile_Item_AddOrChange.size()+size);
+        for(size_t iter = 0; iter < size; iter++) {
+            std::string data = co_await sock.read<std::string>();
+            AsyncContext.ThisTickEntry.Profile_Item_AddOrChange.emplace_back(
+                ids[iter], 
+                DefItem{
+                    std::u8string_view((const char8_t*) data.data(), data.size())
+                }
+            );
+        }
+    }
+
+    for(size_t type = 0; type < static_cast<size_t>(EnumDefContent::MAX_ENUM); type++) {
+        size = co_await sock.read<uint32_t>();
+        
+        for(size_t iter = 0; iter < size; iter++) {
+            std::string domain = co_await sock.read<std::string>();
+            std::string key = co_await sock.read<std::string>();
+
+            (void) domain;
+            (void) key;
+        }
+    }
+}
+
 coro<> ServerSession::rP_DefinitionsUpdate(Net::AsyncSocket &sock) {
     static std::atomic<uint32_t> debugDefLogCount = 0;
-    uint32_t typeCount = co_await sock.read<uint32_t>();
-    typeCount = std::min<uint32_t>(typeCount, static_cast<uint32_t>(EnumDefContent::MAX_ENUM));
-
-    for(uint32_t type = 0; type < typeCount; ++type) {
-        uint32_t count = co_await sock.read<uint32_t>();
-        for(uint32_t i = 0; i < count; ++i) {
-            ResourceId id = co_await sock.read<ResourceId>();
-            std::string dataStr = co_await sock.read<std::string>();
-            (void)dataStr;
-
-            if(type == static_cast<uint32_t>(EnumDefContent::Node)) {
-                DefNode_t def;
-                def.NodestateId = 0;
-                def.TexId = id;
-                AsyncContext.ThisTickEntry.Profile_Node_AddOrChange.emplace_back(id, def);
-                if(id < 32) {
-                    uint32_t idx = debugDefLogCount.fetch_add(1);
-                    if(idx < 64) {
-                        LOG.debug() << "DefNode id=" << id
-                            << " nodestate=" << def.NodestateId
-                            << " tex=" << def.TexId;
-                    }
+    uint32_t size;
+    
+    {
+        size = co_await sock.read<uint32_t>();
+        AsyncContext.ThisTickEntry.Profile_Voxel_AddOrChange.reserve(AsyncContext.ThisTickEntry.Profile_Voxel_AddOrChange.size()+size);
+        for(size_t iter = 0; iter < size; ++iter) {
+            uint32_t id = co_await sock.read<uint32_t>();
+            std::string data = co_await sock.read<std::string>();
+            AsyncContext.ThisTickEntry.Profile_Voxel_AddOrChange.emplace_back(
+                id, 
+                DefVoxel{
+                    std::u8string_view((const char8_t*) data.data(), data.size())
                 }
-            }
+            );
+        }
+    }
+    
+    {
+        size = co_await sock.read<uint32_t>();
+        AsyncContext.ThisTickEntry.Profile_Node_AddOrChange.reserve(AsyncContext.ThisTickEntry.Profile_Node_AddOrChange.size()+size);
+        for(size_t iter = 0; iter < size; ++iter) {
+            uint32_t id = co_await sock.read<uint32_t>();
+            std::string data = co_await sock.read<std::string>();
+            AsyncContext.ThisTickEntry.Profile_Node_AddOrChange.emplace_back(
+                id, 
+                DefNode{
+                    std::u8string_view((const char8_t*) data.data(), data.size())
+                }
+            );
+        }
+    }
+    
+    {
+        size = co_await sock.read<uint32_t>();
+        AsyncContext.ThisTickEntry.Profile_World_AddOrChange.reserve(AsyncContext.ThisTickEntry.Profile_World_AddOrChange.size()+size);
+        for(size_t iter = 0; iter < size; ++iter) {
+            uint32_t id = co_await sock.read<uint32_t>();
+            std::string data = co_await sock.read<std::string>();
+            AsyncContext.ThisTickEntry.Profile_World_AddOrChange.emplace_back(
+                id, 
+                DefWorld{
+                    std::u8string_view((const char8_t*) data.data(), data.size())
+                }
+            );
+        }
+    }
+    
+    {
+        size = co_await sock.read<uint32_t>();
+        AsyncContext.ThisTickEntry.Profile_Portal_AddOrChange.reserve(AsyncContext.ThisTickEntry.Profile_Portal_AddOrChange.size()+size);
+        for(size_t iter = 0; iter < size; ++iter) {
+            uint32_t id = co_await sock.read<uint32_t>();
+            std::string data = co_await sock.read<std::string>();
+            AsyncContext.ThisTickEntry.Profile_Portal_AddOrChange.emplace_back(
+                id, 
+                DefPortal{
+                    std::u8string_view((const char8_t*) data.data(), data.size())
+                }
+            );
+        }
+    }
+    
+    {
+        size = co_await sock.read<uint32_t>();
+        AsyncContext.ThisTickEntry.Profile_Entity_AddOrChange.reserve(AsyncContext.ThisTickEntry.Profile_Entity_AddOrChange.size()+size);
+        for(size_t iter = 0; iter < size; ++iter) {
+            uint32_t id = co_await sock.read<uint32_t>();
+            std::string data = co_await sock.read<std::string>();
+            AsyncContext.ThisTickEntry.Profile_Entity_AddOrChange.emplace_back(
+                id, 
+                DefEntity{
+                    std::u8string_view((const char8_t*) data.data(), data.size())
+                }
+            );
+        }
+    }
+    
+    {
+        size = co_await sock.read<uint32_t>();
+        AsyncContext.ThisTickEntry.Profile_Item_AddOrChange.reserve(AsyncContext.ThisTickEntry.Profile_Item_AddOrChange.size()+size);
+        for(size_t iter = 0; iter < size; ++iter) {
+            uint32_t id = co_await sock.read<uint32_t>();
+            std::string data = co_await sock.read<std::string>();
+            AsyncContext.ThisTickEntry.Profile_Item_AddOrChange.emplace_back(
+                id, 
+                DefItem{
+                    std::u8string_view((const char8_t*) data.data(), data.size())
+                }
+            );
         }
     }
 
-    uint32_t lostCount = co_await sock.read<uint32_t>();
-    lostCount = std::min<uint32_t>(lostCount, static_cast<uint32_t>(EnumDefContent::MAX_ENUM));
-    for(uint32_t type = 0; type < lostCount; ++type) {
-        uint32_t count = co_await sock.read<uint32_t>();
-        for(uint32_t i = 0; i < count; ++i) {
-            ResourceId id = co_await sock.read<ResourceId>();
-            if(type == static_cast<uint32_t>(EnumDefContent::Node))
-                AsyncContext.ThisTickEntry.Profile_Node_Lost.push_back(id);
-        }
+    {
+        size = co_await sock.read<uint32_t>();
+        for(uint32_t iter = 0; iter < size; ++iter)
+            AsyncContext.ThisTickEntry.Profile_Voxel_Lost.push_back(co_await sock.read<ResourceId>());
     }
 
-    uint32_t dkCount = co_await sock.read<uint32_t>();
-    dkCount = std::min<uint32_t>(dkCount, static_cast<uint32_t>(EnumDefContent::MAX_ENUM));
-    for(uint32_t type = 0; type < dkCount; ++type) {
-        uint32_t count = co_await sock.read<uint32_t>();
-        for(uint32_t i = 0; i < count; ++i) {
-            std::string key = co_await sock.read<std::string>();
+    {
+        size = co_await sock.read<uint32_t>();
+        for(uint32_t iter = 0; iter < size; ++iter)
+            AsyncContext.ThisTickEntry.Profile_Node_Lost.push_back(co_await sock.read<ResourceId>());
+    }
+
+    {
+        size = co_await sock.read<uint32_t>();
+        for(uint32_t iter = 0; iter < size; ++iter)
+            AsyncContext.ThisTickEntry.Profile_World_Lost.push_back(co_await sock.read<ResourceId>());
+    }
+
+    {
+        size = co_await sock.read<uint32_t>();
+        for(uint32_t iter = 0; iter < size; ++iter)
+            AsyncContext.ThisTickEntry.Profile_Portal_Lost.push_back(co_await sock.read<ResourceId>());
+    }
+
+    {
+        size = co_await sock.read<uint32_t>();
+        for(uint32_t iter = 0; iter < size; ++iter)
+            AsyncContext.ThisTickEntry.Profile_Entity_Lost.push_back(co_await sock.read<ResourceId>());
+    }
+
+    {
+        size = co_await sock.read<uint32_t>();
+        for(uint32_t iter = 0; iter < size; ++iter)
+            AsyncContext.ThisTickEntry.Profile_Item_Lost.push_back(co_await sock.read<ResourceId>());
+    }
+
+    for(size_t type = 0; type < static_cast<size_t>(EnumDefContent::MAX_ENUM); type++) {
+        size = co_await sock.read<uint32_t>();
+        
+        for(size_t iter = 0; iter < size; iter++) {
             std::string domain = co_await sock.read<std::string>();
-            (void)key;
-            (void)domain;
+            std::string key = co_await sock.read<std::string>();
+
+            (void) domain;
+            (void) key;
         }
     }
 

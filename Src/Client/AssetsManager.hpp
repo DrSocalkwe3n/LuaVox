@@ -46,7 +46,11 @@ public:
 
 public:
     AssetsManager(asio::io_context& ioc, fs::path cachePath)
-    : Cache(AssetsCacheManager::Create(ioc, cachePath)) {
+    : Cache(AssetsCacheManager::Create(ioc, cachePath))
+    {
+        for(size_t type = 0; type < static_cast<size_t>(EnumAssets::MAX_ENUM); type++) {
+            ServerToClientMap[type].push_back(0);
+        }
     }
 
 // Ручные обновления
@@ -179,9 +183,13 @@ public:
     ) {
         LOG.debug() << "BindDK domains=" << domains.size();
         for(size_t type = 0; type < static_cast<size_t>(EnumAssets::MAX_ENUM); ++type) {
+            LOG.info() << type;
             for(size_t forDomainIter = 0; forDomainIter < keys[type].size(); ++forDomainIter) {
+                LOG.info() << "\t" << domains[forDomainIter];
                 for(const std::string& key : keys[type][forDomainIter]) {
-                    ServerToClientMap[type].push_back(getId((EnumAssets) type, domains[forDomainIter], key));
+                    uint32_t id = getId((EnumAssets) type, domains[forDomainIter], key);
+                    LOG.info() << "\t\t" << key << " -> " << id;
+                    ServerToClientMap[type].push_back(id);
                 }
             }
         }
@@ -297,6 +305,10 @@ public:
     // Получить изменённые ресурсы (для передачи другим модулям).
     ResourceUpdates pullResourceUpdates() {
         return std::move(RU);
+    }
+
+    ResourceId reBind(EnumAssets type, ResourceId server) {
+        return ServerToClientMap[static_cast<size_t>(type)].at(server);
     }
 
     void tick() {

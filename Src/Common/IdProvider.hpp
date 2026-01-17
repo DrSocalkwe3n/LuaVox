@@ -161,8 +161,7 @@ public:
             // reverse читаем под shared lock
             std::shared_lock rlk(_ReverseMutex[t]);
             for(ResourceId id : new_ids) {
-                // id=0 не бывает в newlyInserted
-                const std::size_t idx = static_cast<std::size_t>(id - 1);
+                const std::size_t idx = static_cast<std::size_t>(id);
                 if(idx >= _Reverse[t].size()) {
                     // теоретически не должно случаться (мы пишем reverse до push в log)
                     continue;
@@ -175,8 +174,7 @@ public:
             rlk.unlock();
 
             // 3) дописать в IdToDK (для новых клиентов)
-            // Важно: IdToDK[0] уже содержит "core/none" как элемент 0.
-            IdToDK[t].append_range(result[t]); // C++23
+            IdToDK[t].append_range(result[t]);
         }
 
         return result;

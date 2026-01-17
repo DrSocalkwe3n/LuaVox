@@ -3,20 +3,62 @@
 #include "Common/Abstract.hpp"
 #include "AssetsManager.hpp"
 #include "Common/IdProvider.hpp"
+#include "Common/Net.hpp"
+#include "TOSLib.hpp"
 #include <array>
 #include <mutex>
 #include <sol/table.hpp>
+#include <string_view>
 #include <unordered_map>
 
 
 namespace LV::Server {
 
-struct DefVoxel_Base { };
-struct DefNode_Base { };
-struct DefWorld_Base { };
-struct DefPortal_Base { };
-struct DefEntity_Base { };
-struct DefItem_Base { };
+struct ResourceBase {
+    std::string Domain, Key;
+};
+
+class ContentManager;
+
+struct DefVoxel : public ResourceBase {
+    std::u8string dumpToClient() const {
+        return {};
+    }
+};
+
+struct DefNode : public ResourceBase {
+    AssetsNodestate NodestateId;
+
+    std::u8string dumpToClient() const {
+        auto wr = TOS::ByteBuffer::Writer();
+        wr << uint32_t(NodestateId);
+        auto buff = wr.complite();
+        return (std::u8string) std::u8string_view((const char8_t*) buff.data(), buff.size());
+    }
+};
+struct DefWorld : public ResourceBase {
+    std::u8string dumpToClient() const {
+        return {};
+    }
+};
+
+struct DefPortal : public ResourceBase {
+    std::u8string dumpToClient() const {
+        return {};
+    }
+};
+
+struct DefEntity : public ResourceBase {
+    std::u8string dumpToClient() const {
+        return {};
+    }
+};
+
+struct DefItem : public ResourceBase {
+    std::u8string dumpToClient() const {
+        return {};
+    }
+};
 
 struct DefVoxel_Mod { };
 struct DefNode_Mod { };
@@ -25,20 +67,57 @@ struct DefPortal_Mod { };
 struct DefEntity_Mod { };
 struct DefItem_Mod { };
 
-struct ResourceBase {
-    std::string Domain, Key;
+struct DefVoxel_Base {
+private:
+    friend ContentManager;
+    DefVoxel compile(AssetsManager& am, ContentManager& cm, const std::string_view domain, const std::string_view key, const std::vector<std::tuple<std::string, DefVoxel_Mod>>& mods) const {
+        return DefVoxel();
+    }
 };
 
-struct DefVoxel : public ResourceBase { };
-struct DefNode : public ResourceBase {
-    AssetsNodestate NodestateId;
-    std::vector<AssetsModel> ModelDeps;
-    std::vector<AssetsTexture> TextureDeps;
+struct DefNode_Base {
+private:
+    friend ContentManager;
+    DefNode compile(AssetsManager& am, ContentManager& cm, const std::string_view domain, const std::string_view key, const std::vector<std::tuple<std::string, DefNode_Mod>>& mods) const {
+        DefNode profile;
+        std::string jsonKey = std::string(key)+".json";
+        profile.NodestateId = am.getId(EnumAssets::Nodestate, domain, jsonKey);
+        TOS::Logger("Compile").info() << domain << ' ' << key << " -> " << profile.NodestateId;
+        return profile;
+    }
 };
-struct DefWorld : public ResourceBase { };
-struct DefPortal : public ResourceBase { };
-struct DefEntity : public ResourceBase { };
-struct DefItem : public ResourceBase { };
+
+struct DefWorld_Base {
+private:
+    friend ContentManager;
+    DefWorld compile(AssetsManager& am, ContentManager& cm, const std::string_view domain, const std::string_view key, const std::vector<std::tuple<std::string, DefWorld_Mod>>& mods) const {
+        return DefWorld();
+    }
+};
+
+struct DefPortal_Base {
+private:
+    friend ContentManager;
+    DefPortal compile(AssetsManager& am, ContentManager& cm, const std::string_view domain, const std::string_view key, const std::vector<std::tuple<std::string, DefPortal_Mod>>& mods) const {
+        return DefPortal();
+    }
+};
+
+struct DefEntity_Base {
+private:
+    friend ContentManager;
+    DefEntity compile(AssetsManager& am, ContentManager& cm, const std::string_view domain, const std::string_view key, const std::vector<std::tuple<std::string, DefEntity_Mod>>& mods) const {
+        return DefEntity();
+    }
+};
+
+struct DefItem_Base {
+private:
+    friend ContentManager;
+    DefItem compile(AssetsManager& am, ContentManager& cm, const std::string_view domain, const std::string_view key, const std::vector<std::tuple<std::string, DefItem_Mod>>& mods) const {
+        return DefItem();
+    }
+};
 
 /*
     DK to id
@@ -114,7 +193,7 @@ public:
             MAX_ENUM
         > DKToId;
 
-        std::unordered_map<DefVoxelId, std::optional<DefItem>*> Profiles_Voxel;
+        std::unordered_map<DefVoxelId, std::optional<DefVoxel>*> Profiles_Voxel;
         std::unordered_map<DefNodeId, std::optional<DefNode>*> Profiles_Node;
         std::unordered_map<DefWorldId, std::optional<DefWorld>*> Profiles_World;
         std::unordered_map<DefPortalId, std::optional<DefPortal>*> Profiles_Portal;
@@ -133,15 +212,76 @@ public:
     void registerModifier(EnumDefContent type, const std::string& mod, const std::string& domain, const std::string& key, const sol::table& profile);
     void unRegisterModifier(EnumDefContent type, const std::string& mod, const std::string& domain, const std::string& key);
     // Пометить все профили типа как изменённые (например, после перезагрузки ассетов)
-    void markAllProfilesDirty(EnumDefContent type);
+    // void markAllProfilesDirty(EnumDefContent type);
     // Список всех зарегистрированных профилей выбранного типа
     std::vector<ResourceId> collectProfileIds(EnumDefContent type) const;
     // Компилирует изменённые профили
     struct Out_buildEndProfiles {
-        std::vector<ResourceId> ChangedProfiles[MAX_ENUM]; 
+        std::vector<
+            std::tuple<DefVoxelId, const DefVoxel*>
+        > ChangedProfiles_Voxel;
+
+        std::vector<
+            std::tuple<DefNodeId, const DefNode*>
+        > ChangedProfiles_Node;
+
+        std::vector<
+            std::tuple<DefWorldId, const DefWorld*>
+        > ChangedProfiles_World;
+
+        std::vector<
+            std::tuple<DefPortalId, const DefPortal*>
+        > ChangedProfiles_Portal;
+
+        std::vector<
+            std::tuple<DefEntityId, const DefEntity*>
+        > ChangedProfiles_Entity;
+
+        std::vector<
+            std::tuple<DefItemId, const DefItem*>
+        > ChangedProfiles_Item;
+        
+        std::array<
+            std::vector<ResourceId>,
+            MAX_ENUM
+        > LostProfiles;
+
+        std::array<
+            std::vector<BindDomainKeyInfo>,
+            static_cast<size_t>(EnumDefContent::MAX_ENUM)
+        > IdToDK;
     };
 
+    // Компилирует конечные профили по базе и модификаторам (предоставляет клиентам изменённые и потерянные)
     Out_buildEndProfiles buildEndProfiles();
+
+    struct Out_getAllProfiles {
+        std::vector<DefVoxelId> ProfilesIds_Voxel;
+        std::vector<const DefVoxel*> Profiles_Voxel;
+
+        std::vector<DefNodeId> ProfilesIds_Node;
+        std::vector<const DefNode*> Profiles_Node;
+
+        std::vector<DefWorldId> ProfilesIds_World;
+        std::vector<const DefWorld*> Profiles_World;
+
+        std::vector<DefPortalId> ProfilesIds_Portal;
+        std::vector<const DefPortal*> Profiles_Portal;
+
+        std::vector<DefEntityId> ProfilesIds_Entity;
+        std::vector<const DefEntity*> Profiles_Entity;
+
+        std::vector<DefItemId> ProfilesIds_Item;
+        std::vector<const DefItem*> Profiles_Item;
+
+        std::array<
+            std::vector<BindDomainKeyInfo>,
+            static_cast<size_t>(EnumDefContent::MAX_ENUM)
+        > IdToDK;
+    };
+
+    // Выдаёт все профили (для новых клиентов)
+    Out_getAllProfiles getAllProfiles();
     
 
     std::optional<DefVoxel>& getEntry_Voxel(ResourceId resId) {
@@ -278,17 +418,19 @@ private:
     void registerBase_World(ResourceId id, const std::string& domain, const std::string& key, const sol::table& profile);
     void registerBase_Entity(ResourceId id, const std::string& domain, const std::string& key, const sol::table& profile);
 
+    template<class type, class modType>
+    void buildEndProfilesByType(auto& profiles, auto enumType, auto& base, auto& keys, auto& result, auto& mods);
 
     TOS::Logger LOG = "Server>ContentManager";
     AssetsManager& AM;
 
     // Профили зарегистрированные модами
-    std::vector<std::unique_ptr<TableEntry<DefVoxel>>>     Profiles_Base_Voxel;
-    std::vector<std::unique_ptr<TableEntry<DefNode>>>       Profiles_Base_Node;
-    std::vector<std::unique_ptr<TableEntry<DefWorld>>>     Profiles_Base_World;
-    std::vector<std::unique_ptr<TableEntry<DefPortal>>>   Profiles_Base_Portal;
-    std::vector<std::unique_ptr<TableEntry<DefEntity>>>   Profiles_Base_Entity;
-    std::vector<std::unique_ptr<TableEntry<DefItem>>>       Profiles_Base_Item;
+    std::vector<std::unique_ptr<TableEntry<DefVoxel_Base>>>     Profiles_Base_Voxel;
+    std::vector<std::unique_ptr<TableEntry<DefNode_Base>>>       Profiles_Base_Node;
+    std::vector<std::unique_ptr<TableEntry<DefWorld_Base>>>     Profiles_Base_World;
+    std::vector<std::unique_ptr<TableEntry<DefPortal_Base>>>   Profiles_Base_Portal;
+    std::vector<std::unique_ptr<TableEntry<DefEntity_Base>>>   Profiles_Base_Entity;
+    std::vector<std::unique_ptr<TableEntry<DefItem_Base>>>       Profiles_Base_Item;
 
     // Изменения, накладываемые на профили
     // Идентификатор [домен мода модификатора, модификатор]

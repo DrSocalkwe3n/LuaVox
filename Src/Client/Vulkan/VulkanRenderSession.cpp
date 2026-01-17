@@ -121,15 +121,15 @@ void ChunkMeshGenerator::run(uint8_t id) {
             uint8_t fullNodes[18][18][18];
 
             // Профиль, который используется если на стороне клиента отсутствует нужных профиль
-            DefNode_t defaultProfileNode;
+            DefNode defaultProfileNode;
             // Кеш запросов профилей нод
-            std::unordered_map<DefNodeId, const DefNode_t*> profilesNodeCache;
-            auto getNodeProfile = [&](DefNodeId id) -> const DefNode_t* {
+            std::unordered_map<DefNodeId, const DefNode*> profilesNodeCache;
+            auto getNodeProfile = [&](DefNodeId id) -> const DefNode* {
                 auto iterCache = profilesNodeCache.find(id);
                 if(iterCache == profilesNodeCache.end()) {
                     // Промах кеша
-                    auto iterSS = SS->Profiles.DefNode.find(id);
-                    if(iterSS != SS->Profiles.DefNode.end()) {
+                    auto iterSS = SS->Profiles.DefNodes.find(id);
+                    if(iterSS != SS->Profiles.DefNodes.end()) {
                         return (profilesNodeCache[id] = &iterSS->second);
                     } else {
                         // Профиль отсутствует на клиенте
@@ -189,46 +189,50 @@ void ChunkMeshGenerator::run(uint8_t id) {
 
                 std::unordered_map<DefNodeId, bool> nodeFullCuboidCache;
                 auto nodeIsFull = [&](Node node) -> bool {
+                    if(node.NodeId == 0)
+                        return false;
+
                     auto iterCache = nodeFullCuboidCache.find(node.Data);
                     if(iterCache == nodeFullCuboidCache.end()) {
-                        const DefNode_t* profile = getNodeProfile(node.NodeId);
-                        if(profile->TexId != 0) {
-                            return (nodeFullCuboidCache[node.Data] = true);
-                        }
-
-                        if(NSP && profile->NodestateId != 0 && NSP->hasNodestate(profile->NodestateId)) {
-                            std::unordered_map<std::string, int32_t> states;
-                            int32_t meta = node.Meta;
-                            states.emplace("meta", meta);
-                            const auto routes = NSP->getModelsForNode(profile->NodestateId, metaStatesInfo, states);
-                            bool isFull = !routes.empty();
-                            if(isFull) {
-                                for(const auto& variants : routes) {
-                                    for(const auto& [weight, faces] : variants) {
-                                        (void)weight;
-                                        auto hasFace = [&](EnumFace face) -> bool {
-                                            auto iterFace = faces.find(face);
-                                            return iterFace != faces.end() && !iterFace->second.empty();
-                                        };
-                                        if(!hasFace(EnumFace::Up)
-                                            || !hasFace(EnumFace::Down)
-                                            || !hasFace(EnumFace::East)
-                                            || !hasFace(EnumFace::West)
-                                            || !hasFace(EnumFace::South)
-                                            || !hasFace(EnumFace::North))
-                                        {
-                                            isFull = false;
-                                            break;
+                        const DefNode* profile = getNodeProfile(node.NodeId);
+                        if(NSP) {
+                            if(const AssetsNodestate* ptr = std::get_if<AssetsNodestate>(&profile->RenderStates)) {
+                                if(NSP->hasNodestate(*ptr)) {
+                                    std::unordered_map<std::string, int32_t> states;
+                                    int32_t meta = node.Meta;
+                                    states.emplace("meta", meta);
+                                    const auto routes = NSP->getModelsForNode(*ptr, metaStatesInfo, states);
+                                    bool isFull = !routes.empty();
+                                    if(isFull) {
+                                        for(const auto& variants : routes) {
+                                            for(const auto& [weight, faces] : variants) {
+                                                (void)weight;
+                                                auto hasFace = [&](EnumFace face) -> bool {
+                                                    auto iterFace = faces.find(face);
+                                                    return iterFace != faces.end() && !iterFace->second.empty();
+                                                };
+                                                if(!hasFace(EnumFace::Up)
+                                                    || !hasFace(EnumFace::Down)
+                                                    || !hasFace(EnumFace::East)
+                                                    || !hasFace(EnumFace::West)
+                                                    || !hasFace(EnumFace::South)
+                                                    || !hasFace(EnumFace::North))
+                                                {
+                                                    isFull = false;
+                                                    break;
+                                                }
+                                            }
+                                            if(!isFull)
+                                                break;
                                         }
                                     }
-                                    if(!isFull)
-                                        break;
+
+                                    return (nodeFullCuboidCache[node.Data] = isFull);
                                 }
                             }
-                            return (nodeFullCuboidCache[node.Data] = isFull);
                         }
 
-                        return (nodeFullCuboidCache[node.Data] = false);
+                        return (nodeFullCuboidCache[node.Data] = true);
                     } else {
                         return iterCache->second;
                     }
@@ -420,6 +424,10 @@ void ChunkMeshGenerator::run(uint8_t id) {
                 for(int z = 0; z < 16; z++)
                 for(int y = 0; y < 16; y++)
                 for(int x = 0; x < 16; x++) {
+                    const Node& nodeData = (*chunk)[x+y*16+z*16*16];
+                    if(nodeData.NodeId == 0)
+                        continue;
+
                     const size_t vertexStart = result.NodeVertexs.size();
                     int fullCovered = 0;
 
@@ -433,66 +441,46 @@ void ChunkMeshGenerator::run(uint8_t id) {
                     if(fullCovered == 0b111111)
                         continue;
 
-                    const Node& nodeData = (*chunk)[x+y*16+z*16*16];
-                    const DefNode_t* node = getNodeProfile(nodeData.NodeId);
-
-                    if(debugMeshEnabled) {
-                        const bool hasRenderable = (node->NodestateId != 0) || (node->TexId != 0);
-                        if(hasRenderable && fullCovered != 0b111111) {
-                            expectedColumnX[x] = 1;
-                            expectedColumnY[y] = 1;
-                            expectedColumnZ[z] = 1;
-                        }
-                    }
+                    const DefNode* node = getNodeProfile(nodeData.NodeId);
 
                     bool usedModel = false;
 
-                    if(NSP && (node->NodestateId != 0 || NSP->hasNodestate(node->NodestateId))) {
-                        auto iterCache = modelCache.find(nodeData.Data);
-                        if(iterCache == modelCache.end()) {
-                            std::unordered_map<std::string, int32_t> states;
-                            states.emplace("meta", nodeData.Meta);
+                    if(NSP) {
+                        if(const AssetsNodestate* ptr = std::get_if<AssetsNodestate>(&node->RenderStates)) {
+                            if(NSP->hasNodestate(*ptr)) {
+                                auto iterCache = modelCache.find(nodeData.Data);
+                                if(iterCache == modelCache.end()) {
+                                    std::unordered_map<std::string, int32_t> states;
+                                    states.emplace("meta", nodeData.Meta);
 
-                            ModelCacheEntry entry;
-                            entry.Routes = NSP->getModelsForNode(node->NodestateId, metaStatesInfo, states);
-                            iterCache = modelCache.emplace(nodeData.Data, std::move(entry)).first;
-                        }
+                                    ModelCacheEntry entry;
+                                    entry.Routes = NSP->getModelsForNode(*ptr, metaStatesInfo, states);
+                                    iterCache = modelCache.emplace(nodeData.Data, std::move(entry)).first;
+                                }
 
-                        if(!iterCache->second.Routes.empty()) {
-                            uint32_t seed = uint32_t(nodeData.Data) * 2654435761u;
-                            seed ^= uint32_t(x) * 73856093u;
-                            seed ^= uint32_t(y) * 19349663u;
-                            seed ^= uint32_t(z) * 83492791u;
+                                if(!iterCache->second.Routes.empty()) {
+                                    uint32_t seed = uint32_t(nodeData.Data) * 2654435761u;
+                                    seed ^= uint32_t(x) * 73856093u;
+                                    seed ^= uint32_t(y) * 19349663u;
+                                    seed ^= uint32_t(z) * 83492791u;
 
-                            for(size_t routeIndex = 0; routeIndex < iterCache->second.Routes.size(); routeIndex++) {
-                                const auto& variants = iterCache->second.Routes[routeIndex];
-                                const auto* faces = pickVariant(variants, seed + uint32_t(routeIndex) * 374761393u);
-                                if(faces)
-                                    appendModel(*faces, fullCovered, x, y, z);
+                                    for(size_t routeIndex = 0; routeIndex < iterCache->second.Routes.size(); routeIndex++) {
+                                        const auto& variants = iterCache->second.Routes[routeIndex];
+                                        const auto* faces = pickVariant(variants, seed + uint32_t(routeIndex) * 374761393u);
+                                        if(faces)
+                                            appendModel(*faces, fullCovered, x, y, z);
+                                    }
+
+                                    usedModel = true;
+                                }
                             }
-
-                            usedModel = true;
                         }
                     }
 
                     if(usedModel)
                         goto node_done;
 
-                    if(NSP && node->TexId != 0) {
-                        auto iterTex = baseTextureCache.find(node->TexId);
-                        if(iterTex != baseTextureCache.end()) {
-                            v.Tex = iterTex->second;
-                        } else {
-                            uint32_t resolvedTex = NSP->getTextureId(node->TexId);
-                            v.Tex = resolvedTex;
-                            baseTextureCache.emplace(node->TexId, resolvedTex);
-                        }
-                    } else {
-                        v.Tex = node->TexId;
-                    }
-
-                    if(v.Tex == 0)
-                        goto node_done;
+                    v.Tex = 0;
 
                     // Рендерим обычный кубоид
                     // XZ+Y
@@ -700,58 +688,6 @@ void ChunkMeshGenerator::run(uint8_t id) {
                     }
 
                     node_done:
-                    if(debugMeshEnabled) {
-                        const bool emitted = result.NodeVertexs.size() > vertexStart;
-                        if(emitted) {
-                            generatedColumnX[x] = 1;
-                            generatedColumnY[y] = 1;
-                            generatedColumnZ[z] = 1;
-                        } else {
-                            const bool hasRenderable = (node->NodestateId != 0) || (node->TexId != 0);
-                            if(hasRenderable && fullCovered != 0b111111) {
-                                uint32_t warnIndex = debugMeshWarnCount.fetch_add(1);
-                                if(warnIndex < 16) {
-                                    LOG.warn() << "Missing node geometry at chunk " << int(pos[0]) << ','
-                                        << int(pos[1]) << ',' << int(pos[2])
-                                        << " local " << x << ',' << y << ',' << z
-                                        << " nodeId " << nodeData.NodeId
-                                        << " meta " << int(nodeData.Meta)
-                                        << " covered " << fullCovered
-                                        << " tex " << node->TexId
-                                        << " nodestate " << node->NodestateId;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if(debugMeshEnabled) {
-                    auto collectMissing = [](const std::array<uint8_t, 16>& expected,
-                        const std::array<uint8_t, 16>& generated) {
-                        std::string res;
-                        for(int i = 0; i < 16; i++) {
-                            if(expected[i] && !generated[i]) {
-                                if(!res.empty())
-                                    res += ',';
-                                res += std::to_string(i);
-                            }
-                        }
-                        return res;
-                    };
-
-                    std::string missingX = collectMissing(expectedColumnX, generatedColumnX);
-                    std::string missingY = collectMissing(expectedColumnY, generatedColumnY);
-                    std::string missingZ = collectMissing(expectedColumnZ, generatedColumnZ);
-                    if(!missingX.empty() || !missingY.empty() || !missingZ.empty()) {
-                        uint32_t warnIndex = debugMeshWarnCount.fetch_add(1);
-                        if(warnIndex < 16) {
-                            LOG.warn() << "Missing mesh columns at chunk " << int(pos[0]) << ','
-                                << int(pos[1]) << ',' << int(pos[2])
-                                << " missingX[" << missingX << "]"
-                                << " missingY[" << missingY << "]"
-                                << " missingZ[" << missingZ << "]";
-                        }
-                    }
                 }
 
                 // Вычислить индексы и сократить вершины
@@ -1700,9 +1636,10 @@ void VulkanRenderSession::tickSync(TickSyncData& data) {
         for(AssetsNodestate id : changedNodestates)
             changed.insert(id);
 
-        for(const auto& [nodeId, def] : ServerSession->Profiles.DefNode) {
-            if(changed.contains(def.NodestateId))
-                mcpData.ChangedNodes.push_back(nodeId);
+        for(const auto& [nodeId, def] : ServerSession->Profiles.DefNodes) {
+            if(const AssetsNodestate* ptr = std::get_if<AssetsNodestate>(&def.RenderStates))
+                if(changed.contains(*ptr))
+                    mcpData.ChangedNodes.push_back(nodeId);
         }
     }
 

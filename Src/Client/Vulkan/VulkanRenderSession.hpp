@@ -254,26 +254,13 @@ public:
             }
 
             {
-                static std::atomic<uint32_t> debugModelLogCount = 0;
-                uint32_t idx = debugModelLogCount.fetch_add(1);
-                if(idx < 128) {
-                    size_t vertexCount = 0;
-                    for(const auto& [_, verts] : model.Vertecies)
-                        vertexCount += verts.size();
-                    LOG.debug() << "Model loaded id=" << key
-                        << " verts=" << vertexCount
-                        << " texKeys=" << model.TextureKeys.size()
-                        << " pipelines=" << header.TexturePipelines.size();
-                }
-            }
-
-            if(model.Vertecies.empty()) {
-                static std::atomic<uint32_t> debugEmptyModelLogCount = 0;
-                uint32_t idx = debugEmptyModelLogCount.fetch_add(1);
-                if(idx < 128) {
-                    LOG.warn() << "Model has empty geometry id=" << key
-                        << " pipelines=" << header.TexturePipelines.size();
-                }
+                size_t vertexCount = 0;
+                for(const auto& [_, verts] : model.Vertecies)
+                    vertexCount += verts.size();
+                LOG.debug() << "Model loaded id=" << key
+                    << " verts=" << vertexCount
+                    << " texKeys=" << model.TextureKeys.size()
+                    << " pipelines=" << header.TexturePipelines.size();
             }
 
             Models.insert_or_assign(key, std::move(model));

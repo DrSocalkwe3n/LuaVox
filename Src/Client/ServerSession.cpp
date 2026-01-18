@@ -703,20 +703,38 @@ void ServerSession::update(GlobalTime gTime, float dTime) {
             for(auto& [resId, def] : profile_Voxel_AddOrChange)
                 Profiles.DefVoxels[resId] = def;
 
+            for(ResourceId resId : profile_Voxel_Lost)
+                Profiles.DefVoxels[resId] = DefVoxel();
+
             for(auto& [resId, def] : profile_Node_AddOrChange)
                 Profiles.DefNodes[resId] = def;
+
+            for(ResourceId resId : profile_Node_Lost)
+                Profiles.DefNodes[resId] = DefNode();
 
             for(auto& [resId, def] : profile_World_AddOrChange)
                 Profiles.DefWorlds[resId] = def;
 
+            for(ResourceId resId : profile_World_Lost)
+                Profiles.DefWorlds[resId] = DefWorld();
+
             for(auto& [resId, def] : profile_Portal_AddOrChange)
                 Profiles.DefPortals[resId] = def;
+
+            for(ResourceId resId : profile_Portal_Lost)
+                Profiles.DefPortals[resId] = DefPortal();
             
             for(auto& [resId, def] : profile_Entity_AddOrChange)
                 Profiles.DefEntitys[resId] = def;
 
+            for(ResourceId resId : profile_Entity_Lost)
+                Profiles.DefEntitys[resId] = DefEntity();
+
             for(auto& [resId, def] : profile_Item_AddOrChange)
                 Profiles.DefItems[resId] = def;
+
+            for(ResourceId resId : profile_Item_Lost)
+                Profiles.DefItems[resId] = DefItem();
         }
 
         // Чанки

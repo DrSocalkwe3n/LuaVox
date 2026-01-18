@@ -119,6 +119,7 @@ private:
         std::vector<UpdateAssetsBindsDK> BindsDK;
         // Полученные изменения привязок Hash+Header
         std::vector<UpdateAssetsBindsHH> BindsHH;
+        // Потерянные привязываются к hash_t(0)
         // Полученные с сервера ресурсы
         std::vector<std::tuple<ResourceFile::Hash_t, std::u8string>> ReceivedAssets;
 

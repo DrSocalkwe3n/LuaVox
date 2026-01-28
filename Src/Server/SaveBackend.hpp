@@ -16,7 +16,7 @@ namespace LV::Server {
 */
 struct SB_Region_In {
     // Список вокселей всех чанков
-    std::unordered_map<Pos::bvec4u, VoxelCube> Voxels;
+    std::unordered_map<Pos::bvec4u, std::vector<VoxelCube>> Voxels;
     // Привязка вокселей к ключу профиля
     std::vector<std::pair<DefVoxelId, std::string>> VoxelsMap;
     // Ноды всех чанков

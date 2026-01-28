@@ -218,6 +218,7 @@ public:
     }
 
     DefEntityId getDefId() const { return DefId; }
+    void setDefId(DefEntityId defId) { DefId = defId; }
 };
 
 template<typename Vec>

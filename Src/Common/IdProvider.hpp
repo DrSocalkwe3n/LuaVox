@@ -78,6 +78,9 @@ public:
             auto& sh = _shardFor(static_cast<Enum>(type), "core", "none");
             std::unique_lock lk(sh.mutex);
             sh.map.emplace(BindDomainKeyInfo{"core", "none"}, 0);
+
+            // ensure id 0 has a reverse mapping too
+            _storeReverse(static_cast<Enum>(type), 0, std::string("core"), std::string("none"));
         }
     }
 

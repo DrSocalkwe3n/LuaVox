@@ -6,9 +6,9 @@
 #include <Common/Net.hpp>
 #include <Common/Lockable.hpp>
 #include <atomic>
+#include <barrier>
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/io_context.hpp>
-#include <condition_variable>
 #include <filesystem>
 #include "Common/Abstract.hpp"
 #include "RemoteClient.hpp"
@@ -158,38 +158,56 @@ class GameServer : public AsyncObject {
     */
     struct BackingChunkPressure_t {
         TOS::Logger LOG = "BackingChunkPressure";
-        volatile bool NeedShutdown = false;
+        std::atomic<bool> NeedShutdown = false;
         std::vector<std::thread> Threads;
-        std::mutex Mutex;
-        volatile int RunCollect = 0, RunCompress = 0, Iteration = 0;
-        std::condition_variable Symaphore;
+        std::unique_ptr<std::barrier<>> CollectStart;
+        std::unique_ptr<std::barrier<>> CollectEnd;
+        std::unique_ptr<std::barrier<>> CompressEnd;
         std::unordered_map<WorldId_t, std::unique_ptr<World>> *Worlds;
+        bool HasStarted = false;
+
+        void init(size_t threadCount) {
+            if(threadCount == 0)
+                return;
+
+            const ptrdiff_t participants = static_cast<ptrdiff_t>(threadCount + 1);
+            CollectStart = std::make_unique<std::barrier<>>(participants);
+            CollectEnd = std::make_unique<std::barrier<>>(participants);
+            CompressEnd = std::make_unique<std::barrier<>>(participants);
+        }
 
         void startCollectChanges() {
-            std::lock_guard<std::mutex> lock(Mutex);
-            RunCollect = Threads.size();
-            RunCompress = Threads.size();
-            Iteration += 1;
-            assert(RunCollect != 0);
-            Symaphore.notify_all();
+            if(!CollectStart)
+                return;
+            HasStarted = true;
+            CollectStart->arrive_and_wait();
         }
 
         void endCollectChanges() {
-            std::unique_lock<std::mutex> lock(Mutex);
-            Symaphore.wait(lock, [&](){ return RunCollect == 0 || NeedShutdown; });
+            if(!CollectEnd)
+                return;
+            if(!HasStarted)
+                return;
+            CollectEnd->arrive_and_wait();
         }
 
         void endWithResults() {
-            std::unique_lock<std::mutex> lock(Mutex);
-            Symaphore.wait(lock, [&](){ return RunCompress == 0 || NeedShutdown; });
+            if(!CompressEnd)
+                return;
+            if(!HasStarted)
+                return;
+            CompressEnd->arrive_and_wait();
         }
 
         void stop() {
-            {
-                std::unique_lock<std::mutex> lock(Mutex);
-                NeedShutdown = true;
-                Symaphore.notify_all();
-            }
+            NeedShutdown.store(true, std::memory_order_release);
+
+            if(CollectStart)
+                CollectStart->arrive_and_drop();
+            if(CollectEnd)
+                CollectEnd->arrive_and_drop();
+            if(CompressEnd)
+                CompressEnd->arrive_and_drop();
 
             for(std::thread& thread : Threads)
                 thread.join();
@@ -236,7 +254,7 @@ class GameServer : public AsyncObject {
 
             auto lock = Output.lock();
             std::vector<std::pair<NoiseKey, std::array<float, 64*64*64>>> out = std::move(*lock);
-            lock->reserve(8000);
+            lock->reserve(25);
 
             return std::move(out);
         }

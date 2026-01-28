@@ -12,6 +12,7 @@
 namespace LV::Server {
 
 class GameServer;
+class ContentManager;
 
 class Region {
 public:
@@ -152,7 +153,7 @@ public:
         std::vector<Pos::GlobalRegion> ToUnload;
         std::vector<std::pair<Pos::GlobalRegion, SB_Region_In>> ToSave;
     };
-    SaveUnloadInfo onStepDatabaseSync();
+    SaveUnloadInfo onStepDatabaseSync(ContentManager& cm, float dtime);
 
     struct RegionIn {
         std::unordered_map<Pos::bvec4u, std::vector<VoxelCube>> Voxels;

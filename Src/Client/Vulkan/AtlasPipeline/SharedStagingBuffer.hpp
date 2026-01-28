@@ -16,7 +16,7 @@
 
 class SharedStagingBuffer {
 public:
-  static constexpr VkDeviceSize kDefaultSize = 64ull * 1024ull * 1024ull;
+  static constexpr VkDeviceSize kDefaultSize = 18ull * 1024ull * 1024ull;
 
   SharedStagingBuffer(VkDevice device,
                       VkPhysicalDevice physicalDevice,

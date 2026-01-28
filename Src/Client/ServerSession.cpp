@@ -83,6 +83,7 @@ coro<> ServerSession::asyncDestructor() {
 using namespace TOS;
 
 ServerSession::~ServerSession() {
+    LOG.info() << "Destroyed";
 }
 
 coro<> ServerSession::asyncAuthorizeWithServer(tcp::socket &socket, const std::string username, const std::string token, int a_ar_r, std::function<void(const std::string&)> onProgress) {

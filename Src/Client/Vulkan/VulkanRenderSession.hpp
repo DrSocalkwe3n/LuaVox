@@ -224,7 +224,8 @@ public:
                             }
 
                             cb.Trs.apply(v);
-                            model.Vertecies[params.Cullface].append_range(v);
+                            const EnumFace cullKey = (params.Cullface == EnumFace::None) ? face : params.Cullface;
+                            model.Vertecies[cullKey].append_range(v);
                         }
                 }
 

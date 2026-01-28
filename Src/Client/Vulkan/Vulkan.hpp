@@ -48,7 +48,7 @@ struct DeviceId {
 struct Settings {
 	DeviceId DeviceMain;
 	uint32_t QueueGraphics = -1, QueueSurface = -1;
-	bool Debug = true;
+	bool Debug = false;
 
 	bool isValid()
 	{

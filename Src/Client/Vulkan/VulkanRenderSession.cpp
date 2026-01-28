@@ -317,7 +317,7 @@ void ChunkMeshGenerator::run(uint8_t id) {
                 } else {
                     for(int y = 0; y < 16; y++)
                         for(int x = 0; x < 16; x++)
-                            fullNodes[x+0][y+1][0] = 0;
+                            fullNodes[x+1][y+1][0] = 0;
                 }
             } else 
                 goto end;
@@ -875,6 +875,7 @@ void ChunkPreparator::tickSync(const TickSyncData& data) {
     // Получаем готовые чанки
     {
         std::vector<ChunkMeshGenerator::ChunkObj_t> chunks = std::move(*CMG.Output.lock());
+        uint8_t frameRetirement = (FrameRoulette+FRAME_COUNT_RESOURCE_LATENCY) % FRAME_COUNT_RESOURCE_LATENCY;
         for(auto& chunk : chunks) {
             auto iterWorld = Requests.find(chunk.WId);
             if(iterWorld == Requests.end())
@@ -889,6 +890,14 @@ void ChunkPreparator::tickSync(const TickSyncData& data) {
 
             // Чанк ожидаем
             auto& rChunk = ChunksMesh[chunk.WId][chunk.Pos >> 2][Pos::bvec4u(chunk.Pos & 0x3).pack()];
+            if(rChunk.VoxelPointer)
+                VPV_ToFree[frameRetirement].emplace_back(std::move(rChunk.VoxelPointer));
+            if(rChunk.NodePointer) {
+                VPN_ToFree[frameRetirement].emplace_back(std::move(rChunk.NodePointer), std::move(rChunk.NodeIndexes));
+            }
+            rChunk.VoxelPointer = {};
+            rChunk.NodePointer = {};
+            rChunk.NodeIndexes = {};
             rChunk.Voxels = std::move(chunk.VoxelDefines);
             if(!chunk.VoxelVertexs.empty())
                 rChunk.VoxelPointer = VertexPool_Voxels.pushVertexs(std::move(chunk.VoxelVertexs));

@@ -29,6 +29,7 @@
 #include <png++/png.hpp>
 #include "VulkanRenderSession.hpp"
 #include <Server/GameServer.hpp>
+#include <malloc.h>
 
 extern void LoadSymbolsVulkan(TOS::DynamicLibrary &library);
 
@@ -222,6 +223,8 @@ void Vulkan::run()
 			} catch(const std::exception &exc) {
 				LOG.error() << "Game.Session->shutdown: " << exc.what();
 			}
+
+			Game.Session = nullptr;
 		}
 
 		if(!NeedShutdown && glfwWindowShouldClose(Graphics.Window)) {
@@ -240,10 +243,11 @@ void Vulkan::run()
 			try {
 				if(Game.Session)
 					Game.Session->shutdown(EnumDisconnect::ByInterface);
-				Game.Session = nullptr;
 			} catch(const std::exception &exc) {
 				LOG.error() << "Game.Session->shutdown: " << exc.what();
 			}
+
+			Game.Session = nullptr;
 
 			try {
 				if(Game.Server) 
@@ -2254,6 +2258,10 @@ void Vulkan::gui_MainMenu() {
 		}
 	}
 
+	if(ImGui::Button("Memory trim")) {
+		malloc_trim(0);
+	}
+
 	if(ConnectionProgress.InProgress) {
 		if(ImGui::Button("Отмена")) 
 			ConnectionProgress.Cancel = true;
@@ -2303,6 +2311,10 @@ void Vulkan::gui_ConnectedToServer() {
 			if(ImGui::Button("Выйти")) {
 				Game.Выйти = true;
 				Game.ImGuiInterfaces.pop_back();
+			}
+
+			if(ImGui::Button("Memory trim")) {
+				malloc_trim(0);
 			}
 
 			ImGui::End();
